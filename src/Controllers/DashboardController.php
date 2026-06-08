@@ -10,37 +10,27 @@ use App\Services\SmtpService;
 
 class DashboardController
 {
-    public function index(): void
+    public function status(): void
     {
         requireAuth();
 
         $imap = new ImapService();
         $imapConnected = $imap->connect();
         $imapError = $imap->getLastError();
-        $folders = [];
-        $sampleHeaders = null;
+        $folderCount = 0;
 
         if ($imapConnected) {
-            $folders = $imap->listFolders();
-
-            foreach ($folders as &$folder) {
-                $folder['count'] = $imap->getMessageCount($folder['path']);
-            }
-            unset($folder);
-
-            $inboxCount = $imap->getMessageCount('INBOX');
-            if ($inboxCount > 0) {
-                $sampleHeaders = $imap->fetchMessageHeaders('INBOX', $inboxCount);
-            }
+            $folderCount = count($imap->listFolders());
         }
 
-        view('dashboard', [
-            'title' => 'Dashboard',
+        view('status', [
+            'title' => 'Connection Status',
             'user' => Auth::user(),
             'imapConnected' => $imapConnected,
             'imapError' => $imapError,
-            'folders' => $folders,
-            'sampleHeaders' => $sampleHeaders,
+            'folderCount' => $folderCount,
+            'folders' => $imapConnected ? $imap->listFolders() : [],
+            'activeFolder' => null,
             'success' => flash('success'),
             'error' => flash('error'),
         ]);
@@ -51,7 +41,6 @@ class DashboardController
         requireAdmin();
 
         $config = config('mail');
-        $user = Auth::user();
         $to = $config['test_email_to'] !== ''
             ? $config['test_email_to']
             : $config['mailbox_email'];
@@ -64,6 +53,6 @@ class DashboardController
             flash('error', 'Failed to send test email: ' . $smtp->getLastError());
         }
 
-        redirect('');
+        redirect('status');
     }
 }

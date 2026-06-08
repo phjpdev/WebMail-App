@@ -76,6 +76,7 @@ In phpMyAdmin or MySQL CLI:
 ```bash
 mysql -u root -p < database/schema.sql
 mysql -u root -p < database/seed.sql
+mysql -u root -p < database/seed-aliases.sql
 ```
 
 ### 5. Composer (optional)
@@ -106,16 +107,28 @@ php composer.phar install
 | GET | `/login` | Login page |
 | POST | `/login` | Authenticate |
 | GET | `/logout` | Log out |
-| GET | `/` | Dashboard (auth required) |
+| GET | `/` | Redirect to Inbox (auth required) |
+| GET | `/folder/{path}` | Message list for folder |
+| GET | `/folder/{path}/message/{uid}` | Read message |
+| GET | `/attachment` | Download attachment |
+| POST | `/message/move` | Move message to folder |
+| POST | `/message/trash` | Move message to Trash |
+| GET | `/compose` | New email |
+| GET | `/compose/reply` | Reply to message |
+| GET | `/compose/forward` | Forward message |
+| POST | `/compose/send` | Send email |
+| GET | `/status` | Connection diagnostics (admin link) |
 | POST | `/test-email` | Send SMTP test (admin only) |
 
-## Milestone 1 exit criteria
+## Milestone 2 exit criteria
 
-- [ ] Login / logout works
-- [ ] IMAP lists real folders
-- [ ] SMTP test email sends
-- [ ] Credentials only in `.env`
-- [ ] MySQL schema imported
+- [ ] Read mail in any folder
+- [ ] Compose and send with send-as identity
+- [ ] Reply defaults to received alias
+- [ ] Manual move between folders
+- [ ] Delete moves mail to `INBOX.Trash`
+
+See [`docs/MILESTONE-2-DEMO.md`](docs/MILESTONE-2-DEMO.md) for demo script.
 
 ## Project structure
 
@@ -151,6 +164,6 @@ Enable `extension=imap` in php.ini and restart Apache.
 - Enable `mod_rewrite` in Apache
 - Ensure `.htaccess` is allowed (`AllowOverride All`)
 
-## Next: Milestone 2
+## Next: Milestone 3
 
-Read mail, compose, reply, send-as alias, manual move, trash.
+Filter engine on login, spam rules, admin UI for users/aliases/folders/rules.

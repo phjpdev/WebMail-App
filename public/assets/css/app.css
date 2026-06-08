@@ -319,6 +319,176 @@ a:hover {
     margin: 0;
 }
 
+.site-title-link {
+    color: #fff;
+    text-decoration: none;
+}
+
+.site-title-link:hover {
+    text-decoration: none;
+    opacity: 0.9;
+}
+
+.sidebar-compose {
+    margin-bottom: 1rem;
+    text-align: center;
+}
+
+.card-flush {
+    padding: 0;
+    overflow: hidden;
+}
+
+.card-flush .data-table th:first-child,
+.card-flush .data-table td:first-child {
+    padding-left: 1.25rem;
+}
+
+.card-flush .data-table th:last-child,
+.card-flush .data-table td:last-child {
+    padding-right: 1.25rem;
+}
+
+.mail-table .mail-row {
+    cursor: pointer;
+}
+
+.mail-table .mail-row:hover {
+    background: #f9fafb;
+}
+
+.mail-unread .col-from,
+.mail-unread .col-subject {
+    font-weight: 600;
+}
+
+.col-status {
+    width: 1.5rem;
+    color: #2563eb;
+}
+
+.col-date {
+    width: 180px;
+    white-space: nowrap;
+    font-size: 0.8125rem;
+    color: #6b7280;
+}
+
+.col-from {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.col-subject {
+    max-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    border-top: 1px solid #e5e7eb;
+}
+
+.pagination-info {
+    color: #6b7280;
+    font-size: 0.875rem;
+}
+
+.breadcrumb {
+    margin: 0 0 0.5rem;
+    font-size: 0.875rem;
+}
+
+.mail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.inline-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.move-form select {
+    padding: 0.4rem 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.875rem;
+}
+
+.btn-danger {
+    background: #dc2626;
+    color: #fff;
+}
+
+.btn-danger:hover {
+    background: #b91c1c;
+}
+
+.mail-headers {
+    margin-bottom: 1rem;
+}
+
+.attachments {
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+.attachments ul {
+    margin: 0.35rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.mail-body {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 1rem;
+}
+
+.mail-body-html {
+    overflow-x: auto;
+    font-size: 0.9375rem;
+}
+
+.mail-body-plain {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    font-family: inherit;
+    font-size: 0.9375rem;
+}
+
+.compose-form textarea,
+.compose-form select {
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-family: inherit;
+}
+
+.compose-form textarea {
+    resize: vertical;
+}
+
+.form-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
 @media (max-width: 768px) {
     .layout {
         grid-template-columns: 1fr;
@@ -327,5 +497,9 @@ a:hover {
     .card-header-row {
         flex-direction: column;
         align-items: flex-start;
+    }
+
+    .col-date {
+        display: none;
     }
 }

@@ -137,3 +137,43 @@ function requireAdmin(): void
         exit;
     }
 }
+
+function encode_folder_path(string $path): string
+{
+    return rtrim(strtr(base64_encode($path), '+/', '-_'), '=');
+}
+
+function decode_folder_path(string $encoded): string
+{
+    $padded = strtr($encoded, '-_', '+/');
+    $padLen = strlen($padded) % 4;
+    if ($padLen > 0) {
+        $padded .= str_repeat('=', 4 - $padLen);
+    }
+
+    $decoded = base64_decode($padded, true);
+
+    return $decoded === false ? '' : $decoded;
+}
+
+function folder_url(string $folderPath, string $suffix = ''): string
+{
+    $encoded = encode_folder_path($folderPath);
+    $path = 'folder/' . $encoded;
+
+    if ($suffix !== '') {
+        $path .= '/' . ltrim($suffix, '/');
+    }
+
+    return url($path);
+}
+
+function message_url(string $folderPath, int $uid): string
+{
+    return folder_url($folderPath, 'message/' . $uid);
+}
+
+function trash_folder_path(): string
+{
+    return 'INBOX.Trash';
+}

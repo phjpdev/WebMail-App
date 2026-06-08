@@ -26,7 +26,19 @@ class SmtpService
     }
 
     /**
-     * @param array{to: string, subject: string, body: string, from?: string, from_name?: string, reply_to?: string} $options
+     * @param array{
+     *   to: string,
+     *   subject: string,
+     *   body: string,
+     *   from?: string,
+     *   from_name?: string,
+     *   reply_to?: string,
+     *   html_body?: string,
+     *   in_reply_to?: string,
+     *   references?: string,
+     *   cc?: string,
+     *   bcc?: string
+     * } $options
      */
     public function send(array $options): bool
     {
@@ -63,14 +75,40 @@ class SmtpService
             $mail->setFrom($from, $fromName);
             $mail->addAddress($options['to']);
 
+            if (!empty($options['cc'])) {
+                foreach ($this->splitAddresses($options['cc']) as $cc) {
+                    $mail->addCC($cc);
+                }
+            }
+
+            if (!empty($options['bcc'])) {
+                foreach ($this->splitAddresses($options['bcc']) as $bcc) {
+                    $mail->addBCC($bcc);
+                }
+            }
+
             if (!empty($options['reply_to'])) {
                 $mail->addReplyTo($options['reply_to']);
             }
 
+            if (!empty($options['in_reply_to'])) {
+                $mail->addCustomHeader('In-Reply-To', $options['in_reply_to']);
+            }
+
+            if (!empty($options['references'])) {
+                $mail->addCustomHeader('References', $options['references']);
+            }
+
             $mail->Subject = $options['subject'];
-            $mail->Body = $options['body'];
-            $mail->AltBody = $options['body'];
-            $mail->isHTML(false);
+
+            if (!empty($options['html_body'])) {
+                $mail->isHTML(true);
+                $mail->Body = $options['html_body'];
+                $mail->AltBody = $options['body'];
+            } else {
+                $mail->isHTML(false);
+                $mail->Body = $options['body'];
+            }
 
             $mail->send();
 
@@ -86,5 +124,15 @@ class SmtpService
     public function getLastError(): string
     {
         return $this->lastError;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function splitAddresses(string $addresses): array
+    {
+        $parts = array_map('trim', explode(',', $addresses));
+
+        return array_values(array_filter($parts, fn ($a) => $a !== '' && filter_var($a, FILTER_VALIDATE_EMAIL)));
     }
 }

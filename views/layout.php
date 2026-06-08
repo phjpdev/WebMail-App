@@ -9,7 +9,7 @@
 <body>
     <header class="site-header">
         <div class="header-inner">
-            <h1 class="site-title"><?= e(config('app')['name']) ?></h1>
+            <h1 class="site-title"><a href="<?= e(url('')) ?>" class="site-title-link"><?= e(config('app')['name']) ?></a></h1>
             <?php if (!empty($user)): ?>
                 <div class="header-user">
                     <span class="user-name"><?= e($user['name']) ?></span>
@@ -23,11 +23,7 @@
     <div class="layout">
         <?php if (!empty($user)): ?>
             <aside class="sidebar">
-                <nav class="sidebar-nav">
-                    <p class="sidebar-label">Navigation</p>
-                    <a class="sidebar-link active" href="<?= e(url('')) ?>">Dashboard</a>
-                    <p class="sidebar-note">Folder tree — Milestone 2</p>
-                </nav>
+                <?php require base_path('views/partials/folder-sidebar.php'); ?>
             </aside>
         <?php endif; ?>
 

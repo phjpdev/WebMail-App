@@ -6,17 +6,25 @@ namespace App;
 
 class Router
 {
-    /** @var array<string, array<string, callable>> */
+    /** @var array<string, array<int, array{pattern: string, handler: callable}>> */
     private array $routes = [];
 
     public function get(string $path, callable $handler): void
     {
-        $this->routes['GET'][$this->normalize($path)] = $handler;
+        $this->addRoute('GET', $path, $handler);
     }
 
     public function post(string $path, callable $handler): void
     {
-        $this->routes['POST'][$this->normalize($path)] = $handler;
+        $this->addRoute('POST', $path, $handler);
+    }
+
+    private function addRoute(string $method, string $path, callable $handler): void
+    {
+        $this->routes[$method][] = [
+            'pattern' => $this->normalize($path),
+            'handler' => $handler,
+        ];
     }
 
     public function dispatch(string $method, string $uri): void
@@ -25,15 +33,48 @@ class Router
         $path = $this->normalize($path);
         $path = $this->stripBasePath($path);
 
-        $handler = $this->routes[$method][$path] ?? null;
-
-        if ($handler === null) {
-            http_response_code(404);
-            echo '404 Not Found';
-            return;
+        foreach ($this->routes[$method] ?? [] as $route) {
+            $params = $this->matchRoute($route['pattern'], $path);
+            if ($params !== null) {
+                ($route['handler'])($params);
+                return;
+            }
         }
 
-        $handler();
+        http_response_code(404);
+        echo '404 Not Found';
+    }
+
+    /**
+     * @return array<string, string>|null
+     */
+    private function matchRoute(string $pattern, string $path): ?array
+    {
+        $patternParts = explode('/', trim($pattern, '/'));
+        $pathParts = explode('/', trim($path, '/'));
+
+        if ($pattern === '/') {
+            return $path === '/' ? [] : null;
+        }
+
+        if (count($patternParts) !== count($pathParts)) {
+            return null;
+        }
+
+        $params = [];
+
+        foreach ($patternParts as $i => $part) {
+            if (preg_match('/^\{([a-zA-Z0-9_]+)\}$/', $part, $matches)) {
+                $params[$matches[1]] = $pathParts[$i];
+                continue;
+            }
+
+            if ($part !== $pathParts[$i]) {
+                return null;
+            }
+        }
+
+        return $params;
     }
 
     private function normalize(string $path): string

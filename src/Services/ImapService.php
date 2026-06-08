@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use RuntimeException;
-
 class ImapService
 {
     private $connection = null;
@@ -31,21 +29,10 @@ class ImapService
             return false;
         }
 
-        $flags = '/imap';
-        $imap = $config['imap'];
-
-        if ($imap['encryption'] === 'ssl') {
-            $flags .= '/ssl';
-        }
-
-        $flags .= $imap['validate_cert'] ? '/validate-cert' : '/novalidate-cert';
-
-        $mailboxString = sprintf('{%s:%d%s}', $imap['host'], $imap['port'], $flags);
-
         imap_errors();
         imap_alerts();
 
-        $connection = @imap_open($mailboxString . 'INBOX', $mailbox, $password, 0, 1);
+        $connection = @imap_open($this->getMailboxString() . 'INBOX', $mailbox, $password, 0, 1);
 
         if ($connection === false) {
             $errors = imap_errors() ?: [];
@@ -74,12 +61,7 @@ class ImapService
             return [];
         }
 
-        $config = config('mail');
-        $imap = $config['imap'];
-        $flags = '/imap' . ($imap['encryption'] === 'ssl' ? '/ssl' : '');
-        $flags .= $imap['validate_cert'] ? '/validate-cert' : '/novalidate-cert';
-        $mailboxString = sprintf('{%s:%d%s}', $imap['host'], $imap['port'], $flags);
-
+        $mailboxString = $this->getMailboxString();
         $folders = imap_list($this->connection, $mailboxString, '*') ?: [];
         $result = [];
 
@@ -105,15 +87,7 @@ class ImapService
             return false;
         }
 
-        $config = config('mail');
-        $mailbox = $config['mailbox_email'];
-        $password = $config['mailbox_password'];
-        $imap = $config['imap'];
-        $flags = '/imap' . ($imap['encryption'] === 'ssl' ? '/ssl' : '');
-        $flags .= $imap['validate_cert'] ? '/validate-cert' : '/novalidate-cert';
-        $mailboxString = sprintf('{%s:%d%s}', $imap['host'], $imap['port'], $flags);
-
-        $reopened = @imap_reopen($this->connection, $mailboxString . $this->encodeFolderPath($path));
+        $reopened = @imap_reopen($this->connection, $this->getMailboxString() . $this->encodeFolderPath($path));
 
         if (!$reopened) {
             $errors = imap_errors() ?: [];
@@ -132,6 +106,224 @@ class ImapService
         }
 
         return imap_num_msg($this->connection) ?: 0;
+    }
+
+    /**
+     * @return array{messages: list<array{uid: int, from: string, subject: string, date: string, seen: bool, size: int}>, total: int, page: int, per_page: int, total_pages: int}
+     */
+    public function listMessages(string $path, int $page = 1, int $perPage = 50): array
+    {
+        $empty = [
+            'messages' => [],
+            'total' => 0,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => 0,
+        ];
+
+        if (!$this->openFolder($path)) {
+            return $empty;
+        }
+
+        $total = imap_num_msg($this->connection) ?: 0;
+        if ($total === 0) {
+            return $empty;
+        }
+
+        imap_sort($this->connection, SORTDATE, true, SE_UID);
+        $uids = imap_search($this->connection, 'ALL', SE_UID) ?: [];
+        $uids = array_map('intval', $uids);
+        rsort($uids);
+
+        $totalPages = (int) max(1, ceil(count($uids) / $perPage));
+        $page = max(1, min($page, $totalPages));
+        $offset = ($page - 1) * $perPage;
+        $pageUids = array_slice($uids, $offset, $perPage);
+
+        $messages = [];
+        foreach ($pageUids as $uid) {
+            $msgno = imap_msgno($this->connection, $uid);
+            if ($msgno === 0) {
+                continue;
+            }
+
+            $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
+            if ($overview === false || !isset($overview[0])) {
+                continue;
+            }
+
+            $row = $overview[0];
+            $messages[] = [
+                'uid' => $uid,
+                'from' => isset($row->from) ? $this->decodeMimeHeader($row->from) : '',
+                'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
+                'date' => $row->date ?? '',
+                'seen' => (bool) ($row->seen ?? false),
+                'size' => (int) ($row->size ?? 0),
+            ];
+        }
+
+        return [
+            'messages' => $messages,
+            'total' => count($uids),
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => $totalPages,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function getMessageByUid(string $path, int $uid): ?array
+    {
+        if (!$this->openFolder($path)) {
+            return null;
+        }
+
+        $msgno = imap_msgno($this->connection, $uid);
+        if ($msgno === 0) {
+            $this->lastError = 'Message not found.';
+            return null;
+        }
+
+        $header = imap_headerinfo($this->connection, $msgno);
+        if ($header === false) {
+            return null;
+        }
+
+        $rawHeader = imap_fetchheader($this->connection, $msgno) ?: '';
+        $body = $this->fetchBody($path, $uid);
+
+        $from = '';
+        if (isset($header->from[0])) {
+            $from = $header->from[0]->mailbox . '@' . $header->from[0]->host;
+        }
+
+        $to = '';
+        if (isset($header->to[0])) {
+            $to = $header->to[0]->mailbox . '@' . $header->to[0]->host;
+        }
+
+        $messageId = $this->extractHeaderValue($rawHeader, 'Message-ID');
+
+        return [
+            'uid' => $uid,
+            'msgno' => $msgno,
+            'from' => $from,
+            'to' => $to,
+            'subject' => isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '',
+            'date' => $header->date ?? '',
+            'delivered_to' => $this->extractHeaderValue($rawHeader, 'Delivered-To')
+                ?? $this->extractHeaderValue($rawHeader, 'X-Original-To'),
+            'message_id' => $messageId,
+            'html' => $body['html'],
+            'plain' => $body['plain'],
+            'attachments' => $body['attachments'],
+        ];
+    }
+
+    /**
+     * @return array{html: string|null, plain: string|null, attachments: list<array{id: string, filename: string, size: int, mime: string}>}
+     */
+    public function fetchBody(string $path, int $uid): array
+    {
+        $result = ['html' => null, 'plain' => null, 'attachments' => []];
+
+        if (!$this->openFolder($path)) {
+            return $result;
+        }
+
+        $msgno = imap_msgno($this->connection, $uid);
+        if ($msgno === 0) {
+            return $result;
+        }
+
+        $structure = imap_fetchstructure($this->connection, $msgno);
+        if ($structure === false) {
+            return $result;
+        }
+
+        $this->parseStructure($msgno, $structure, '', $result);
+
+        return $result;
+    }
+
+    /**
+     * @return array{content: string, filename: string, mime: string}|null
+     */
+    public function getAttachment(string $path, int $uid, string $partId): ?array
+    {
+        if (!$this->openFolder($path)) {
+            return null;
+        }
+
+        $msgno = imap_msgno($this->connection, $uid);
+        if ($msgno === 0) {
+            return null;
+        }
+
+        $structure = imap_fetchstructure($this->connection, $msgno);
+        if ($structure === false) {
+            return null;
+        }
+
+        $part = $this->findPart($structure, $partId);
+        if ($part === null) {
+            return null;
+        }
+
+        $section = $partId === '0' ? '1' : $partId;
+        $body = imap_fetchbody($this->connection, $msgno, $section);
+        if ($body === false) {
+            return null;
+        }
+
+        $content = $this->decodePartBody($body, $part->encoding ?? 0);
+        $filename = $this->getPartFilename($part) ?? 'attachment';
+
+        return [
+            'content' => $content,
+            'filename' => $filename,
+            'mime' => $this->getPartMime($part),
+        ];
+    }
+
+    public function moveMessage(string $fromPath, int $uid, string $toPath): bool
+    {
+        if (!$this->openFolder($fromPath)) {
+            return false;
+        }
+
+        $mailboxString = $this->getMailboxString();
+        $target = $mailboxString . $this->encodeFolderPath($toPath);
+
+        $moved = @imap_mail_move($this->connection, (string) $uid, $target, CP_UID);
+
+        if (!$moved) {
+            $moved = $this->moveMessageCopyDelete($fromPath, $uid, $toPath);
+        }
+
+        if (!$moved) {
+            $errors = imap_errors() ?: [];
+            $this->lastError = 'Failed to move message: ' . implode('; ', $errors);
+            app_log($this->lastError);
+
+            return false;
+        }
+
+        imap_expunge($this->connection);
+
+        return true;
+    }
+
+    public function markSeen(string $path, int $uid): void
+    {
+        if (!$this->openFolder($path)) {
+            return;
+        }
+
+        imap_setflag_full($this->connection, (string) $uid, '\\Seen', ST_UID);
     }
 
     /**
@@ -179,6 +371,36 @@ class ImapService
         $this->disconnect();
     }
 
+    private function moveMessageCopyDelete(string $fromPath, int $uid, string $toPath): bool
+    {
+        if (!$this->openFolder($fromPath)) {
+            return false;
+        }
+
+        $msgno = imap_msgno($this->connection, $uid);
+        if ($msgno === 0) {
+            return false;
+        }
+
+        $header = imap_fetchheader($this->connection, $msgno);
+        $body = imap_body($this->connection, $msgno);
+        if ($header === false || $body === false) {
+            return false;
+        }
+
+        $raw = $header . $body;
+        $target = $this->getMailboxString() . $this->encodeFolderPath($toPath);
+
+        if (!@imap_append($this->connection, $target, $raw)) {
+            return false;
+        }
+
+        imap_delete($this->connection, (string) $uid, FT_UID);
+        imap_expunge($this->connection);
+
+        return true;
+    }
+
     private function ensureConnected(): bool
     {
         if ($this->connection !== null) {
@@ -188,13 +410,24 @@ class ImapService
         return $this->connect();
     }
 
-    private function decodeFolderName(string $folder): string
+    private function getMailboxString(): string
     {
         $config = config('mail');
         $imap = $config['imap'];
-        $flags = '/imap' . ($imap['encryption'] === 'ssl' ? '/ssl' : '');
+        $flags = '/imap';
+
+        if ($imap['encryption'] === 'ssl') {
+            $flags .= '/ssl';
+        }
+
         $flags .= $imap['validate_cert'] ? '/validate-cert' : '/novalidate-cert';
-        $mailboxString = sprintf('{%s:%d%s}', $imap['host'], $imap['port'], $flags);
+
+        return sprintf('{%s:%d%s}', $imap['host'], $imap['port'], $flags);
+    }
+
+    private function decodeFolderName(string $folder): string
+    {
+        $mailboxString = $this->getMailboxString();
 
         if (str_starts_with($folder, $mailboxString)) {
             $folder = substr($folder, strlen($mailboxString));
@@ -210,6 +443,120 @@ class ImapService
         }
 
         return imap_utf7_encode($path);
+    }
+
+    /**
+     * @param array{html: string|null, plain: string|null, attachments: list<array{id: string, filename: string, size: int, mime: string}>} $result
+     */
+    private function parseStructure(int $msgno, object $structure, string $partId, array &$result): void
+    {
+        if (isset($structure->parts) && is_array($structure->parts)) {
+            foreach ($structure->parts as $index => $subPart) {
+                $subId = $partId === '' ? (string) ($index + 1) : $partId . '.' . ($index + 1);
+                $this->parseStructure($msgno, $subPart, $subId, $result);
+            }
+            return;
+        }
+
+        $mime = $this->getPartMime($structure);
+        $section = $partId === '' ? '1' : $partId;
+        $body = imap_fetchbody($this->connection, $msgno, $section);
+
+        if ($body === false) {
+            return;
+        }
+
+        $decoded = $this->decodePartBody($body, $structure->encoding ?? 0);
+        $filename = $this->getPartFilename($structure);
+        $disposition = strtolower($structure->disposition ?? '');
+
+        if ($filename !== null || $disposition === 'attachment') {
+            $result['attachments'][] = [
+                'id' => $section,
+                'filename' => $filename ?? 'attachment',
+                'size' => strlen($decoded),
+                'mime' => $mime,
+            ];
+            return;
+        }
+
+        if (str_starts_with($mime, 'text/html') && $result['html'] === null) {
+            $result['html'] = $decoded;
+        } elseif (str_starts_with($mime, 'text/plain') && $result['plain'] === null) {
+            $result['plain'] = $decoded;
+        }
+    }
+
+    private function findPart(object $structure, string $partId): ?object
+    {
+        if ($partId === '0' || $partId === '1') {
+            return $structure;
+        }
+
+        $indices = explode('.', $partId);
+        $current = $structure;
+
+        foreach ($indices as $index) {
+            $i = (int) $index - 1;
+            if (!isset($current->parts[$i])) {
+                return null;
+            }
+            $current = $current->parts[$i];
+        }
+
+        return $current;
+    }
+
+    private function getPartMime(object $part): string
+    {
+        $primary = $this->getPartTypeName($part->type ?? 0);
+        $subtype = strtolower($part->subtype ?? 'octet-stream');
+
+        return $primary . '/' . $subtype;
+    }
+
+    private function getPartTypeName(int $type): string
+    {
+        return match ($type) {
+            TYPETEXT => 'text',
+            TYPEMULTIPART => 'multipart',
+            TYPEMESSAGE => 'message',
+            TYPEAPPLICATION => 'application',
+            TYPEAUDIO => 'audio',
+            TYPEIMAGE => 'image',
+            TYPEVIDEO => 'video',
+            default => 'application',
+        };
+    }
+
+    private function getPartFilename(object $part): ?string
+    {
+        if (isset($part->dparameters)) {
+            foreach ($part->dparameters as $param) {
+                if (strtolower($param->attribute ?? '') === 'filename') {
+                    return $this->decodeMimeHeader($param->value);
+                }
+            }
+        }
+
+        if (isset($part->parameters)) {
+            foreach ($part->parameters as $param) {
+                if (strtolower($param->attribute ?? '') === 'name') {
+                    return $this->decodeMimeHeader($param->value);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function decodePartBody(string $body, int $encoding): string
+    {
+        return match ($encoding) {
+            ENCBASE64 => base64_decode($body) ?: $body,
+            ENCQUOTEDPRINTABLE => quoted_printable_decode($body),
+            default => $body,
+        };
     }
 
     private function decodeMimeHeader(string $value): string
