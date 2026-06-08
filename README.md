@@ -77,6 +77,7 @@ In phpMyAdmin or MySQL CLI:
 mysql -u root -p < database/schema.sql
 mysql -u root -p < database/seed.sql
 mysql -u root -p < database/seed-aliases.sql
+mysql -u root -p < database/seed-folders-rules.sql
 ```
 
 ### 5. Composer (optional)
@@ -117,18 +118,33 @@ php composer.phar install
 | GET | `/compose/reply` | Reply to message |
 | GET | `/compose/forward` | Forward message |
 | POST | `/compose/send` | Send email |
-| GET | `/status` | Connection diagnostics (admin link) |
+| GET | `/status` | Connection diagnostics (admin) |
 | POST | `/test-email` | Send SMTP test (admin only) |
+| GET | `/admin` | Admin dashboard |
+| POST | `/admin/sync` | Re-run filter pass |
+| GET/POST | `/admin/users/*` | Manage users |
+| GET/POST | `/admin/aliases/*` | Manage send-as aliases |
+| GET/POST | `/admin/folders/*` | Manage folder registry |
+| GET/POST | `/admin/rules/*` | Manage filter rules |
 
-## Milestone 2 exit criteria
+## Filter behavior (Milestone 3)
 
-- [ ] Read mail in any folder
-- [ ] Compose and send with send-as identity
-- [ ] Reply defaults to received alias
-- [ ] Manual move between folders
-- [ ] Delete moves mail to `INBOX.Trash`
+When any user logs in and opens mail, the app runs a **filter pass** on `INBOX` once per session:
 
-See [`docs/MILESTONE-2-DEMO.md`](docs/MILESTONE-2-DEMO.md) for demo script.
+- Evaluates rules from MySQL (spam → company → employee → client)
+- Moves matching mail via IMAP to target folders
+- Processes up to 200 messages per pass (configurable via `FILTER_BATCH_LIMIT`)
+
+Mail is **not** filtered when nobody has the site open. First login each day runs the filter.
+
+## Milestone 3 exit criteria
+
+- [ ] Filter pass on login
+- [ ] Admin CRUD for users, aliases, folders, rules
+- [ ] Employee onboarding creates IMAP folder + alias + rule
+- [ ] Migration doc: PHP + SQL only
+
+See [`docs/MILESTONE-3-DEMO.md`](docs/MILESTONE-3-DEMO.md), [`docs/MIGRATION.md`](docs/MIGRATION.md), [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
 
 ## Project structure
 
@@ -164,6 +180,9 @@ Enable `extension=imap` in php.ini and restart Apache.
 - Enable `mod_rewrite` in Apache
 - Ensure `.htaccess` is allowed (`AllowOverride All`)
 
-## Next: Milestone 3
+## Documentation
 
-Filter engine on login, spam rules, admin UI for users/aliases/folders/rules.
+- [`docs/MILESTONE-2-DEMO.md`](docs/MILESTONE-2-DEMO.md) — Core webmail demo
+- [`docs/MILESTONE-3-DEMO.md`](docs/MILESTONE-3-DEMO.md) — Filter + admin demo
+- [`docs/MIGRATION.md`](docs/MIGRATION.md) — Server migration guide
+- [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) — End-user guide

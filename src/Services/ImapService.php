@@ -319,6 +319,114 @@ class ImapService
     }
 
     /**
+     * @return list<int>
+     */
+    public function getFolderUids(string $path, int $limit = 400): array
+    {
+        if (!$this->openFolder($path)) {
+            return [];
+        }
+
+        $total = imap_num_msg($this->connection) ?: 0;
+        if ($total === 0) {
+            return [];
+        }
+
+        $start = max(1, $total - $limit + 1);
+        $overview = imap_fetch_overview($this->connection, "$start:$total");
+        if ($overview === false) {
+            return [];
+        }
+
+        $uids = [];
+        foreach (array_reverse($overview) as $row) {
+            if (isset($row->uid)) {
+                $uids[] = (int) $row->uid;
+            }
+        }
+
+        return $uids;
+    }
+
+    /**
+     * @return array<string, string|null>|null
+     */
+    public function fetchFilterHeaders(string $path, int $uid): ?array
+    {
+        if (!$this->openFolder($path)) {
+            return null;
+        }
+
+        $msgno = imap_msgno($this->connection, $uid);
+        if ($msgno === 0) {
+            return null;
+        }
+
+        $header = imap_headerinfo($this->connection, $msgno);
+        if ($header === false) {
+            return null;
+        }
+
+        $rawHeader = imap_fetchheader($this->connection, $msgno) ?: '';
+
+        $from = '';
+        if (isset($header->from[0])) {
+            $from = $header->from[0]->mailbox . '@' . $header->from[0]->host;
+        }
+
+        $to = '';
+        if (isset($header->to[0])) {
+            $to = $header->to[0]->mailbox . '@' . $header->to[0]->host;
+        }
+
+        return [
+            'from' => $from,
+            'to' => $to,
+            'subject' => isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '',
+            'delivered_to' => $this->extractHeaderValue($rawHeader, 'Delivered-To'),
+            'x_original_to' => $this->extractHeaderValue($rawHeader, 'X-Original-To'),
+            'message_id' => $this->extractHeaderValue($rawHeader, 'Message-ID'),
+        ];
+    }
+
+    public function fetchFilterBody(string $path, int $uid): string
+    {
+        $body = $this->fetchBody($path, $uid);
+
+        return $body['plain'] ?? strip_tags($body['html'] ?? '');
+    }
+
+    public function createFolder(string $path): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        $mailbox = $this->getMailboxString() . $this->encodeFolderPath($path);
+
+        if (@imap_createmailbox($this->connection, $mailbox)) {
+            return true;
+        }
+
+        $errors = imap_errors() ?: [];
+        $this->lastError = 'Failed to create folder: ' . implode('; ', $errors);
+        app_log($this->lastError);
+
+        return false;
+    }
+
+    public function folderExistsOnServer(string $path): bool
+    {
+        foreach ($this->listFolders() as $folder) {
+            if ($folder['path'] === $path) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @return array<string, string|null>
      */
     public function fetchMessageHeaders(string $path, int $msgNumber): array

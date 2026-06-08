@@ -62,6 +62,8 @@ class Auth
             }
         }
 
+        unset($_SESSION['_filter_ran'], $_SESSION['_last_filter_stats']);
+
         $_SESSION = [];
 
         if (ini_get('session.use_cookies')) {

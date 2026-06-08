@@ -7,6 +7,7 @@ namespace App\Controllers;
 use App\Auth;
 use App\HtmlSanitizer;
 use App\Services\AliasService;
+use App\Services\FilterService;
 use App\Services\FolderCache;
 use App\Services\ImapService;
 
@@ -15,6 +16,7 @@ class MailController
     public function home(): void
     {
         requireAuth();
+        $this->runFilterIfNeeded();
         redirect('folder/' . encode_folder_path('INBOX'));
     }
 
@@ -24,6 +26,7 @@ class MailController
     public function folder(array $params): void
     {
         requireAuth();
+        $this->runFilterIfNeeded();
 
         $folderPath = decode_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
@@ -251,6 +254,11 @@ class MailController
         }
 
         return $path === 'INBOX' ? 'Inbox' : $path;
+    }
+
+    private function runFilterIfNeeded(): void
+    {
+        FilterService::runIfNeeded();
     }
 
     private function renderMailView(string $viewName, array $data): void

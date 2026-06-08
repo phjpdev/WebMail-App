@@ -823,6 +823,111 @@ a:hover {
     font-weight: 700;
 }
 
+/* Admin */
+.admin-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 1.25rem;
+}
+
+.admin-nav-link {
+    padding: 0.45rem 0.85rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    text-decoration: none;
+}
+
+.admin-nav-link:hover {
+    color: var(--color-primary);
+    border-color: var(--color-primary-light);
+    background: var(--color-primary-light);
+    text-decoration: none;
+}
+
+.admin-nav-link.active {
+    color: var(--color-primary);
+    background: var(--color-primary-light);
+    border-color: #c7d2fe;
+    font-weight: 600;
+}
+
+.admin-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.admin-stat-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+}
+
+.admin-stat-value {
+    display: block;
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--color-primary);
+}
+
+.admin-stat-label {
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    background: #f1f5f9;
+    color: #475569;
+}
+
+.badge-admin { background: #eef2ff; color: #4338ca; }
+.badge-employee { background: #ecfdf5; color: #047857; }
+.badge-spam { background: #fef2f2; color: #b91c1c; }
+.badge-client { background: #fff7ed; color: #c2410c; }
+.badge-company { background: #f0f9ff; color: #0369a1; }
+.badge-inbox, .badge-trash, .badge-sent, .badge-other { background: #f1f5f9; color: #64748b; }
+
+.admin-actions {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.btn-link-danger,
+.btn-link-muted {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.8125rem;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.btn-link-danger { color: var(--color-danger); }
+.btn-link-muted { color: var(--color-text-muted); }
+
+.btn-link-danger:hover,
+.btn-link-muted:hover {
+    text-decoration: underline;
+}
+
 /* Responsive */
 @media (min-width: 640px) {
     .user-name {

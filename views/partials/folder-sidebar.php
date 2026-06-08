@@ -64,13 +64,18 @@ $labels = [
             <?php endforeach; ?>
         <?php endforeach; ?>
 
-        <?php if (($user['role'] ?? '') === 'admin'): ?>
-            <p class="sidebar-label">Admin</p>
-            <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
-               href="<?= e(url('status')) ?>">
-                <span class="folder-icon folder-icon-status" aria-hidden="true"></span>
-                <span class="sidebar-link-text">Connection status</span>
-            </a>
-        <?php endif; ?>
+    <?php if (($user['role'] ?? '') === 'admin'): ?>
+        <p class="sidebar-label">Admin</p>
+        <a class="sidebar-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
+           href="<?= e(url('admin')) ?>">
+            <span class="folder-icon folder-icon-status" aria-hidden="true"></span>
+            <span class="sidebar-link-text">Admin panel</span>
+        </a>
+        <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
+           href="<?= e(url('status')) ?>">
+            <span class="folder-icon folder-icon-status" aria-hidden="true"></span>
+            <span class="sidebar-link-text">Connection status</span>
+        </a>
+    <?php endif; ?>
     </div>
 </nav>

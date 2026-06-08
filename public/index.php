@@ -22,6 +22,7 @@ session_start([
     'cookie_samesite' => 'Lax',
 ]);
 
+use App\Controllers\AdminController;
 use App\Controllers\AuthController;
 use App\Controllers\ComposeController;
 use App\Controllers\DashboardController;
@@ -32,6 +33,7 @@ $authController = new AuthController();
 $mailController = new MailController();
 $composeController = new ComposeController();
 $dashboardController = new DashboardController();
+$adminController = new AdminController();
 
 $router = new Router();
 
@@ -53,6 +55,29 @@ $router->post('/compose/send', fn () => $composeController->send());
 
 $router->get('/status', fn () => $dashboardController->status());
 $router->post('/test-email', fn () => $dashboardController->sendTestEmail());
+
+$router->get('/admin', fn () => $adminController->dashboard());
+$router->post('/admin/sync', fn () => $adminController->sync());
+$router->get('/admin/users', fn () => $adminController->usersIndex());
+$router->get('/admin/users/create', fn () => $adminController->usersCreate());
+$router->post('/admin/users/store', fn () => $adminController->usersStore());
+$router->get('/admin/users/{id}/edit', fn ($p) => $adminController->usersEdit($p));
+$router->post('/admin/users/{id}/update', fn ($p) => $adminController->usersUpdate($p));
+$router->post('/admin/users/{id}/disable', fn ($p) => $adminController->usersDisable($p));
+$router->get('/admin/aliases', fn () => $adminController->aliasesIndex());
+$router->get('/admin/aliases/create', fn () => $adminController->aliasesCreate());
+$router->post('/admin/aliases/store', fn () => $adminController->aliasesStore());
+$router->get('/admin/aliases/{id}/edit', fn ($p) => $adminController->aliasesEdit($p));
+$router->post('/admin/aliases/{id}/update', fn ($p) => $adminController->aliasesUpdate($p));
+$router->get('/admin/folders', fn () => $adminController->foldersIndex());
+$router->get('/admin/folders/create', fn () => $adminController->foldersCreate());
+$router->post('/admin/folders/store', fn () => $adminController->foldersStore());
+$router->get('/admin/rules', fn () => $adminController->rulesIndex());
+$router->get('/admin/rules/create', fn () => $adminController->rulesCreate());
+$router->post('/admin/rules/store', fn () => $adminController->rulesStore());
+$router->get('/admin/rules/{id}/edit', fn ($p) => $adminController->rulesEdit($p));
+$router->post('/admin/rules/{id}/update', fn ($p) => $adminController->rulesUpdate($p));
+$router->post('/admin/rules/{id}/toggle', fn ($p) => $adminController->rulesToggle($p));
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
