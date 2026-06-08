@@ -130,31 +130,23 @@ class ImapService
             return $empty;
         }
 
-        imap_sort($this->connection, SORTDATE, true, SE_UID);
-        $uids = imap_search($this->connection, 'ALL', SE_UID) ?: [];
-        $uids = array_map('intval', $uids);
-        rsort($uids);
-
-        $totalPages = (int) max(1, ceil(count($uids) / $perPage));
+        $totalPages = (int) max(1, ceil($total / $perPage));
         $page = max(1, min($page, $totalPages));
-        $offset = ($page - 1) * $perPage;
-        $pageUids = array_slice($uids, $offset, $perPage);
 
+        $end = $total - ($page - 1) * $perPage;
+        $start = max(1, $end - $perPage + 1);
+
+        $overview = imap_fetch_overview($this->connection, "$start:$end");
+        if ($overview === false) {
+            return $empty;
+        }
+
+        $overview = array_reverse($overview);
         $messages = [];
-        foreach ($pageUids as $uid) {
-            $msgno = imap_msgno($this->connection, $uid);
-            if ($msgno === 0) {
-                continue;
-            }
 
-            $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
-            if ($overview === false || !isset($overview[0])) {
-                continue;
-            }
-
-            $row = $overview[0];
+        foreach ($overview as $row) {
             $messages[] = [
-                'uid' => $uid,
+                'uid' => (int) ($row->uid ?? 0),
                 'from' => isset($row->from) ? $this->decodeMimeHeader($row->from) : '',
                 'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
                 'date' => $row->date ?? '',
@@ -165,7 +157,7 @@ class ImapService
 
         return [
             'messages' => $messages,
-            'total' => count($uids),
+            'total' => $total,
             'page' => $page,
             'per_page' => $perPage,
             'total_pages' => $totalPages,

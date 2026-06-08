@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Auth;
 use App\Services\AliasService;
+use App\Services\FolderCache;
 use App\Services\ImapService;
 use App\Services\SmtpService;
 
@@ -209,12 +210,7 @@ class ComposeController
      */
     private function loadFolders(): array
     {
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            return [];
-        }
-
-        return $imap->listFolders();
+        return FolderCache::load()['folders'];
     }
 
     private function redirectBack(string $mode, string $folderPath, int $uid): never

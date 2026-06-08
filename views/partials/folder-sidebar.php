@@ -37,29 +37,40 @@ $labels = [
     'other' => 'Folders',
     'trash' => 'Trash',
 ];
+
 ?>
 
 <nav class="sidebar-nav">
-    <a class="btn btn-primary btn-block sidebar-compose" href="<?= e(url('compose')) ?>">Compose</a>
+    <a class="btn btn-primary btn-compose" href="<?= e(url('compose')) ?>">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Compose
+    </a>
 
-    <?php foreach ($groupOrder as $group): ?>
-        <?php if (empty($grouped[$group])) continue; ?>
-        <p class="sidebar-label"><?= e($labels[$group]) ?></p>
-        <?php foreach ($grouped[$group] as $folder): ?>
-            <?php
-            $displayName = $folder['path'] === 'INBOX' ? 'Inbox' : $folder['name'];
-            $isActive = ($activeFolder ?? '') === $folder['path'];
-            ?>
-            <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
-               href="<?= e(folder_url($folder['path'])) ?>">
-                <?= e($displayName) ?>
-            </a>
+    <div class="sidebar-scroll">
+        <?php foreach ($groupOrder as $group): ?>
+            <?php if (empty($grouped[$group])) continue; ?>
+            <p class="sidebar-label"><?= e($labels[$group]) ?></p>
+            <?php foreach ($grouped[$group] as $folder): ?>
+                <?php
+                $displayName = $folder['path'] === 'INBOX' ? 'Inbox' : preg_replace('/^INBOX\./', '', $folder['name']);
+                $isActive = ($activeFolder ?? '') === $folder['path'];
+                $icon = folder_icon_type($folder['path']);
+                ?>
+                <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
+                   href="<?= e(folder_url($folder['path'])) ?>">
+                    <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
+                    <span class="sidebar-link-text"><?= e($displayName) ?></span>
+                </a>
+            <?php endforeach; ?>
         <?php endforeach; ?>
-    <?php endforeach; ?>
 
-    <?php if (($user['role'] ?? '') === 'admin'): ?>
-        <p class="sidebar-label">Admin</p>
-        <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
-           href="<?= e(url('status')) ?>">Connection status</a>
-    <?php endif; ?>
+        <?php if (($user['role'] ?? '') === 'admin'): ?>
+            <p class="sidebar-label">Admin</p>
+            <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
+               href="<?= e(url('status')) ?>">
+                <span class="folder-icon folder-icon-status" aria-hidden="true"></span>
+                <span class="sidebar-link-text">Connection status</span>
+            </a>
+        <?php endif; ?>
+    </div>
 </nav>

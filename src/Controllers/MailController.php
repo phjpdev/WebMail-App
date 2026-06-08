@@ -7,6 +7,7 @@ namespace App\Controllers;
 use App\Auth;
 use App\HtmlSanitizer;
 use App\Services\AliasService;
+use App\Services\FolderCache;
 use App\Services\ImapService;
 
 class MailController
@@ -32,19 +33,27 @@ class MailController
         }
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
-        $imap = new ImapService();
-        $imapConnected = $imap->connect();
-        $imapError = $imap->getLastError();
-        $folders = $imapConnected ? $imap->listFolders() : [];
+        $folderData = FolderCache::load();
+        $folders = $folderData['folders'];
+        $imapConnected = $folderData['connected'];
+        $imapError = $folderData['error'];
 
         if ($imapConnected && !$this->folderExists($folders, $folderPath)) {
             flash('error', 'Folder not found on mail server.');
             redirect('folder/' . encode_folder_path('INBOX'));
         }
 
-        $list = $imapConnected
-            ? $imap->listMessages($folderPath, $page)
-            : ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => 50, 'total_pages' => 0];
+        $list = ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => 50, 'total_pages' => 0];
+
+        if ($imapConnected) {
+            $imap = new ImapService();
+            if ($imap->connect()) {
+                $list = $imap->listMessages($folderPath, $page);
+            } else {
+                $imapConnected = false;
+                $imapError = $imap->getLastError();
+            }
+        }
 
         $this->renderMailView('mail/list', [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -76,13 +85,15 @@ class MailController
             return;
         }
 
+        $folderData = FolderCache::load();
+        $folders = $folderData['folders'];
+
         $imap = new ImapService();
         if (!$imap->connect()) {
             flash('error', $imap->getLastError());
             redirect('folder/' . encode_folder_path($folderPath));
         }
 
-        $folders = $imap->listFolders();
         $message = $imap->getMessageByUid($folderPath, $uid);
 
         if ($message === null) {
@@ -170,6 +181,7 @@ class MailController
         }
 
         if ($imap->moveMessage($folderPath, $uid, $targetPath)) {
+            (new FolderCache())->clear();
             flash('success', 'Message moved successfully.');
             redirect('folder/' . encode_folder_path($folderPath));
         }
@@ -197,13 +209,14 @@ class MailController
             redirect('folder/' . encode_folder_path($folderPath));
         }
 
-        $folders = $imap->listFolders();
+        $folders = FolderCache::load()['folders'];
         if (!$this->folderExists($folders, $trashPath)) {
             flash('error', 'Trash folder (INBOX.Trash) not found on mail server.');
             redirect(message_url($folderPath, $uid));
         }
 
         if ($imap->moveMessage($folderPath, $uid, $trashPath)) {
+            (new FolderCache())->clear();
             flash('success', 'Message moved to Trash.');
             redirect('folder/' . encode_folder_path($folderPath));
         }
@@ -233,7 +246,7 @@ class MailController
     {
         foreach ($folders as $folder) {
             if ($folder['path'] === $path) {
-                return $folder['name'] === 'INBOX' ? 'Inbox' : $folder['name'];
+                return $folder['path'] === 'INBOX' ? 'Inbox' : $folder['name'];
             }
         }
 

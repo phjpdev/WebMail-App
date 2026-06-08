@@ -177,3 +177,71 @@ function trash_folder_path(): string
 {
     return 'INBOX.Trash';
 }
+
+function format_mail_date(?string $date): string
+{
+    if ($date === null || $date === '') {
+        return '';
+    }
+
+    $ts = strtotime($date);
+    if ($ts === false) {
+        return $date;
+    }
+
+    $now = time();
+    $diff = $now - $ts;
+
+    if ($diff < 86400 && date('Y-m-d', $ts) === date('Y-m-d', $now)) {
+        return date('g:i A', $ts);
+    }
+
+    if ($diff < 604800) {
+        return date('D g:i A', $ts);
+    }
+
+    if (date('Y', $ts) === date('Y', $now)) {
+        return date('M j', $ts);
+    }
+
+    return date('M j, Y', $ts);
+}
+
+function folder_icon_type(string $path): string
+{
+    $lower = strtolower($path);
+    if ($path === 'INBOX') {
+        return 'inbox';
+    }
+    if (str_contains($lower, 'sent')) {
+        return 'sent';
+    }
+    if (str_contains($lower, 'draft')) {
+        return 'draft';
+    }
+    if (str_contains($lower, 'trash')) {
+        return 'trash';
+    }
+    if (str_contains($lower, 'spam') || str_contains($lower, 'junk')) {
+        return 'spam';
+    }
+
+    return 'folder';
+}
+
+function format_mail_from(?string $from): string
+{
+    if ($from === null || $from === '') {
+        return 'Unknown';
+    }
+
+    if (preg_match('/^(.+?)\s*<[^>]+>$/', $from, $m)) {
+        return trim($m[1], '"\' ');
+    }
+
+    if (strlen($from) > 40) {
+        return substr($from, 0, 37) . '…';
+    }
+
+    return $from;
+}
