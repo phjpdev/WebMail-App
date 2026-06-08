@@ -1,0 +1,13 @@
+.env
+/vendor/
+!/vendor/autoload.php
+!/vendor/phpmailer/
+composer.phar
+phpmailer.zip
+vendor-src/
+/storage/logs/*.log
+.idea/
+.vscode/
+*.log
+Thumbs.db
+.DS_Store
