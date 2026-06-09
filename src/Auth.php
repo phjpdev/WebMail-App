@@ -11,10 +11,15 @@ class Auth
 
     public static function login(string $username, string $password): bool
     {
-        $user = Database::fetchOne(
-            'SELECT id, name, username, password_hash, role, active FROM users WHERE username = ? LIMIT 1',
-            [$username]
-        );
+        try {
+            $user = Database::fetchOne(
+                'SELECT id, name, username, password_hash, role, active FROM users WHERE username = ? LIMIT 1',
+                [$username]
+            );
+        } catch (\Throwable $e) {
+            app_log('Login database error: ' . $e->getMessage());
+            return false;
+        }
 
         if ($user === null || !(int) $user['active']) {
             return false;

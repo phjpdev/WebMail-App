@@ -8,7 +8,7 @@ Upload the **project files directly into `public_html/`** — not into a `webmai
 
 ```text
 public_html/
-  .env              ← from deploy/.env.production (rename on upload)
+  .env              ← MUST be named exactly .env (not .env.production)
   .htaccess
   index.php
   composer.json
@@ -32,9 +32,30 @@ public_html/
 
 1. **Delete** `public_html/default.php` and remove `public_html/webmail/` if you created it earlier.
 2. Upload all project files to `public_html/`.
-3. Upload `deploy/.env.production` and rename to `.env` on the server.
-4. Enable PHP **imap** extension in hPanel.
-5. Visit `https://mailbox.djgroupllc.net/` — login page should load.
+3. Upload `deploy/.env.production` and **rename to `.env`** on the server (exact name, no extension).
+4. Enable PHP **imap** and **pdo_mysql** in hPanel → PHP Configuration.
+5. Visit `https://mailbox.djgroupllc.net/check-setup.php` — all checks should pass.
+6. Delete `check-setup.php` from the server after setup.
+7. Visit `https://mailbox.djgroupllc.net/` — login with `admin` / `admin123`.
+
+## Login fails / database error?
+
+The login page loads without a database. Login POST needs MySQL.
+
+**Error 1045 Access denied** (see `storage/logs/app.log`):
+
+1. hPanel → **Databases** → confirm `u321724939_mailboxUser` is **assigned** to `u321724939_mailbox`
+2. **Change password** on the DB user in hPanel (use letters+numbers only, e.g. `Mailbox2026Xk9`)
+3. Update `public_html/.env`:
+   ```env
+   DB_PASSWORD=Mailbox2026Xk9
+   ```
+4. Visit `/check-setup.php` — `database` should say `connected OK`
+5. Login: `admin` / `admin123`
+
+- File must be named exactly `.env`
+- `db_password_length` on check-setup should match your password length
+- `storage/logs/` must be writable
 
 ## Local vs production
 

@@ -11,10 +11,14 @@ function loadEnv(string $path): void
         return;
     }
 
-    $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if ($lines === false) {
+    $raw = file_get_contents($path);
+    if ($raw === false) {
         return;
     }
+
+    // Strip UTF-8 BOM (common when editing .env on Windows)
+    $raw = preg_replace('/^\xEF\xBB\xBF/', '', $raw) ?? $raw;
+    $lines = preg_split('/\R/', $raw) ?: [];
 
     foreach ($lines as $line) {
         $line = trim($line);
@@ -29,21 +33,41 @@ function loadEnv(string $path): void
 
         $key = trim($parts[0]);
         $value = trim($parts[1]);
-        $value = trim($value, "\"'");
+
+        if (
+            (str_starts_with($value, '"') && str_ends_with($value, '"'))
+            || (str_starts_with($value, "'") && str_ends_with($value, "'"))
+        ) {
+            $value = substr($value, 1, -1);
+        }
 
         $_ENV[$key] = $value;
-        putenv("$key=$value");
+        // Never call putenv() — # and ; in passwords break getenv().
+    }
+}
+
+/**
+ * Load environment from .env (preferred) or common production filenames.
+ */
+function bootstrapEnv(string $baseDir): void
+{
+    foreach (['.env', '.env.production', '.env-production'] as $file) {
+        loadEnv($baseDir . '/' . $file);
+        if (!empty($_ENV['DB_NAME'])) {
+            return;
+        }
     }
 }
 
 function env(string $key, mixed $default = null): mixed
 {
-    $value = $_ENV[$key] ?? getenv($key);
-    if ($value === false || $value === '') {
+    if (!array_key_exists($key, $_ENV)) {
         return $default;
     }
 
-    return $value;
+    $value = $_ENV[$key];
+
+    return ($value === '' && $default !== null) ? $default : $value;
 }
 
 /**

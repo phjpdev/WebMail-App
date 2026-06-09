@@ -31,7 +31,12 @@ class AuthController
         }
 
         if (!Auth::login($username, $password)) {
-            flash('error', 'Invalid username or password.');
+            $dbName = env('DB_NAME', '');
+            if ($dbName === '' || $dbName === 'dj_webmail') {
+                flash('error', 'Server error: .env file missing. On the server the file must be named .env (not .env.production).');
+            } else {
+                flash('error', 'Login failed. If the password is correct, check database credentials in .env (see check-setup.php on the server).');
+            }
             redirect('login');
         }
 
