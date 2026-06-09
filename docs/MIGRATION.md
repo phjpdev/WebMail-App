@@ -61,33 +61,16 @@ APP_URL=https://your-domain.com/webmail
 
 Filtering runs when any employee opens the webmail in a browser.
 
-## Hostinger (subfolder deploy)
+## Hostinger (domain root deploy)
 
-If the project is uploaded to `public_html/webmail/` and the domain root shows a placeholder page:
+App runs at `https://mailbox.djgroupllc.net/` — upload project files **directly into `public_html/`**, not a `webmail/` subfolder.
 
-1. Copy `deploy/default.php` to `public_html/default.php` (domain root, next to the `webmail/` folder).
-2. Set `webmail/.env`:
+1. **Delete** Hostinger's `public_html/default.php` placeholder (the app uses `index.php` instead).
+2. Remove `public_html/webmail/` if you uploaded there earlier.
+3. Upload all project files to `public_html/`.
+4. Upload `deploy/.env.production` and rename to `public_html/.env`.
+5. Import your database dump into `u321724939_mailbox` via phpMyAdmin.
+6. Enable PHP **imap** extension in hPanel.
+7. Visit `https://mailbox.djgroupllc.net/` — login with `admin` / `admin123`.
 
-```env
-APP_URL=https://mailbox.djgroupllc.net/webmail
-APP_DEBUG=false
-```
-
-3. Create the MySQL database in hPanel and import your `dj_webmail` dump.
-4. Update `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` in `webmail/.env` (Hostinger often uses `localhost` and a prefixed DB name).
-5. Ensure PHP **imap** extension is enabled in hPanel → PHP Configuration.
-6. Visit `https://mailbox.djgroupllc.net` — it should redirect to `/webmail/` and show the login page.
-
-**Folder layout:**
-
-```text
-public_html/
-  default.php          ← from deploy/default.php
-  webmail/
-    .env
-    index.php
-    .htaccess
-    public/
-    src/
-    ...
-```
+See `deploy/README.md` for full layout and local vs production config.

@@ -1,4 +1,7 @@
 .env
+deploy/.env.production
+/storage/c.txt
+/storage/p.html
 /vendor/
 !/vendor/autoload.php
 !/vendor/phpmailer/

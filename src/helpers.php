@@ -46,6 +46,47 @@ function env(string $key, mixed $default = null): mixed
     return $value;
 }
 
+/**
+ * Application base URL for links and redirects.
+ * Uses APP_URL from .env, or auto-detects from the current request.
+ * If .env still points at localhost on a live domain, the request host wins.
+ */
+function app_base_url(): string
+{
+    $configured = env('APP_URL', '');
+    $requestHost = $_SERVER['HTTP_HOST'] ?? '';
+
+    if ($configured !== '') {
+        $configured = rtrim($configured, '/');
+        $localHosts = ['localhost', '127.0.0.1'];
+        $configHost = parse_url($configured, PHP_URL_HOST) ?: '';
+        $isLocalConfig = in_array($configHost, $localHosts, true)
+            || str_contains($configured, 'localhost')
+            || str_contains($configured, '127.0.0.1');
+        $isLocalRequest = $requestHost === ''
+            || in_array($requestHost, $localHosts, true)
+            || str_starts_with($requestHost, '127.0.0.1');
+
+        if (!($isLocalConfig && !$isLocalRequest)) {
+            return $configured;
+        }
+    }
+
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https')
+        || (($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '') === 'on');
+    $scheme = $https ? 'https' : 'http';
+    $host = $requestHost !== '' ? $requestHost : 'localhost';
+
+    $script = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '');
+    $basePath = dirname($script);
+    if ($basePath === '/' || $basePath === '.') {
+        $basePath = '';
+    }
+
+    return rtrim($scheme . '://' . $host . $basePath, '/');
+}
+
 function config(string $file): array
 {
     static $cache = [];
