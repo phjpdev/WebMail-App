@@ -60,3 +60,34 @@ APP_URL=https://your-domain.com/webmail
 - Background services
 
 Filtering runs when any employee opens the webmail in a browser.
+
+## Hostinger (subfolder deploy)
+
+If the project is uploaded to `public_html/webmail/` and the domain root shows a placeholder page:
+
+1. Copy `deploy/default.php` to `public_html/default.php` (domain root, next to the `webmail/` folder).
+2. Set `webmail/.env`:
+
+```env
+APP_URL=https://mailbox.djgroupllc.net/webmail
+APP_DEBUG=false
+```
+
+3. Create the MySQL database in hPanel and import your `dj_webmail` dump.
+4. Update `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` in `webmail/.env` (Hostinger often uses `localhost` and a prefixed DB name).
+5. Ensure PHP **imap** extension is enabled in hPanel → PHP Configuration.
+6. Visit `https://mailbox.djgroupllc.net` — it should redirect to `/webmail/` and show the login page.
+
+**Folder layout:**
+
+```text
+public_html/
+  default.php          ← from deploy/default.php
+  webmail/
+    .env
+    index.php
+    .htaccess
+    public/
+    src/
+    ...
+```
