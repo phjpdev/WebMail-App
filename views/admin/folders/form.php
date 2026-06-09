@@ -3,7 +3,7 @@
 <section class="page-header"><h2>Add folder</h2></section>
 <?php require base_path('views/partials/admin-nav.php'); ?>
 
-<section class="card">
+<section class="card card-form">
     <form method="post" action="<?= e(url('admin/folders/store')) ?>" class="compose-form">
         <div class="form-group">
             <label for="display_name">Display name</label>
@@ -21,9 +21,14 @@
             <label for="imap_path">IMAP path (optional)</label>
             <input type="text" id="imap_path" name="imap_path" placeholder="INBOX.ClientABC — auto-generated if empty">
         </div>
-        <div class="form-group">
-            <label><input type="checkbox" name="create_rule" value="1"> Create filter rule</label>
+        <div class="form-group form-check">
+            <label class="form-check-label">
+                <input type="checkbox" class="form-check-input" name="create_rule" value="1">
+                <span>Create filter rule</span>
+            </label>
         </div>
+        <div class="form-section">
+            <p class="form-section-title">Filter rule options</p>
         <div class="form-group">
             <label for="rule_field">Rule field</label>
             <select id="rule_field" name="rule_field">
@@ -46,6 +51,7 @@
         <div class="form-group">
             <label for="rule_value">Rule value</label>
             <input type="text" id="rule_value" name="rule_value" placeholder="e.g. K Nails">
+        </div>
         </div>
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Create folder</button>

@@ -10,7 +10,7 @@ ob_start();
 
 <?php require base_path('views/partials/admin-nav.php'); ?>
 
-<section class="card">
+<section class="card card-form">
     <form method="post" action="<?= e($action) ?>" class="compose-form">
         <div class="form-group">
             <label for="name">Full name</label>
@@ -24,6 +24,13 @@ ob_start();
             <label for="password">Password<?= $isEdit ? ' (leave blank to keep)' : '' ?></label>
             <input type="password" id="password" name="password" <?= $isEdit ? '' : 'required' ?>>
         </div>
+        <?php if ($isEdit && ($user['role'] ?? '') === 'admin'): ?>
+        <div class="form-group">
+            <label>Role</label>
+            <p class="form-static-value"><span class="badge badge-admin">Admin</span></p>
+            <input type="hidden" name="role" value="admin">
+        </div>
+        <?php else: ?>
         <div class="form-group">
             <label for="role">Role</label>
             <select id="role" name="role">
@@ -31,6 +38,7 @@ ob_start();
                 <option value="admin"<?= ($user['role'] ?? '') === 'admin' ? ' selected' : '' ?>>Admin</option>
             </select>
         </div>
+        <?php endif; ?>
         <?php if (!$isEdit): ?>
         <div class="form-group">
             <label for="alias_email">Alias email (employee onboarding)</label>
@@ -41,9 +49,12 @@ ob_start();
             <input type="text" id="folder_name" name="folder_name" placeholder="Defaults to username">
         </div>
         <?php endif; ?>
-        <?php if ($isEdit): ?>
-        <div class="form-group">
-            <label><input type="checkbox" name="active" value="1"<?= (int) ($user['active'] ?? 1) ? ' checked' : '' ?>> Active</label>
+        <?php if ($isEdit && ($user['role'] ?? '') !== 'admin'): ?>
+        <div class="form-group form-check">
+            <label class="form-check-label">
+                <input type="checkbox" class="form-check-input" name="active" value="1"<?= (int) ($user['active'] ?? 1) ? ' checked' : '' ?>>
+                <span>Active</span>
+            </label>
         </div>
         <?php endif; ?>
         <div class="form-actions">

@@ -21,7 +21,7 @@
                     <td><span class="badge badge-<?= e($r['rule_type']) ?>"><?= e($r['rule_type']) ?></span></td>
                     <td><code><?= e($r['condition_field'] . ' ' . $r['condition_operator'] . ' ' . $r['condition_value']) ?></code></td>
                     <td><?= e($r['folder_name']) ?></td>
-                    <td><?= (int) $r['active'] ? 'Active' : 'Off' ?></td>
+                    <td><span class="badge badge-<?= (int) $r['active'] ? 'active' : 'inactive' ?>"><?= (int) $r['active'] ? 'Active' : 'Off' ?></span></td>
                     <td class="admin-actions">
                         <a href="<?= e(url('admin/rules/' . $r['id'] . '/edit')) ?>">Edit</a>
                         <form method="post" action="<?= e(url('admin/rules/' . $r['id'] . '/toggle')) ?>" class="inline-form">

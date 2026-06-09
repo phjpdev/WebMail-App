@@ -81,6 +81,12 @@ class AdminUserService
      */
     public function update(int $id, array $data): void
     {
+        $existing = $this->find($id);
+        if ($existing !== null && $existing['role'] === 'admin') {
+            $data['active'] = 1;
+            $data['role'] = 'admin';
+        }
+
         if (!empty($data['password'])) {
             Database::query(
                 'UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?, active = ? WHERE id = ?',
@@ -107,9 +113,14 @@ class AdminUserService
         }
     }
 
-    public function disable(int $id): void
+    public function disable(int $id): bool
     {
-        Database::query('UPDATE users SET active = 0 WHERE id = ?', [$id]);
+        $user = $this->find($id);
+        if ($user === null || $user['role'] === 'admin') {
+            return false;
+        }
+
+        Database::query('UPDATE users SET active = 0 WHERE id = ? AND role != \'admin\'', [$id]);
         Database::query(
             'UPDATE filter_rules r
              INNER JOIN aliases a ON r.condition_value = a.email
@@ -117,5 +128,7 @@ class AdminUserService
              WHERE a.user_id = ? AND r.condition_field = \'to\'',
             [$id]
         );
+
+        return true;
     }
 }

@@ -64,7 +64,7 @@ $labels = [
             <?php endforeach; ?>
         <?php endforeach; ?>
 
-    <?php if (($user['role'] ?? '') === 'admin'): ?>
+    <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
         <p class="sidebar-label">Admin</p>
         <a class="sidebar-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
            href="<?= e(url('admin')) ?>">

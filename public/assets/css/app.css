@@ -520,6 +520,15 @@ a:hover {
     border-bottom: none;
 }
 
+.data-table tbody tr:hover {
+    background: #fafbfc;
+}
+
+.data-table td a:not(.btn) {
+    font-weight: 500;
+    font-size: 0.8125rem;
+}
+
 .mail-table .mail-row {
     cursor: pointer;
     transition: background 0.12s;
@@ -721,10 +730,20 @@ a:hover {
     line-height: 1.6;
 }
 
-/* Compose */
+/* Forms */
+.table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.card-form {
+    max-width: 560px;
+}
+
 .compose-form textarea,
 .compose-form select,
-.form-group input {
+.form-group input:not([type="checkbox"]):not([type="radio"]),
+.login-form input {
     width: 100%;
     padding: 0.65rem 0.85rem;
     border: 1px solid var(--color-border);
@@ -737,7 +756,8 @@ a:hover {
 
 .compose-form textarea:focus,
 .compose-form select:focus,
-.form-group input:focus {
+.form-group input:not([type="checkbox"]):not([type="radio"]):focus,
+.login-form input:focus {
     outline: none;
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
@@ -752,17 +772,63 @@ a:hover {
     margin-bottom: 1.1rem;
 }
 
-.form-group label {
+.form-group > label:not(.form-check-label) {
     display: block;
     margin-bottom: 0.4rem;
     font-weight: 500;
     font-size: 0.875rem;
+    color: var(--color-text);
+}
+
+.form-check {
+    margin-bottom: 1rem;
+}
+
+.form-check-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.875rem;
+    user-select: none;
+}
+
+.form-check-input {
+    width: 1.05rem;
+    height: 1.05rem;
+    margin: 0;
+    flex-shrink: 0;
+    accent-color: var(--color-primary);
+    cursor: pointer;
+}
+
+.form-static-value {
+    margin: 0;
+    font-size: 0.9375rem;
+}
+
+.form-section {
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--color-border);
+}
+
+.form-section-title {
+    margin: 0 0 1rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
 }
 
 .form-actions {
     display: flex;
     gap: 0.5rem;
     flex-wrap: wrap;
+    margin-top: 0.25rem;
+    padding-top: 0.5rem;
 }
 
 /* Status */
@@ -821,6 +887,21 @@ a:hover {
 .login-card h2 {
     margin: 0 0 0.25rem;
     font-weight: 700;
+}
+
+.login-form .form-group {
+    margin-bottom: 1rem;
+}
+
+.login-form .form-group label {
+    display: block;
+    margin-bottom: 0.4rem;
+    font-weight: 500;
+    font-size: 0.875rem;
+}
+
+.login-form .btn {
+    margin-top: 0.5rem;
 }
 
 /* Admin */
@@ -902,6 +983,8 @@ a:hover {
 .badge-client { background: #fff7ed; color: #c2410c; }
 .badge-company { background: #f0f9ff; color: #0369a1; }
 .badge-inbox, .badge-trash, .badge-sent, .badge-other { background: #f1f5f9; color: #64748b; }
+.badge-active { background: #ecfdf5; color: #047857; }
+.badge-inactive { background: #f1f5f9; color: #64748b; }
 
 .admin-actions {
     display: flex;

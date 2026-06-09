@@ -7,7 +7,7 @@ ob_start();
 <section class="page-header"><h2><?= $isEdit ? 'Edit alias' : 'Add alias' ?></h2></section>
 <?php require base_path('views/partials/admin-nav.php'); ?>
 
-<section class="card">
+<section class="card card-form">
     <form method="post" action="<?= e($action) ?>" class="compose-form">
         <div class="form-group">
             <label for="email">Email</label>
@@ -35,8 +35,11 @@ ob_start();
                 <?php endforeach; ?>
             </select>
         </div>
-        <div class="form-group">
-            <label><input type="checkbox" name="active" value="1"<?= (int) ($alias['active'] ?? 1) ? ' checked' : '' ?>> Active</label>
+        <div class="form-group form-check">
+            <label class="form-check-label">
+                <input type="checkbox" class="form-check-input" name="active" value="1"<?= (int) ($alias['active'] ?? 1) ? ' checked' : '' ?>>
+                <span>Active</span>
+            </label>
         </div>
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Save</button>

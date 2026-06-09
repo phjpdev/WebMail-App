@@ -20,7 +20,7 @@
                     <td><?= e($a['display_name']) ?></td>
                     <td><?= e($a['user_name'] ?? '—') ?></td>
                     <td><?= e($a['folder_name'] ?? '—') ?></td>
-                    <td><?= (int) $a['active'] ? 'Active' : 'Inactive' ?></td>
+                    <td><span class="badge badge-<?= (int) $a['active'] ? 'active' : 'inactive' ?>"><?= (int) $a['active'] ? 'Active' : 'Inactive' ?></span></td>
                     <td><a href="<?= e(url('admin/aliases/' . $a['id'] . '/edit')) ?>">Edit</a></td>
                 </tr>
                 <?php endforeach; ?>

@@ -128,7 +128,11 @@ class AdminController
     public function usersDisable(array $params): void
     {
         requireAdmin();
-        $this->users->disable((int) ($params['id'] ?? 0));
+        $id = (int) ($params['id'] ?? 0);
+        if (!$this->users->disable($id)) {
+            flash('error', 'Admin accounts cannot be disabled.');
+            redirect('admin/users');
+        }
         flash('success', 'User disabled.');
         redirect('admin/users');
     }
@@ -367,7 +371,11 @@ class AdminController
 
     private function render(string $view, array $data): void
     {
-        $data['user'] = Auth::user();
+        $data['authUser'] = Auth::user();
+        // users/form uses $user for the record being edited
+        if ($view !== 'admin/users/form') {
+            $data['user'] = $data['authUser'];
+        }
         $data['folders'] = FolderCache::load()['folders'];
         $data['activeFolder'] = '__admin__';
         $data['success'] = flash('success');

@@ -20,7 +20,7 @@
                     <td><code><?= e($f['imap_path']) ?></code></td>
                     <td><span class="badge badge-<?= e($f['folder_type']) ?>"><?= e($f['folder_type']) ?></span></td>
                     <td><?= e($f['linked_user_name'] ?? '—') ?></td>
-                    <td><?= (int) $f['active'] ? 'Active' : 'Inactive' ?></td>
+                    <td><span class="badge badge-<?= (int) $f['active'] ? 'active' : 'inactive' ?>"><?= (int) $f['active'] ? 'Active' : 'Inactive' ?></span></td>
                 </tr>
                 <?php endforeach; ?>
             </tbody>

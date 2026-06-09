@@ -21,7 +21,7 @@
                     <td><?= e($u['name']) ?></td>
                     <td><?= e($u['username']) ?></td>
                     <td><span class="badge badge-<?= e($u['role']) ?>"><?= e($u['role']) ?></span></td>
-                    <td><?= (int) $u['active'] ? 'Active' : 'Disabled' ?></td>
+                    <td><span class="badge badge-<?= (int) $u['active'] ? 'active' : 'inactive' ?>"><?= (int) $u['active'] ? 'Active' : 'Disabled' ?></span></td>
                     <td class="admin-actions">
                         <a href="<?= e(url('admin/users/' . $u['id'] . '/edit')) ?>">Edit</a>
                         <?php if ((int) $u['active'] && $u['role'] !== 'admin'): ?>
