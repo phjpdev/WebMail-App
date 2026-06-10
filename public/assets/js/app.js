@@ -91,24 +91,9 @@
 
     function updateMailCount(total) {
         var label = document.getElementById('mail-count-label');
-        if (label) label.textContent = total + ' message' + (total === 1 ? '' : 's');
-    }
-
-    function showSyncStatus(text) {
-        var el = document.getElementById('mail-sync-status');
-        if (!el) return;
-        var isChecking = text && text.indexOf('Checking') === 0;
-        el.textContent = text || 'Updated just now';
-        el.hidden = false;
-        if (isChecking) {
-            el.classList.add('is-checking');
-            window.setTimeout(function () {
-                el.classList.remove('is-checking');
-                el.hidden = true;
-            }, 600);
-        } else {
-            el.classList.remove('is-checking');
-        }
+        if (!label) return;
+        label.textContent = String(total);
+        label.title = total + ' message' + (total === 1 ? '' : 's');
     }
 
     function showToast(type, message, duration) {
@@ -266,14 +251,12 @@
         var interval = parseInt(card.getAttribute('data-poll-interval') || body.getAttribute('data-poll-interval') || '30', 10) * 1000;
         var polling = false;
 
-        showSyncStatus('Updated just now');
-
         function poll() {
             if (polling) return;
             if (overlay && !overlay.hidden) return;
 
             polling = true;
-            showSyncStatus('Checking…');
+            card.classList.add('is-syncing');
             var url = pollUrl + (pollUrl.indexOf('?') >= 0 ? '&' : '?') + 'page=' + page;
 
             fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
@@ -286,7 +269,6 @@
                     updateMailCount(data.total);
 
                     if (page !== 1) {
-                        showSyncStatus('Updated just now');
                         return;
                     }
 
@@ -307,11 +289,13 @@
                         notifyNewMail(newMessages.length);
                     }
 
-                    showSyncStatus('Updated just now');
                     refreshUnreadBadges();
                 })
                 .catch(function () {})
-                .finally(function () { polling = false; });
+                .finally(function () {
+                    card.classList.remove('is-syncing');
+                    polling = false;
+                });
         }
 
         window.setInterval(poll, interval);

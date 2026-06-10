@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=7">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=8">
     <script>
         (function () {
             var t = localStorage.getItem('dj_theme');
@@ -63,10 +66,16 @@
             </div>
             <?php if (!empty($sessionUser)): ?>
                 <div class="header-user">
-                    <span class="user-name"><?= e($sessionUser['name']) ?></span>
-                    <span class="role-badge role-<?= e($sessionUser['role']) ?>"><?= e($sessionUser['role']) ?></span>
-                    <a class="btn btn-ghost" href="<?= e(url('settings')) ?>">Settings</a>
-                    <a class="btn btn-ghost" href="<?= e(url('logout')) ?>">Logout</a>
+                    <div class="header-user-info">
+                        <span class="user-avatar" aria-hidden="true"><?= e(strtoupper(substr($sessionUser['name'], 0, 1))) ?></span>
+                        <span class="user-name"><?= e($sessionUser['name']) ?></span>
+                        <span class="role-badge role-<?= e($sessionUser['role']) ?>"><?= e($sessionUser['role']) ?></span>
+                    </div>
+                    <span class="header-divider" aria-hidden="true"></span>
+                    <nav class="header-nav" aria-label="Account">
+                        <a class="header-nav-link" href="<?= e(url('settings')) ?>">Settings</a>
+                        <a class="header-nav-link" href="<?= e(url('logout')) ?>">Logout</a>
+                    </nav>
                 </div>
             <?php endif; ?>
         </div>
@@ -87,6 +96,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=7" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=8" defer></script>
 </body>
 </html>

@@ -3,11 +3,11 @@
 <section class="page-header">
     <div class="page-header-row">
         <div class="page-header-left">
-            <h2><?= e($title ?? 'Mail') ?></h2>
-            <p class="text-muted" id="mail-count-label"><?= (int) $totalMessages ?> message<?= $totalMessages === 1 ? '' : 's' ?></p>
+            <div class="page-title-row">
+                <h2><?= e($title ?? 'Mail') ?></h2>
+                <span class="page-header-count" id="mail-count-label" title="<?= (int) $totalMessages ?> message<?= $totalMessages === 1 ? '' : 's' ?>"><?= (int) $totalMessages ?></span>
+            </div>
         </div>
-        <div class="page-header-right">
-            <p class="mail-sync-status" id="mail-sync-status" hidden aria-live="polite"></p>
         <form method="get" action="<?= e(folder_url($folderPath)) ?>" class="search-field mail-search-form" id="mail-search-form">
             <?php if (!empty($perPage)): ?>
                 <input type="hidden" name="per_page" value="<?= (int) $perPage ?>">
@@ -22,7 +22,6 @@
                 <a class="btn btn-outline btn-sm" href="<?= e(folder_url($folderPath) . (!empty($perPage) ? '?per_page=' . (int) $perPage : '')) ?>">Clear</a>
             <?php endif; ?>
         </form>
-        </div>
     </div>
 </section>
 

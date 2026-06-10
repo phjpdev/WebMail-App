@@ -70,6 +70,9 @@ $labels = [
             ?>
             <div class="sidebar-group<?= $isOpen ? ' is-open' : '' ?><?= $isCollapsible ? ' is-collapsible' : ' is-fixed' ?>" data-group="<?= e($group) ?>">
                 <?php if ($isCollapsible): ?>
+                    <?php if ($group === 'other'): ?>
+                        <div class="sidebar-divider" aria-hidden="true"></div>
+                    <?php endif; ?>
                     <button type="button" class="sidebar-group-toggle" aria-expanded="<?= $isOpen ? 'true' : 'false' ?>">
                         <span class="sidebar-group-chevron" aria-hidden="true"></span>
                         <span class="sidebar-group-title"><?= e($labels[$group]) ?></span>
@@ -77,13 +80,6 @@ $labels = [
                             <span class="folder-badge folder-badge-sm"><?= $groupUnread > 99 ? '99+' : $groupUnread ?></span>
                         <?php endif; ?>
                     </button>
-                <?php else: ?>
-                    <p class="sidebar-label">
-                        <?= e($labels[$group]) ?>
-                        <?php if ($groupUnread > 0): ?>
-                            <span class="folder-badge folder-badge-sm"><?= $groupUnread > 99 ? '99+' : $groupUnread ?></span>
-                        <?php endif; ?>
-                    </p>
                 <?php endif; ?>
                 <div class="sidebar-group-items">
                     <?php foreach ($grouped[$group] as $folder): ?>
@@ -108,6 +104,7 @@ $labels = [
         <?php endforeach; ?>
 
         <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
+            <div class="sidebar-divider" aria-hidden="true"></div>
             <div class="sidebar-group is-open is-collapsible" data-group="admin">
                 <button type="button" class="sidebar-group-toggle" aria-expanded="true">
                     <span class="sidebar-group-chevron" aria-hidden="true"></span>
