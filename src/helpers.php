@@ -41,9 +41,25 @@ function loadEnv(string $path): void
             $value = substr($value, 1, -1);
         }
 
-        $_ENV[$key] = $value;
+        $_ENV[$key] = rtrim($value, "\r");
         // Never call putenv() — # and ; in passwords break getenv().
     }
+}
+
+/**
+ * Read a secret from .env. Supports plain value or base64 (_B64 suffix).
+ * Use _B64 for passwords with #, &, ;, +, {, etc.
+ */
+function env_secret(string $key): string
+{
+    $b64Key = $key . '_B64';
+    if (array_key_exists($b64Key, $_ENV) && $_ENV[$b64Key] !== '') {
+        $decoded = base64_decode($_ENV[$b64Key], true);
+
+        return $decoded !== false ? $decoded : '';
+    }
+
+    return array_key_exists($key, $_ENV) ? (string) $_ENV[$key] : '';
 }
 
 /**

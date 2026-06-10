@@ -7,6 +7,6 @@ return [
     'port' => (int) env('DB_PORT', 3306),
     'name' => env('DB_NAME', 'dj_webmail'),
     'user' => env('DB_USER', 'root'),
-    'password' => env('DB_PASSWORD', ''),
+    'password' => env_secret('DB_PASSWORD'),
     'charset' => 'utf8mb4',
 ];

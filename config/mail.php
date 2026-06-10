@@ -16,6 +16,6 @@ return [
         'validate_cert' => filter_var(env('SMTP_VALIDATE_CERT', 'true'), FILTER_VALIDATE_BOOLEAN),
     ],
     'mailbox_email' => env('MAILBOX_EMAIL', ''),
-    'mailbox_password' => env('MAILBOX_PASSWORD', ''),
+    'mailbox_password' => env_secret('MAILBOX_PASSWORD'),
     'test_email_to' => env('TEST_EMAIL_TO', ''),
 ];

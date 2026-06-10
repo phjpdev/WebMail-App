@@ -42,20 +42,37 @@ public_html/
 
 The login page loads without a database. Login POST needs MySQL.
 
-**Error 1045 Access denied** (see `storage/logs/app.log`):
+**Error 1045 Access denied** with `db_password_mode: base64` — parsing works; **hPanel password ≠ .env password**.
 
-1. hPanel → **Databases** → confirm `u321724939_mailboxUser` is **assigned** to `u321724939_mailbox`
-2. **Change password** on the DB user in hPanel (use letters+numbers only, e.g. `Mailbox2026Xk9`)
-3. Update `public_html/.env`:
-   ```env
-   DB_PASSWORD=Mailbox2026Xk9
-   ```
-4. Visit `/check-setup.php` — `database` should say `connected OK`
-5. Login: `admin` / `admin123`
+Re-enter the **same** complex password in hPanel, encode it, update `.env`:
 
-- File must be named exactly `.env`
-- `db_password_length` on check-setup should match your password length
-- `storage/logs/` must be writable
+Use **base64** in `.env` (complex passwords are fine):
+
+```env
+DB_PASSWORD_B64=UnAzJjsjSStvNWw=
+```
+
+Encode any new password locally:
+
+```bash
+php deploy/encode-secret.php "Rp3&;#I+o5l"
+```
+
+1. hPanel → confirm DB user is assigned to the database
+2. Upload `deploy/.env.production` as `public_html/.env` (uses `_B64` keys)
+3. Visit `/check-setup.php` — `db_password_mode: base64`, `db_password_length: 12`, `database: connected OK`
+4. Login: `admin` / `admin123`
+
+### Password typo: `I` vs `l`
+
+These look the same in many fonts but are **different passwords**:
+
+| Wrong (fails) | Right (works) |
+|---------------|---------------|
+| `Rp3&;#I+o5l` | `Rp3&;#l+o5l` |
+| uppercase **I** | lowercase **l** |
+
+Correct `DB_PASSWORD_B64=UnAzJjsjbCtvNWw=`
 
 ## Local vs production
 
