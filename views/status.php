@@ -21,6 +21,7 @@ ob_start();
 
     <?php if (($user['role'] ?? '') === 'admin'): ?>
         <form method="post" action="<?= e(url('test-email')) ?>" style="margin-top: 1rem;">
+            <?= csrf_field() ?>
             <button type="submit" class="btn btn-secondary">Send test email</button>
         </form>
     <?php endif; ?>

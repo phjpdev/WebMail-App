@@ -16,7 +16,7 @@ class MailController
     public function home(): void
     {
         requireAuth();
-        $this->runFilterIfNeeded();
+        $this->markFilterPending();
         redirect('folder/' . encode_folder_path('INBOX'));
     }
 
@@ -26,16 +26,15 @@ class MailController
     public function folder(array $params): void
     {
         requireAuth();
-        $this->runFilterIfNeeded();
+        $this->markFilterPending();
 
         $folderPath = decode_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
-            http_response_code(404);
-            echo '404 Folder not found';
-            return;
+            error_page(404, 'Folder not found.');
         }
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
+        $query = trim($_GET['q'] ?? '');
         $folderData = FolderCache::load();
         $folders = $folderData['folders'];
         $imapConnected = $folderData['connected'];
@@ -46,31 +45,39 @@ class MailController
             redirect('folder/' . encode_folder_path('INBOX'));
         }
 
-        $list = ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => 50, 'total_pages' => 0];
+        $perPage = mail_per_page();
+        $list = ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => $perPage, 'total_pages' => 0];
 
         if ($imapConnected) {
             $imap = new ImapService();
             if ($imap->connect()) {
-                $list = $imap->listMessages($folderPath, $page);
+                $list = $query !== ''
+                    ? $imap->searchMessages($folderPath, $query, $page, $perPage)
+                    : $imap->listMessages($folderPath, $page, $perPage);
             } else {
                 $imapConnected = false;
                 $imapError = $imap->getLastError();
             }
         }
 
+        $prefs = user_preferences();
         $this->renderMailView('mail/list', [
             'title' => $this->folderDisplayName($folders, $folderPath),
             'folderPath' => $folderPath,
             'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
+            'unreadCounts' => $folderData['unread_counts'] ?? [],
             'activeFolder' => $folderPath,
             'messages' => $list['messages'],
             'page' => $list['page'],
             'totalPages' => $list['total_pages'],
             'totalMessages' => $list['total'],
+            'searchQuery' => $query,
             'imapConnected' => $imapConnected,
             'imapError' => $imapError,
-            'pollInterval' => config('app')['mail_poll_interval'],
+            'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
+            'filterPending' => !empty($_SESSION['_filter_pending']),
+            'perPage' => $perPage,
         ]);
     }
 
@@ -91,6 +98,7 @@ class MailController
         }
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
+        $query = trim($_GET['q'] ?? '');
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -99,7 +107,10 @@ class MailController
             return;
         }
 
-        $list = $imap->listMessages($folderPath, $page);
+        $perPage = mail_per_page();
+        $list = $query !== ''
+            ? $imap->searchMessages($folderPath, $query, $page, $perPage)
+            : $imap->listMessages($folderPath, $page, $perPage);
         $messages = [];
 
         foreach ($list['messages'] as $msg) {
@@ -122,6 +133,42 @@ class MailController
         ]);
     }
 
+    public function foldersUnread(): void
+    {
+        requireAuth();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderData = FolderCache::load(true);
+        echo json_encode(['unread_counts' => $folderData['unread_counts'] ?? []]);
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function messageSync(array $params): void
+    {
+        requireAuth();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $uid = (int) ($params['uid'] ?? 0);
+
+        if ($folderPath === '' || $uid <= 0) {
+            http_response_code(404);
+            echo json_encode(['exists' => false]);
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            http_response_code(503);
+            echo json_encode(['error' => $imap->getLastError()]);
+            return;
+        }
+
+        echo json_encode(['exists' => $imap->messageExists($folderPath, $uid)]);
+    }
+
     /**
      * @param array<string, string> $params
      */
@@ -133,9 +180,7 @@ class MailController
         $uid = (int) ($params['uid'] ?? 0);
 
         if ($folderPath === '' || $uid <= 0) {
-            http_response_code(404);
-            echo '404 Not found';
-            return;
+            error_page(404);
         }
 
         $folderData = FolderCache::load();
@@ -162,10 +207,13 @@ class MailController
             $message['to'] ?? null
         );
 
+        $prefs = user_preferences();
         $this->renderMailView('mail/read', [
             'title' => $message['subject'] ?: '(no subject)',
             'folderPath' => $folderPath,
+            'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
+            'unreadCounts' => $folderData['unread_counts'] ?? [],
             'activeFolder' => $folderPath,
             'message' => $message,
             'sanitizedHtml' => HtmlSanitizer::sanitize($message['html']),
@@ -176,6 +224,7 @@ class MailController
             )),
             'imapConnected' => true,
             'imapError' => '',
+            'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
         ]);
     }
 
@@ -186,29 +235,30 @@ class MailController
         $folderPath = decode_folder_path($_GET['folder'] ?? '');
         $uid = (int) ($_GET['uid'] ?? 0);
         $partId = $_GET['part'] ?? '';
+        $inline = ($_GET['disposition'] ?? '') === 'inline';
 
         if ($folderPath === '' || $uid <= 0 || $partId === '') {
-            http_response_code(404);
-            echo '404 Not found';
-            return;
+            error_page(404);
         }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
-            http_response_code(500);
-            echo 'IMAP connection failed';
-            return;
+            error_page(500, 'IMAP connection failed.');
         }
 
         $attachment = $imap->getAttachment($folderPath, $uid, $partId);
         if ($attachment === null) {
-            http_response_code(404);
-            echo 'Attachment not found';
-            return;
+            error_page(404, 'Attachment not found.');
         }
 
-        header('Content-Type: ' . $attachment['mime']);
-        header('Content-Disposition: attachment; filename="' . addslashes($attachment['filename']) . '"');
+        $mime = $attachment['mime'];
+        $canInline = $inline && (str_starts_with($mime, 'image/') || $mime === 'application/pdf');
+
+        header('Content-Type: ' . $mime);
+        header(
+            'Content-Disposition: ' . ($canInline ? 'inline' : 'attachment')
+            . '; filename="' . addslashes($attachment['filename']) . '"'
+        );
         header('Content-Length: ' . strlen($attachment['content']));
         echo $attachment['content'];
         exit;
@@ -217,6 +267,7 @@ class MailController
     public function move(): void
     {
         requireAuth();
+        verify_csrf_or_fail();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
@@ -227,25 +278,13 @@ class MailController
             redirect('folder/' . encode_folder_path('INBOX'));
         }
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            flash('error', $imap->getLastError());
-            redirect('folder/' . encode_folder_path($folderPath));
-        }
-
-        if ($imap->moveMessage($folderPath, $uid, $targetPath)) {
-            (new FolderCache())->clear();
-            flash('success', 'Message moved successfully.');
-            redirect('folder/' . encode_folder_path($folderPath));
-        }
-
-        flash('error', 'Failed to move message: ' . $imap->getLastError());
-        redirect(message_url($folderPath, $uid));
+        $this->performMove($folderPath, [$uid], $targetPath, 'folder/' . encode_folder_path($folderPath));
     }
 
     public function trash(): void
     {
         requireAuth();
+        verify_csrf_or_fail();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
@@ -256,26 +295,137 @@ class MailController
             redirect('folder/' . encode_folder_path('INBOX'));
         }
 
+        $this->performMove($folderPath, [$uid], $trashPath, 'folder/' . encode_folder_path($folderPath), 'Message moved to Trash.');
+    }
+
+    public function bulkMove(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uids = array_map('intval', $_POST['uids'] ?? []);
+        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+        $targetPath = $_POST['target_folder'] ?? '';
+
+        if ($folderPath === '' || $uids === [] || $targetPath === '') {
+            flash('error', 'Invalid bulk move request.');
+            redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
+        }
+
+        $this->performMove($folderPath, $uids, $targetPath, 'folder/' . encode_folder_path($folderPath));
+    }
+
+    public function bulkTrash(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uids = array_map('intval', $_POST['uids'] ?? []);
+        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+
+        if ($folderPath === '' || $uids === []) {
+            flash('error', 'Invalid bulk delete request.');
+            redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
+        }
+
+        $this->performMove($folderPath, $uids, trash_folder_path(), 'folder/' . encode_folder_path($folderPath), 'Selected messages moved to Trash.');
+    }
+
+    public function markRead(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setSeenFlag(true);
+    }
+
+    public function markUnread(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setSeenFlag(false);
+    }
+
+    public function runFilter(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+
+        header('Content-Type: application/json; charset=utf-8');
+
+        FilterService::clearSessionFlag();
+        $result = FilterService::runIfNeeded(true);
+        unset($_SESSION['_filter_pending']);
+
+        echo json_encode($result ?? ['processed' => 0, 'moved' => 0, 'errors' => [], 'duration_ms' => 0, 'done' => true]);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    private function performMove(string $folderPath, array $uids, string $targetPath, string $redirect, ?string $successMsg = null): void
+    {
         $imap = new ImapService();
         if (!$imap->connect()) {
             flash('error', $imap->getLastError());
-            redirect('folder/' . encode_folder_path($folderPath));
+            redirect($redirect);
         }
 
         $folders = FolderCache::load()['folders'];
-        if (!$this->folderExists($folders, $trashPath)) {
-            flash('error', 'Trash folder (INBOX.Trash) not found on mail server.');
-            redirect(message_url($folderPath, $uid));
+        if (!$this->folderExists($folders, $targetPath)) {
+            flash('error', 'Target folder not found on mail server.');
+            redirect($redirect);
         }
 
-        if ($imap->moveMessage($folderPath, $uid, $trashPath)) {
-            (new FolderCache())->clear();
-            flash('success', 'Message moved to Trash.');
-            redirect('folder/' . encode_folder_path($folderPath));
+        $moved = 0;
+        $errors = 0;
+        foreach ($uids as $uid) {
+            if ($imap->moveMessage($folderPath, $uid, $targetPath)) {
+                $moved++;
+            } else {
+                $errors++;
+            }
         }
 
-        flash('error', 'Failed to delete message: ' . $imap->getLastError());
-        redirect(message_url($folderPath, $uid));
+        (new FolderCache())->clear();
+
+        if ($moved > 0) {
+            flash('success', $successMsg ?? sprintf('%d message(s) moved successfully.', $moved));
+        }
+        if ($errors > 0) {
+            flash('error', sprintf('%d message(s) could not be moved.', $errors));
+        }
+
+        redirect($redirect);
+    }
+
+    private function setSeenFlag(bool $seen): void
+    {
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uid = (int) ($_POST['uid'] ?? 0);
+        $redirect = $_POST['redirect'] ?? ('folder/' . encode_folder_path($folderPath));
+
+        if ($folderPath === '' || $uid <= 0) {
+            flash('error', 'Invalid request.');
+            redirect('folder/' . encode_folder_path('INBOX'));
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            flash('error', $imap->getLastError());
+            redirect($redirect);
+        }
+
+        if ($seen) {
+            $imap->markSeen($folderPath, $uid);
+        } else {
+            $imap->markUnseen($folderPath, $uid);
+        }
+
+        (new FolderCache())->clear();
+        flash('success', $seen ? 'Marked as read.' : 'Marked as unread.');
+        redirect($redirect);
     }
 
     /**
@@ -306,16 +456,24 @@ class MailController
         return $path === 'INBOX' ? 'Inbox' : $path;
     }
 
-    private function runFilterIfNeeded(): void
+    private function markFilterPending(): void
     {
-        FilterService::runIfNeeded();
+        if (!isset($_SESSION['_filter_ran'])) {
+            $_SESSION['_filter_pending'] = true;
+        }
     }
 
     private function renderMailView(string $viewName, array $data): void
     {
+        if (!isset($data['unreadCounts'])) {
+            $data['unreadCounts'] = FolderCache::load()['unread_counts'] ?? [];
+        }
+
         $data['user'] = Auth::user();
+        $data['authUser'] = Auth::user();
         $data['success'] = flash('success');
         $data['error'] = flash('error');
+        $data['prefs'] = user_preferences();
 
         view($viewName, $data);
     }

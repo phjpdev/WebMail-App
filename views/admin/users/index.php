@@ -26,6 +26,7 @@
                         <a href="<?= e(url('admin/users/' . $u['id'] . '/edit')) ?>">Edit</a>
                         <?php if ((int) $u['active'] && $u['role'] !== 'admin'): ?>
                             <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/disable')) ?>" class="inline-form" onsubmit="return confirm('Disable this user?');">
+                                <?= csrf_field() ?>
                                 <button type="submit" class="btn-link-danger">Disable</button>
                             </form>
                         <?php endif; ?>

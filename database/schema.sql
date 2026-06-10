@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS users (
     access_code_hash VARCHAR(255) NULL,
     role ENUM('admin', 'employee') NOT NULL DEFAULT 'employee',
     active TINYINT(1) NOT NULL DEFAULT 1,
+    must_change_password TINYINT(1) NOT NULL DEFAULT 0,
+    signature TEXT NULL,
+    preferences JSON NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -64,7 +67,17 @@ CREATE TABLE IF NOT EXISTS processed_messages (
     folder_path VARCHAR(255) NOT NULL,
     message_id VARCHAR(255) NULL,
     processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_processed_uid_folder (imap_uid, folder_path)
+    UNIQUE KEY uq_processed_uid_folder (imap_uid, folder_path),
+    INDEX idx_processed_folder_time (folder_path, processed_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL,
+    username VARCHAR(50) NOT NULL DEFAULT '',
+    attempted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_login_attempts_ip_time (ip_address, attempted_at),
+    INDEX idx_login_attempts_user_time (username, attempted_at)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS audit_log (

@@ -13,7 +13,7 @@ class FilterService
     private const SESSION_STATS_KEY = '_last_filter_stats';
 
     /**
-     * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int}|null
+     * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int, done?: bool}|null
      */
     public static function runIfNeeded(bool $force = false): ?array
     {
@@ -23,11 +23,13 @@ class FilterService
 
         $service = new self();
         $result = $service->run();
+        $result['done'] = true;
 
         $_SESSION[self::SESSION_RAN_KEY] = time();
         $_SESSION[self::SESSION_STATS_KEY] = $result;
+        unset($_SESSION['_filter_pending']);
 
-        if ($result['duration_ms'] > 2000 || $result['moved'] > 0) {
+        if (!$force && ($result['duration_ms'] > 2000 || $result['moved'] > 0)) {
             flash(
                 'success',
                 sprintf('Organized %d message(s), %d moved to folders.', $result['processed'], $result['moved'])
@@ -39,7 +41,7 @@ class FilterService
 
     public static function clearSessionFlag(): void
     {
-        unset($_SESSION[self::SESSION_RAN_KEY], $_SESSION[self::SESSION_STATS_KEY]);
+        unset($_SESSION[self::SESSION_RAN_KEY], $_SESSION[self::SESSION_STATS_KEY], $_SESSION['_filter_pending']);
     }
 
     /**
@@ -78,7 +80,7 @@ class FilterService
             return $result;
         }
 
-        $allUids = $imap->getFolderUids($sourceFolder, $batchLimit * 2);
+        $allUids = $imap->getFolderUids($sourceFolder, $batchLimit * 3);
         $candidates = [];
         foreach ($allUids as $uid) {
             if (!isset($processedUids[$uid])) {
@@ -125,15 +127,7 @@ class FilterService
             $result['processed']++;
         }
 
-        (new FolderCache())->clear();
         $result['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
-
-        app_log(sprintf(
-            'Filter pass: processed=%d moved=%d duration=%dms',
-            $result['processed'],
-            $result['moved'],
-            $result['duration_ms']
-        ));
 
         return $result;
     }
@@ -144,13 +138,11 @@ class FilterService
     private function loadRules(): array
     {
         return Database::query(
-            'SELECT r.*, f.imap_path, f.display_name AS folder_name
+            'SELECT r.*, f.imap_path
              FROM filter_rules r
              INNER JOIN folders f ON r.target_folder_id = f.id
              WHERE r.active = 1 AND f.active = 1
-             ORDER BY r.priority ASC,
-                      FIELD(r.rule_type, \'spam\', \'company\', \'employee\', \'client\'),
-                      r.id ASC'
+             ORDER BY r.priority ASC, r.id ASC'
         )->fetchAll();
     }
 

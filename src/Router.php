@@ -41,8 +41,7 @@ class Router
             }
         }
 
-        http_response_code(404);
-        echo '404 Not Found';
+        error_page(404);
     }
 
     /**

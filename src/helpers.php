@@ -188,9 +188,7 @@ function view(string $name, array $data = []): void
     $viewPath = base_path("views/{$name}.php");
 
     if (!is_file($viewPath)) {
-        http_response_code(500);
-        echo "View not found: {$name}";
-        exit;
+        error_page(500, 'View not found.');
     }
 
     require $viewPath;
@@ -201,11 +199,49 @@ function e(?string $value): string
     return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8');
 }
 
+function csrf_token(): string
+{
+    if (empty($_SESSION['_csrf_token'])) {
+        $_SESSION['_csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['_csrf_token'];
+}
+
+function csrf_field(): string
+{
+    return '<input type="hidden" name="_csrf" value="' . e(csrf_token()) . '">';
+}
+
+function csrf_verify(): bool
+{
+    $token = $_POST['_csrf'] ?? '';
+    $session = $_SESSION['_csrf_token'] ?? '';
+
+    return $token !== '' && $session !== '' && hash_equals($session, $token);
+}
+
+function verify_csrf_or_fail(): void
+{
+    if (!csrf_verify()) {
+        http_response_code(403);
+        error_page(403, 'Invalid security token. Please go back and try again.');
+        exit;
+    }
+}
+
+function client_ip(): string
+{
+    return $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
 function requireAuth(): void
 {
     if (!App\Auth::isLoggedIn()) {
         redirect('login');
     }
+
+    App\Auth::enforcePasswordChange();
 }
 
 function requireAdmin(): void
@@ -213,10 +249,59 @@ function requireAdmin(): void
     requireAuth();
 
     if (!App\Auth::isAdmin()) {
-        http_response_code(403);
-        echo '403 Forbidden';
+        error_page(403);
         exit;
     }
+}
+
+function error_page(int $code, ?string $message = null): void
+{
+    $titles = [
+        403 => 'Access denied',
+        404 => 'Page not found',
+        500 => 'Server error',
+    ];
+    $defaults = [
+        403 => 'You do not have permission to access this page.',
+        404 => 'The page you requested could not be found.',
+        500 => 'Something went wrong. Please try again later.',
+    ];
+
+    http_response_code($code);
+    view('errors/' . $code, [
+        'title' => $titles[$code] ?? 'Error',
+        'message' => $message ?? ($defaults[$code] ?? 'An error occurred.'),
+        'code' => $code,
+    ]);
+    exit;
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function user_preferences(?array $user = null): array
+{
+    $user = $user ?? App\Auth::user();
+    if ($user === null) {
+        return [];
+    }
+
+    $defaults = [
+        'poll_interval' => config('app')['mail_poll_interval'],
+        'sound_enabled' => false,
+        'notify_enabled' => false,
+        'theme' => 'light',
+    ];
+
+    $prefs = $user['preferences'] ?? null;
+    if (is_string($prefs)) {
+        $decoded = json_decode($prefs, true);
+        $prefs = is_array($decoded) ? $decoded : [];
+    } elseif (!is_array($prefs)) {
+        $prefs = [];
+    }
+
+    return array_merge($defaults, $prefs);
 }
 
 function encode_folder_path(string $path): string
@@ -344,6 +429,37 @@ function parse_email_list(string $input): array
     }
 
     return ['valid' => $valid, 'invalid' => $invalid];
+}
+
+/**
+ * @return list<int>
+ */
+function mail_per_page_options(): array
+{
+    return [15, 25, 50, 100];
+}
+
+function mail_per_page(): int
+{
+    $allowed = mail_per_page_options();
+
+    if (isset($_GET['per_page'])) {
+        $requested = (int) $_GET['per_page'];
+        if (in_array($requested, $allowed, true)) {
+            $_SESSION['mail_per_page'] = $requested;
+
+            return $requested;
+        }
+    }
+
+    $session = (int) ($_SESSION['mail_per_page'] ?? 0);
+    if (in_array($session, $allowed, true)) {
+        return $session;
+    }
+
+    $default = (int) config('app')['mail_per_page'];
+
+    return in_array($default, $allowed, true) ? $default : 15;
 }
 
 function format_mail_from(?string $from): string

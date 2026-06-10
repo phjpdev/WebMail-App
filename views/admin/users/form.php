@@ -12,6 +12,7 @@ ob_start();
 
 <section class="card card-form">
     <form method="post" action="<?= e($action) ?>" class="compose-form">
+        <?= csrf_field() ?>
         <div class="form-group">
             <label for="name">Full name</label>
             <input type="text" id="name" name="name" value="<?= e($user['name'] ?? '') ?>" required>
@@ -23,6 +24,17 @@ ob_start();
         <div class="form-group">
             <label for="password">Password<?= $isEdit ? ' (leave blank to keep)' : '' ?></label>
             <input type="password" id="password" name="password" <?= $isEdit ? '' : 'required' ?>>
+        </div>
+        <div class="form-group">
+            <label for="access_code">Access code (employees)<?= $isEdit ? ' (leave blank to keep)' : '' ?></label>
+            <input type="password" id="access_code" name="access_code" autocomplete="new-password">
+            <p class="text-muted form-hint">Employees can log in with username + access code instead of password.</p>
+        </div>
+        <div class="form-group form-check">
+            <label class="form-check-label">
+                <input type="checkbox" class="form-check-input" name="must_change_password" value="1"<?= !$isEdit || !empty($user['must_change_password']) ? ' checked' : '' ?>>
+                <span>Require password change on next login</span>
+            </label>
         </div>
         <?php if ($isEdit && ($user['role'] ?? '') === 'admin'): ?>
         <div class="form-group">

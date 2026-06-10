@@ -22,11 +22,18 @@ class AuthController
 
     public function login(): void
     {
+        verify_csrf_or_fail();
+
         $username = trim($_POST['username'] ?? '');
         $password = $_POST['password'] ?? '';
 
         if ($username === '' || $password === '') {
-            flash('error', 'Username and password are required.');
+            flash('error', 'Username and password or access code are required.');
+            redirect('login');
+        }
+
+        if (\App\Services\LoginRateLimit::isBlocked(client_ip(), $username)) {
+            flash('error', 'Too many failed attempts. Please try again in 15 minutes.');
             redirect('login');
         }
 
@@ -35,9 +42,13 @@ class AuthController
             if ($dbName === '' || $dbName === 'dj_webmail') {
                 flash('error', 'Server error: .env file missing. On the server the file must be named .env (not .env.production).');
             } else {
-                flash('error', 'Login failed. If the password is correct, check database credentials in .env (see check-setup.php on the server).');
+                flash('error', 'Invalid username or password/access code.');
             }
             redirect('login');
+        }
+
+        if (Auth::mustChangePassword()) {
+            redirect('change-password');
         }
 
         redirect('');

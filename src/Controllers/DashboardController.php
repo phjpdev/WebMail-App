@@ -22,19 +22,23 @@ class DashboardController
         view('status', [
             'title' => 'Connection Status',
             'user' => Auth::user(),
+            'authUser' => Auth::user(),
             'imapConnected' => $imapConnected,
             'imapError' => $imapError,
             'folderCount' => count($folders),
             'folders' => $folders,
-            'activeFolder' => null,
+            'unreadCounts' => $folderData['unread_counts'] ?? [],
+            'activeFolder' => '__status__',
             'success' => flash('success'),
             'error' => flash('error'),
+            'prefs' => user_preferences(),
         ]);
     }
 
     public function sendTestEmail(): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
 
         $config = config('mail');
         $to = $config['test_email_to'] !== ''

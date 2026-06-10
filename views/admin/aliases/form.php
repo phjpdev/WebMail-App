@@ -9,6 +9,7 @@ ob_start();
 
 <section class="card card-form">
     <form method="post" action="<?= e($action) ?>" class="compose-form">
+        <?= csrf_field() ?>
         <div class="form-group">
             <label for="email">Email</label>
             <input type="email" id="email" name="email" value="<?= e($alias['email'] ?? '') ?>" required>

@@ -1,17 +1,51 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="<?= e(($prefs['theme'] ?? 'light') === 'auto' ? '' : ($prefs['theme'] ?? 'light')) ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=4">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=7">
+    <script>
+        (function () {
+            var t = localStorage.getItem('dj_theme');
+            if (t) document.documentElement.setAttribute('data-theme', t);
+            else if (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
 </head>
-<body>
+<body data-poll-interval="<?= (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']) ?>"
+      data-sound-enabled="<?= !empty($prefs['sound_enabled']) ? '1' : '0' ?>"
+      data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
+      data-csrf="<?= e(csrf_token()) ?>"
+      data-filter-pending="<?= !empty($filterPending) ? '1' : '0' ?>">
     <?php $sessionUser = $authUser ?? $user ?? null; ?>
     <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
         <div class="loading-spinner" role="status">
             <span class="loading-ring"></span>
             <span class="loading-text">Loading…</span>
+        </div>
+    </div>
+
+    <div id="filter-progress" class="filter-progress" hidden aria-live="polite">
+        <div class="filter-progress-card">
+            <span class="loading-ring"></span>
+            <p>Organizing mail…</p>
+        </div>
+    </div>
+
+    <div id="shortcuts-modal" class="shortcuts-modal" hidden>
+        <div class="shortcuts-modal-inner">
+            <h3>Keyboard shortcuts</h3>
+            <ul class="shortcut-list">
+                <li><kbd>c</kbd> Compose</li>
+                <li><kbd>/</kbd> Focus search</li>
+                <li><kbd>j</kbd> / <kbd>k</kbd> Next / previous</li>
+                <li><kbd>r</kbd> Reply · <kbd>a</kbd> Reply all</li>
+                <li><kbd>e</kbd> Delete · <kbd>?</kbd> This help</li>
+            </ul>
+            <button type="button" class="btn btn-secondary" id="shortcuts-close">Close</button>
         </div>
     </div>
 
@@ -31,6 +65,7 @@
                 <div class="header-user">
                     <span class="user-name"><?= e($sessionUser['name']) ?></span>
                     <span class="role-badge role-<?= e($sessionUser['role']) ?>"><?= e($sessionUser['role']) ?></span>
+                    <a class="btn btn-ghost" href="<?= e(url('settings')) ?>">Settings</a>
                     <a class="btn btn-ghost" href="<?= e(url('logout')) ?>">Logout</a>
                 </div>
             <?php endif; ?>
@@ -52,6 +87,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=4" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=7" defer></script>
 </body>
 </html>

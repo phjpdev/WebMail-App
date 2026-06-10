@@ -29,6 +29,7 @@
         <p class="text-muted">Last run: <?= (int) $filterStats['processed'] ?> processed, <?= (int) $filterStats['moved'] ?> moved (<?= (int) $filterStats['duration_ms'] ?>ms)</p>
     <?php endif; ?>
     <form method="post" action="<?= e(url('admin/sync')) ?>">
+        <?= csrf_field() ?>
         <button type="submit" class="btn btn-primary">Sync now</button>
     </form>
 </section>

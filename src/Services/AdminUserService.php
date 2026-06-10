@@ -21,7 +21,7 @@ class AdminUserService
     public function find(int $id): ?array
     {
         return Database::fetchOne(
-            'SELECT id, name, username, role, active FROM users WHERE id = ?',
+            'SELECT id, name, username, role, active, must_change_password FROM users WHERE id = ?',
             [$id]
         );
     }
@@ -34,9 +34,16 @@ class AdminUserService
         $passwordHash = password_hash($data['password'], PASSWORD_BCRYPT);
         $role = $data['role'] ?? 'employee';
 
+        $accessHash = null;
+        if (!empty($data['access_code'])) {
+            $accessHash = password_hash($data['access_code'], PASSWORD_BCRYPT);
+        }
+
+        $mustChange = (int) ($data['must_change_password'] ?? 1);
+
         Database::query(
-            'INSERT INTO users (name, username, password_hash, role, active) VALUES (?, ?, ?, ?, 1)',
-            [$data['name'], $data['username'], $passwordHash, $role]
+            'INSERT INTO users (name, username, password_hash, access_code_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, ?, 1, ?)',
+            [$data['name'], $data['username'], $passwordHash, $accessHash, $role, $mustChange]
         );
 
         $userId = (int) Database::connection()->lastInsertId();
@@ -87,29 +94,52 @@ class AdminUserService
             $data['role'] = 'admin';
         }
 
+        $accessHash = null;
+        if (!empty($data['access_code'])) {
+            $accessHash = password_hash($data['access_code'], PASSWORD_BCRYPT);
+        }
+
+        $mustChange = isset($data['must_change_password']) ? (int) $data['must_change_password'] : null;
+
         if (!empty($data['password'])) {
-            Database::query(
-                'UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?, active = ? WHERE id = ?',
-                [
-                    $data['name'],
-                    $data['username'],
-                    password_hash($data['password'], PASSWORD_BCRYPT),
-                    $data['role'],
-                    (int) ($data['active'] ?? 1),
-                    $id,
-                ]
-            );
+            $sql = 'UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?, active = ?';
+            $params = [
+                $data['name'],
+                $data['username'],
+                password_hash($data['password'], PASSWORD_BCRYPT),
+                $data['role'],
+                (int) ($data['active'] ?? 1),
+            ];
+            if ($accessHash !== null) {
+                $sql .= ', access_code_hash = ?';
+                $params[] = $accessHash;
+            }
+            if ($mustChange !== null) {
+                $sql .= ', must_change_password = ?';
+                $params[] = $mustChange;
+            }
+            $sql .= ' WHERE id = ?';
+            $params[] = $id;
+            Database::query($sql, $params);
         } else {
-            Database::query(
-                'UPDATE users SET name = ?, username = ?, role = ?, active = ? WHERE id = ?',
-                [
-                    $data['name'],
-                    $data['username'],
-                    $data['role'],
-                    (int) ($data['active'] ?? 1),
-                    $id,
-                ]
-            );
+            $sql = 'UPDATE users SET name = ?, username = ?, role = ?, active = ?';
+            $params = [
+                $data['name'],
+                $data['username'],
+                $data['role'],
+                (int) ($data['active'] ?? 1),
+            ];
+            if ($accessHash !== null) {
+                $sql .= ', access_code_hash = ?';
+                $params[] = $accessHash;
+            }
+            if ($mustChange !== null) {
+                $sql .= ', must_change_password = ?';
+                $params[] = $mustChange;
+            }
+            $sql .= ' WHERE id = ?';
+            $params[] = $id;
+            Database::query($sql, $params);
         }
     }
 

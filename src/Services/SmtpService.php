@@ -37,7 +37,8 @@ class SmtpService
      *   in_reply_to?: string,
      *   references?: string,
      *   cc?: string,
-     *   bcc?: string
+     *   bcc?: string,
+     *   attachments?: list<array{path: string, name: string}>
      * } $options
      */
     public function send(array $options): bool
@@ -111,6 +112,12 @@ class SmtpService
 
             $mail->Subject = $options['subject'];
 
+            if (!empty($options['attachments'])) {
+                foreach ($options['attachments'] as $file) {
+                    $mail->addAttachment($file['path'], $file['name']);
+                }
+            }
+
             if (!empty($options['html_body'])) {
                 $mail->isHTML(true);
                 $mail->Body = $options['html_body'];
@@ -144,6 +151,17 @@ class SmtpService
         $parts = preg_split('/[,;]+/', $addresses) ?: [];
         $parts = array_map('trim', $parts);
 
-        return array_values(array_filter($parts, fn ($a) => $a !== '' && filter_var($a, FILTER_VALIDATE_EMAIL)));
+        $emails = [];
+        foreach ($parts as $part) {
+            if ($part === '') {
+                continue;
+            }
+            $email = normalize_email_token($part);
+            if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $emails[] = $email;
+            }
+        }
+
+        return $emails;
     }
 }

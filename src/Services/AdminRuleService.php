@@ -11,14 +11,34 @@ class AdminRuleService
     /**
      * @return list<array<string, mixed>>
      */
-    public function listAll(): array
+    public function listAll(?string $type = null): array
     {
-        return Database::query(
-            'SELECT r.*, f.display_name AS folder_name, f.imap_path
+        $sql = 'SELECT r.*, f.display_name AS folder_name, f.imap_path
              FROM filter_rules r
-             INNER JOIN folders f ON r.target_folder_id = f.id
-             ORDER BY r.priority ASC, r.id ASC'
-        )->fetchAll();
+             INNER JOIN folders f ON r.target_folder_id = f.id';
+        $params = [];
+
+        if ($type !== null && $type !== '') {
+            $sql .= ' WHERE r.rule_type = ?';
+            $params[] = $type;
+        }
+
+        $sql .= ' ORDER BY r.priority ASC, r.id ASC';
+
+        return Database::query($sql, $params)->fetchAll();
+    }
+
+    /**
+     * @param list<array{id: int, priority: int}> $order
+     */
+    public function reorder(array $order): void
+    {
+        foreach ($order as $item) {
+            Database::query(
+                'UPDATE filter_rules SET priority = ? WHERE id = ?',
+                [(int) $item['priority'], (int) $item['id']]
+            );
+        }
     }
 
     public function find(int $id): ?array

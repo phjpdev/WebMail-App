@@ -192,10 +192,8 @@ class ImapService
             $from = $header->from[0]->mailbox . '@' . $header->from[0]->host;
         }
 
-        $to = '';
-        if (isset($header->to[0])) {
-            $to = $header->to[0]->mailbox . '@' . $header->to[0]->host;
-        }
+        $to = $this->formatAddressList($header->to ?? []);
+        $cc = $this->formatAddressList($header->cc ?? []);
 
         $messageId = $this->extractHeaderValue($rawHeader, 'Message-ID');
 
@@ -204,6 +202,7 @@ class ImapService
             'msgno' => $msgno,
             'from' => $from,
             'to' => $to,
+            'cc' => $cc,
             'subject' => isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '',
             'date' => $header->date ?? '',
             'delivered_to' => $this->extractHeaderValue($rawHeader, 'Delivered-To')
@@ -316,6 +315,190 @@ class ImapService
         }
 
         imap_setflag_full($this->connection, (string) $uid, '\\Seen', ST_UID);
+    }
+
+    public function markUnseen(string $path, int $uid): void
+    {
+        if (!$this->openFolder($path)) {
+            return;
+        }
+
+        imap_clearflag_full($this->connection, (string) $uid, '\\Seen', ST_UID);
+    }
+
+    public function messageExists(string $path, int $uid): bool
+    {
+        if (!$this->openFolder($path)) {
+            return false;
+        }
+
+        return imap_msgno($this->connection, $uid) !== 0;
+    }
+
+    /**
+     * @param list<string> $paths
+     * @return array<string, int>
+     */
+    public function getFolderUnreadCounts(array $paths): array
+    {
+        if (!$this->ensureConnected()) {
+            return [];
+        }
+
+        $mailboxString = $this->getMailboxString();
+        $counts = [];
+
+        foreach ($paths as $path) {
+            $status = @imap_status(
+                $this->connection,
+                $mailboxString . $this->encodeFolderPath($path),
+                SA_UNSEEN
+            );
+            $counts[$path] = $status !== false ? (int) ($status->unseen ?? 0) : 0;
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @return array{messages: list<array{uid: int, from: string, subject: string, date: string, seen: bool, size: int}>, total: int, page: int, per_page: int, total_pages: int}
+     */
+    public function searchMessages(string $path, string $query, int $page = 1, int $perPage = 50): array
+    {
+        $empty = [
+            'messages' => [],
+            'total' => 0,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => 0,
+        ];
+
+        if (!$this->openFolder($path) || trim($query) === '') {
+            return $empty;
+        }
+
+        $uids = $this->searchUids($path, trim($query));
+
+        if ($uids === []) {
+            return $empty;
+        }
+
+        $uids = array_values(array_reverse($uids));
+        $total = count($uids);
+        $totalPages = (int) max(1, ceil($total / $perPage));
+        $page = max(1, min($page, $totalPages));
+        $offset = ($page - 1) * $perPage;
+        $pageUids = array_slice($uids, $offset, $perPage);
+
+        return [
+            'messages' => $this->overviewForUids($pageUids),
+            'total' => $total,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => $totalPages,
+        ];
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function searchUids(string $path, string $query): array
+    {
+        $escaped = str_replace(['"', '\\'], ['', ''], $query);
+        $uidSet = [];
+
+        $criteriaList = [
+            'SUBJECT "' . $escaped . '"',
+            'FROM "' . $escaped . '"',
+            'TEXT "' . $escaped . '"',
+        ];
+
+        foreach ($criteriaList as $criteria) {
+            $result = @imap_search($this->connection, $criteria, SE_UID, 'UTF-8');
+            if (is_array($result)) {
+                foreach ($result as $uid) {
+                    $uidSet[(int) $uid] = true;
+                }
+            }
+        }
+
+        if ($uidSet !== []) {
+            return array_keys($uidSet);
+        }
+
+        return $this->searchUidsLocal($path, $query);
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function searchUidsLocal(string $path, string $query): array
+    {
+        $needle = strtolower($query);
+        $total = imap_num_msg($this->connection) ?: 0;
+        if ($total === 0) {
+            return [];
+        }
+
+        $overview = imap_fetch_overview($this->connection, "1:{$total}");
+        if ($overview === false) {
+            return [];
+        }
+
+        $uids = [];
+        foreach ($overview as $row) {
+            $from = isset($row->from) ? strtolower($this->decodeMimeHeader($row->from)) : '';
+            $subject = isset($row->subject) ? strtolower($this->decodeMimeHeader($row->subject)) : '';
+            if (str_contains($from, $needle) || str_contains($subject, $needle)) {
+                $uids[] = (int) ($row->uid ?? 0);
+            }
+        }
+
+        return array_values(array_filter($uids, fn ($u) => $u > 0));
+    }
+
+    /**
+     * @param list<int> $uids
+     * @return list<array{uid: int, from: string, subject: string, date: string, seen: bool, size: int}>
+     */
+    private function overviewForUids(array $uids): array
+    {
+        $messages = [];
+        foreach ($uids as $uid) {
+            $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
+            if ($overview === false || !isset($overview[0])) {
+                continue;
+            }
+            $row = $overview[0];
+            $messages[] = [
+                'uid' => (int) $uid,
+                'from' => isset($row->from) ? $this->decodeMimeHeader($row->from) : '',
+                'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
+                'date' => $row->date ?? '',
+                'seen' => (bool) ($row->seen ?? false),
+                'size' => (int) ($row->size ?? 0),
+            ];
+        }
+
+        return $messages;
+    }
+
+    public function appendMessage(string $folderPath, string $rawMessage): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        $mailbox = $this->getMailboxString() . $this->encodeFolderPath($folderPath);
+
+        if (@imap_append($this->connection, $mailbox, $rawMessage)) {
+            return true;
+        }
+
+        $errors = imap_errors() ?: [];
+        $this->lastError = 'Failed to save draft: ' . implode('; ', $errors);
+
+        return false;
     }
 
     /**
@@ -681,5 +864,23 @@ class ImapService
         }
 
         return null;
+    }
+
+    /**
+     * @param list<object>|array<int, object> $addresses
+     */
+    private function formatAddressList(array $addresses): string
+    {
+        $parts = [];
+        foreach ($addresses as $addr) {
+            if (!isset($addr->mailbox, $addr->host)) {
+                continue;
+            }
+            $email = $addr->mailbox . '@' . $addr->host;
+            $personal = isset($addr->personal) ? $this->decodeMimeHeader($addr->personal) : '';
+            $parts[] = $personal !== '' ? $personal . ' <' . $email . '>' : $email;
+        }
+
+        return implode(', ', $parts);
     }
 }

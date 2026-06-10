@@ -9,6 +9,7 @@ ob_start();
 
 <section class="card card-form">
     <form method="post" action="<?= e($action) ?>" class="compose-form">
+        <?= csrf_field() ?>
         <div class="form-group">
             <label for="name">Rule name</label>
             <input type="text" id="name" name="name" value="<?= e($rule['name'] ?? '') ?>" required>

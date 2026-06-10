@@ -46,9 +46,51 @@ class AdminController
         ]);
     }
 
+    public function auditIndex(): void
+    {
+        requireAdmin();
+        $page = max(1, (int) ($_GET['page'] ?? 1));
+        $action = trim($_GET['action'] ?? '');
+        $perPage = 50;
+        $offset = ($page - 1) * $perPage;
+
+        $where = '';
+        $params = [];
+        if ($action !== '') {
+            $where = 'WHERE a.action = ?';
+            $params[] = $action;
+        }
+
+        $total = (int) Database::fetchOne(
+            "SELECT COUNT(*) AS c FROM audit_log a {$where}",
+            $params
+        )['c'];
+
+        $rows = Database::query(
+            "SELECT a.*, u.name AS user_name, u.username
+             FROM audit_log a
+             LEFT JOIN users u ON a.user_id = u.id
+             {$where}
+             ORDER BY a.created_at DESC
+             LIMIT {$perPage} OFFSET {$offset}",
+            $params
+        )->fetchAll();
+
+        $this->render('admin/audit/index', [
+            'title' => 'Audit log',
+            'entries' => $rows,
+            'page' => $page,
+            'totalPages' => (int) max(1, ceil($total / $perPage)),
+            'totalMessages' => $total,
+            'filterAction' => $action,
+            'adminSection' => 'audit',
+        ]);
+    }
+
     public function sync(): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         FilterService::clearSessionFlag();
         FilterService::runIfNeeded(true);
         flash('success', 'Mail sync completed.');
@@ -78,6 +120,7 @@ class AdminController
     public function usersStore(): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $data = $this->userFormData();
         if ($data['name'] === '' || $data['username'] === '' || $data['password'] === '') {
             flash('error', 'Name, username, and password are required.');
@@ -115,6 +158,7 @@ class AdminController
     public function usersUpdate(array $params): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $id = (int) ($params['id'] ?? 0);
         $data = $this->userFormData();
         $this->users->update($id, $data);
@@ -128,6 +172,7 @@ class AdminController
     public function usersDisable(array $params): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $id = (int) ($params['id'] ?? 0);
         if (!$this->users->disable($id)) {
             flash('error', 'Admin accounts cannot be disabled.');
@@ -162,6 +207,7 @@ class AdminController
     public function aliasesStore(): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $data = $this->aliasFormData();
         if ($data['email'] === '' || $data['display_name'] === '') {
             flash('error', 'Email and display name are required.');
@@ -198,6 +244,7 @@ class AdminController
     public function aliasesUpdate(array $params): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $this->aliases->update((int) ($params['id'] ?? 0), $this->aliasFormData());
         flash('success', 'Alias updated.');
         redirect('admin/aliases');
@@ -226,6 +273,7 @@ class AdminController
     public function foldersStore(): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $displayName = trim($_POST['display_name'] ?? '');
         $folderType = $_POST['folder_type'] ?? 'client';
         if ($displayName === '') {
@@ -250,10 +298,12 @@ class AdminController
     public function rulesIndex(): void
     {
         requireAdmin();
+        $type = trim($_GET['type'] ?? '');
         $this->render('admin/rules/index', [
-            'title' => 'Filter rules',
-            'rules' => $this->rules->listAll(),
-            'adminSection' => 'rules',
+            'title' => $type === 'spam' ? 'Spam rules' : 'Filter rules',
+            'rules' => $this->rules->listAll($type !== '' ? $type : null),
+            'ruleType' => $type,
+            'adminSection' => $type === 'spam' ? 'spam-rules' : 'rules',
         ]);
     }
 
@@ -271,13 +321,15 @@ class AdminController
     public function rulesStore(): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $data = $this->ruleFormData();
         if ($data['name'] === '' || $data['condition_value'] === '') {
             flash('error', 'Name and condition value are required.');
             redirect('admin/rules/create');
         }
         $this->rules->create($data);
-        flash('success', 'Rule created.');
+        FilterService::clearSessionFlag();
+        flash('success', 'Rule created. Mail will be re-organized on next inbox visit.');
         redirect('admin/rules');
     }
 
@@ -306,8 +358,10 @@ class AdminController
     public function rulesUpdate(array $params): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $this->rules->update((int) ($params['id'] ?? 0), $this->ruleFormData());
-        flash('success', 'Rule updated.');
+        FilterService::clearSessionFlag();
+        flash('success', 'Rule updated. Mail will be re-organized on next inbox visit.');
         redirect('admin/rules');
     }
 
@@ -317,8 +371,28 @@ class AdminController
     public function rulesToggle(array $params): void
     {
         requireAdmin();
+        verify_csrf_or_fail();
         $this->rules->toggle((int) ($params['id'] ?? 0));
-        flash('success', 'Rule status toggled.');
+        FilterService::clearSessionFlag();
+        flash('success', 'Rule status toggled. Mail will be re-organized on next inbox visit.');
+        redirect('admin/rules');
+    }
+
+    public function rulesReorder(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+
+        $raw = $_POST['order'] ?? '[]';
+        $order = json_decode($raw, true);
+        if (!is_array($order)) {
+            flash('error', 'Invalid reorder data.');
+            redirect('admin/rules');
+        }
+
+        $this->rules->reorder($order);
+        FilterService::clearSessionFlag();
+        flash('success', 'Rule order updated.');
         redirect('admin/rules');
     }
 
@@ -335,6 +409,8 @@ class AdminController
             'alias_email' => trim($_POST['alias_email'] ?? ''),
             'folder_name' => trim($_POST['folder_name'] ?? ''),
             'active' => isset($_POST['active']) ? 1 : 0,
+            'access_code' => trim($_POST['access_code'] ?? ''),
+            'must_change_password' => isset($_POST['must_change_password']) ? 1 : 0,
         ];
     }
 
@@ -376,10 +452,13 @@ class AdminController
         if ($view !== 'admin/users/form') {
             $data['user'] = $data['authUser'];
         }
-        $data['folders'] = FolderCache::load()['folders'];
+        $folderData = FolderCache::load();
+        $data['folders'] = $folderData['folders'];
+        $data['unreadCounts'] = $folderData['unread_counts'] ?? [];
         $data['activeFolder'] = '__admin__';
         $data['success'] = flash('success');
         $data['error'] = flash('error');
+        $data['prefs'] = user_preferences();
 
         view($view, $data);
     }

@@ -5,6 +5,7 @@
 
 <section class="card card-form">
     <form method="post" action="<?= e(url('admin/folders/store')) ?>" class="compose-form">
+        <?= csrf_field() ?>
         <div class="form-group">
             <label for="display_name">Display name</label>
             <input type="text" id="display_name" name="display_name" required placeholder="Client ABC">
