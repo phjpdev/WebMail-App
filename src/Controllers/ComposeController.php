@@ -12,11 +12,15 @@ use App\Services\SmtpService;
 
 class ComposeController
 {
+    private const DRAFT_KEY = '_compose_draft';
+
     public function compose(): void
     {
         requireAuth();
         $this->showForm('compose', [
             'to' => '',
+            'cc' => '',
+            'bcc' => '',
             'subject' => '',
             'body' => '',
             'from_email' => config('mail')['mailbox_email'],
@@ -41,14 +45,56 @@ class ComposeController
 
         $mode = $_POST['mode'] ?? 'compose';
         $to = trim($_POST['to'] ?? '');
+        $cc = trim($_POST['cc'] ?? '');
+        $bcc = trim($_POST['bcc'] ?? '');
         $subject = trim($_POST['subject'] ?? '');
         $body = trim($_POST['body'] ?? '');
         $fromEmail = trim($_POST['from_email'] ?? config('mail')['mailbox_email']);
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
 
-        if ($to === '' || $subject === '' || $body === '') {
-            flash('error', 'To, subject, and body are required.');
+        $draft = [
+            'to' => $to,
+            'cc' => $cc,
+            'bcc' => $bcc,
+            'subject' => $subject,
+            'body' => $body,
+            'from_email' => $fromEmail,
+            'mode' => $mode,
+            'folderPath' => $folderPath,
+            'uid' => $uid,
+        ];
+
+        if ($subject === '' || $body === '') {
+            flash('error', 'Subject and body are required.');
+            $this->saveDraft($draft);
+            $this->redirectBack($mode, $folderPath, $uid);
+        }
+
+        $toParsed = parse_email_list($to);
+        if ($toParsed['valid'] === []) {
+            flash('error', 'At least one valid To address is required.');
+            $this->saveDraft($draft);
+            $this->redirectBack($mode, $folderPath, $uid);
+        }
+
+        if ($toParsed['invalid'] !== []) {
+            flash('error', 'Invalid To address: ' . implode(', ', $toParsed['invalid']));
+            $this->saveDraft($draft);
+            $this->redirectBack($mode, $folderPath, $uid);
+        }
+
+        $ccParsed = parse_email_list($cc);
+        if ($ccParsed['invalid'] !== []) {
+            flash('error', 'Invalid Cc address: ' . implode(', ', $ccParsed['invalid']));
+            $this->saveDraft($draft);
+            $this->redirectBack($mode, $folderPath, $uid);
+        }
+
+        $bccParsed = parse_email_list($bcc);
+        if ($bccParsed['invalid'] !== []) {
+            flash('error', 'Invalid Bcc address: ' . implode(', ', $bccParsed['invalid']));
+            $this->saveDraft($draft);
             $this->redirectBack($mode, $folderPath, $uid);
         }
 
@@ -63,16 +109,25 @@ class ComposeController
 
         if (!$validFrom) {
             flash('error', 'Invalid send-as address.');
+            $this->saveDraft($draft);
             $this->redirectBack($mode, $folderPath, $uid);
         }
 
         $options = [
-            'to' => $to,
+            'to' => implode(', ', $toParsed['valid']),
             'subject' => $subject,
             'body' => $body,
             'from' => $fromEmail,
             'from_name' => $aliasService->getDisplayName($fromEmail),
         ];
+
+        if ($ccParsed['valid'] !== []) {
+            $options['cc'] = implode(', ', $ccParsed['valid']);
+        }
+
+        if ($bccParsed['valid'] !== []) {
+            $options['bcc'] = implode(', ', $bccParsed['valid']);
+        }
 
         if ($mode === 'reply' && $folderPath !== '' && $uid > 0) {
             $imap = new ImapService();
@@ -87,11 +142,13 @@ class ComposeController
 
         $smtp = new SmtpService();
         if ($smtp->send($options)) {
+            unset($_SESSION[self::DRAFT_KEY]);
             flash('success', 'Email sent successfully.');
             redirect('folder/' . encode_folder_path('INBOX.Sent'));
         }
 
         flash('error', 'Failed to send email: ' . $smtp->getLastError());
+        $this->saveDraft($draft);
         $this->redirectBack($mode, $folderPath, $uid);
     }
 
@@ -99,6 +156,12 @@ class ComposeController
     {
         $folderPath = decode_folder_path($_GET['folder'] ?? '');
         $uid = (int) ($_GET['uid'] ?? 0);
+
+        $draft = $this->peekDraft();
+        if ($draft !== null && ($draft['mode'] ?? '') === $mode) {
+            $this->showForm($mode, $draft);
+            return;
+        }
 
         if ($folderPath === '' || $uid <= 0) {
             flash('error', 'Message not specified.');
@@ -128,6 +191,8 @@ class ComposeController
 
             $this->showForm('reply', [
                 'to' => $message['from'] ?? '',
+                'cc' => '',
+                'bcc' => '',
                 'subject' => $subject,
                 'body' => "\n\n" . $quoted,
                 'from_email' => $aliasService->resolveReplyAlias(
@@ -155,6 +220,8 @@ class ComposeController
 
         $this->showForm('forward', [
             'to' => '',
+            'cc' => '',
+            'bcc' => '',
             'subject' => $subject,
             'body' => $forwardHeader . ($message['plain'] ?? strip_tags($message['html'] ?? '')),
             'from_email' => config('mail')['mailbox_email'],
@@ -168,6 +235,11 @@ class ComposeController
      */
     private function showForm(string $mode, array $defaults): void
     {
+        $draft = $this->pullDraft();
+        if ($draft !== null && ($draft['mode'] ?? '') === $mode) {
+            $defaults = array_merge($defaults, $draft);
+        }
+
         $aliasService = new AliasService();
 
         view('mail/compose', [
@@ -176,6 +248,8 @@ class ComposeController
             'user' => Auth::user(),
             'aliases' => $aliasService->listActive(),
             'to' => $defaults['to'] ?? '',
+            'cc' => $defaults['cc'] ?? '',
+            'bcc' => $defaults['bcc'] ?? '',
             'subject' => $defaults['subject'] ?? '',
             'body' => $defaults['body'] ?? '',
             'from_email' => $defaults['from_email'] ?? config('mail')['mailbox_email'],
@@ -211,6 +285,35 @@ class ComposeController
     private function loadFolders(): array
     {
         return FolderCache::load()['folders'];
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function saveDraft(array $draft): void
+    {
+        $_SESSION[self::DRAFT_KEY] = $draft;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function peekDraft(): ?array
+    {
+        $draft = $_SESSION[self::DRAFT_KEY] ?? null;
+
+        return is_array($draft) ? $draft : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function pullDraft(): ?array
+    {
+        $draft = $this->peekDraft();
+        unset($_SESSION[self::DRAFT_KEY]);
+
+        return $draft;
     }
 
     private function redirectBack(string $mode, string $folderPath, int $uid): never

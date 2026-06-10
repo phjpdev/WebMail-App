@@ -10,4 +10,5 @@ return [
     'log_path' => dirname(__DIR__) . '/storage/logs/app.log',
     'filter_batch_limit' => (int) env('FILTER_BATCH_LIMIT', 200),
     'filter_source_folder' => env('FILTER_SOURCE_FOLDER', 'INBOX'),
+    'mail_poll_interval' => (int) env('MAIL_POLL_INTERVAL', 30),
 ];

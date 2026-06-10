@@ -43,6 +43,7 @@ $router->get('/logout', fn () => $authController->logout());
 
 $router->get('/', fn () => $mailController->home());
 $router->get('/folder/{folderB64}/message/{uid}', fn ($p) => $mailController->read($p));
+$router->get('/folder/{folderB64}/sync', fn ($p) => $mailController->folderSync($p));
 $router->get('/folder/{folderB64}', fn ($p) => $mailController->folder($p));
 $router->get('/attachment', fn () => $mailController->attachment());
 $router->post('/message/move', fn () => $mailController->move());

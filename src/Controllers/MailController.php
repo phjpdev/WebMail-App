@@ -61,6 +61,7 @@ class MailController
         $this->renderMailView('mail/list', [
             'title' => $this->folderDisplayName($folders, $folderPath),
             'folderPath' => $folderPath,
+            'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
             'activeFolder' => $folderPath,
             'messages' => $list['messages'],
@@ -69,6 +70,55 @@ class MailController
             'totalMessages' => $list['total'],
             'imapConnected' => $imapConnected,
             'imapError' => $imapError,
+            'pollInterval' => config('app')['mail_poll_interval'],
+        ]);
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function folderSync(array $params): void
+    {
+        requireAuth();
+
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        if ($folderPath === '') {
+            http_response_code(404);
+            echo json_encode(['error' => 'Folder not found']);
+            return;
+        }
+
+        $page = max(1, (int) ($_GET['page'] ?? 1));
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            http_response_code(503);
+            echo json_encode(['error' => $imap->getLastError()]);
+            return;
+        }
+
+        $list = $imap->listMessages($folderPath, $page);
+        $messages = [];
+
+        foreach ($list['messages'] as $msg) {
+            $uid = (int) $msg['uid'];
+            $messages[] = [
+                'uid' => $uid,
+                'from' => format_mail_from($msg['from'] ?? ''),
+                'subject' => $msg['subject'] ?? '(no subject)',
+                'date' => format_mail_date($msg['date'] ?? ''),
+                'seen' => (bool) ($msg['seen'] ?? false),
+                'url' => message_url($folderPath, $uid),
+            ];
+        }
+
+        echo json_encode([
+            'total' => $list['total'],
+            'page' => $list['page'],
+            'total_pages' => $list['total_pages'],
+            'messages' => $messages,
         ]);
     }
 

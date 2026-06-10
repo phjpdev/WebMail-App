@@ -5,7 +5,7 @@
 </section>
 
 <section class="card">
-    <form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form">
+    <form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form" id="compose-form">
         <input type="hidden" name="mode" value="<?= e($mode) ?>">
         <?php if (!empty($folderPath) && !empty($uid)): ?>
             <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
@@ -25,7 +25,27 @@
 
         <div class="form-group">
             <label for="to">To</label>
-            <input type="email" id="to" name="to" value="<?= e($to) ?>" required>
+            <input type="text" id="to" name="to" value="<?= e($to) ?>" required
+                   placeholder="email@example.com, other@example.com" autocomplete="email">
+        </div>
+
+        <p class="compose-cc-toggle">
+            <button type="button" class="btn-link-muted" id="toggle-cc-bcc" aria-expanded="<?= (!empty($cc) || !empty($bcc)) ? 'true' : 'false' ?>">
+                Cc / Bcc
+            </button>
+        </p>
+
+        <div id="cc-bcc-fields" class="cc-bcc-fields"<?= (empty($cc) && empty($bcc)) ? ' hidden' : '' ?>>
+            <div class="form-group">
+                <label for="cc">Cc</label>
+                <input type="text" id="cc" name="cc" value="<?= e($cc ?? '') ?>"
+                       placeholder="email@example.com, other@example.com" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label for="bcc">Bcc</label>
+                <input type="text" id="bcc" name="bcc" value="<?= e($bcc ?? '') ?>"
+                       placeholder="email@example.com, other@example.com" autocomplete="off">
+            </div>
         </div>
 
         <div class="form-group">
@@ -44,6 +64,20 @@
         </div>
     </form>
 </section>
+
+<script>
+(function () {
+    var btn = document.getElementById('toggle-cc-bcc');
+    var fields = document.getElementById('cc-bcc-fields');
+    if (!btn || !fields) return;
+    btn.addEventListener('click', function () {
+        var open = fields.hidden;
+        fields.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) fields.querySelector('input')?.focus();
+    });
+})();
+</script>
 
 <?php
 $content = ob_get_clean();

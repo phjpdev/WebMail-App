@@ -73,7 +73,17 @@ class SmtpService
             $fromName = $options['from_name'] ?? config('app')['name'];
 
             $mail->setFrom($from, $fromName);
-            $mail->addAddress($options['to']);
+
+            $toAddresses = $this->splitAddresses($options['to']);
+            if ($toAddresses === []) {
+                $this->lastError = 'No valid recipient addresses.';
+
+                return false;
+            }
+
+            foreach ($toAddresses as $to) {
+                $mail->addAddress($to);
+            }
 
             if (!empty($options['cc'])) {
                 foreach ($this->splitAddresses($options['cc']) as $cc) {
@@ -131,7 +141,8 @@ class SmtpService
      */
     private function splitAddresses(string $addresses): array
     {
-        $parts = array_map('trim', explode(',', $addresses));
+        $parts = preg_split('/[,;]+/', $addresses) ?: [];
+        $parts = array_map('trim', $parts);
 
         return array_values(array_filter($parts, fn ($a) => $a !== '' && filter_var($a, FILTER_VALIDATE_EMAIL)));
     }

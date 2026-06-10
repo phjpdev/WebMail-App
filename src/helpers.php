@@ -310,6 +310,42 @@ function folder_icon_type(string $path): string
     return 'folder';
 }
 
+function normalize_email_token(string $token): string
+{
+    $token = trim($token);
+    if (preg_match('/<([^>]+)>/', $token, $m)) {
+        return trim($m[1]);
+    }
+
+    return $token;
+}
+
+/**
+ * @return array{valid: list<string>, invalid: list<string>}
+ */
+function parse_email_list(string $input): array
+{
+    $valid = [];
+    $invalid = [];
+    $parts = preg_split('/[,;]+/', $input);
+
+    foreach ($parts as $part) {
+        $part = trim($part);
+        if ($part === '') {
+            continue;
+        }
+
+        $email = normalize_email_token($part);
+        if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $valid[] = $email;
+        } else {
+            $invalid[] = $part;
+        }
+    }
+
+    return ['valid' => $valid, 'invalid' => $invalid];
+}
+
 function format_mail_from(?string $from): string
 {
     if ($from === null || $from === '') {
