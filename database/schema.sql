@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS users (
     name VARCHAR(100) NOT NULL,
     username VARCHAR(50) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    access_code_hash VARCHAR(255) NULL,
     role ENUM('admin', 'employee') NOT NULL DEFAULT 'employee',
     active TINYINT(1) NOT NULL DEFAULT 1,
     must_change_password TINYINT(1) NOT NULL DEFAULT 0,

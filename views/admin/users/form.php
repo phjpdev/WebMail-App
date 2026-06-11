@@ -1,6 +1,6 @@
 <?php
-$isEdit = $user !== null;
-$action = $isEdit ? url('admin/users/' . $user['id'] . '/update') : url('admin/users/store');
+$isEdit = $editUser !== null;
+$action = $isEdit ? url('admin/users/' . $editUser['id'] . '/update') : url('admin/users/store');
 ob_start();
 ?>
 
@@ -15,28 +15,23 @@ ob_start();
         <?= csrf_field() ?>
         <div class="form-group">
             <label for="name">Full name</label>
-            <input type="text" id="name" name="name" value="<?= e($user['name'] ?? '') ?>" required>
+            <input type="text" id="name" name="name" value="<?= e($editUser['name'] ?? '') ?>" required>
         </div>
         <div class="form-group">
             <label for="username">Username</label>
-            <input type="text" id="username" name="username" value="<?= e($user['username'] ?? '') ?>" required>
+            <input type="text" id="username" name="username" value="<?= e($editUser['username'] ?? '') ?>" required>
         </div>
         <div class="form-group">
             <label for="password">Password<?= $isEdit ? ' (leave blank to keep)' : '' ?></label>
             <input type="password" id="password" name="password" <?= $isEdit ? '' : 'required' ?>>
         </div>
-        <div class="form-group">
-            <label for="access_code">Access code (employees)<?= $isEdit ? ' (leave blank to keep)' : '' ?></label>
-            <input type="password" id="access_code" name="access_code" autocomplete="new-password">
-            <p class="text-muted form-hint">Employees can log in with username + access code instead of password.</p>
-        </div>
         <div class="form-group form-check">
             <label class="form-check-label">
-                <input type="checkbox" class="form-check-input" name="must_change_password" value="1"<?= !$isEdit || !empty($user['must_change_password']) ? ' checked' : '' ?>>
+                <input type="checkbox" class="form-check-input" name="must_change_password" value="1"<?= !$isEdit || !empty($editUser['must_change_password']) ? ' checked' : '' ?>>
                 <span>Require password change on next login</span>
             </label>
         </div>
-        <?php if ($isEdit && ($user['role'] ?? '') === 'admin'): ?>
+        <?php if ($isEdit && ($editUser['role'] ?? '') === 'admin'): ?>
         <div class="form-group">
             <label>Role</label>
             <p class="form-static-value"><span class="badge badge-admin">Admin</span></p>
@@ -46,8 +41,8 @@ ob_start();
         <div class="form-group">
             <label for="role">Role</label>
             <select id="role" name="role">
-                <option value="employee"<?= ($user['role'] ?? 'employee') === 'employee' ? ' selected' : '' ?>>Employee</option>
-                <option value="admin"<?= ($user['role'] ?? '') === 'admin' ? ' selected' : '' ?>>Admin</option>
+                <option value="employee"<?= ($editUser['role'] ?? 'employee') === 'employee' ? ' selected' : '' ?>>Employee</option>
+                <option value="admin"<?= ($editUser['role'] ?? '') === 'admin' ? ' selected' : '' ?>>Admin</option>
             </select>
         </div>
         <?php endif; ?>
@@ -61,10 +56,10 @@ ob_start();
             <input type="text" id="folder_name" name="folder_name" placeholder="Defaults to username">
         </div>
         <?php endif; ?>
-        <?php if ($isEdit && ($user['role'] ?? '') !== 'admin'): ?>
+        <?php if ($isEdit && ($editUser['role'] ?? '') !== 'admin'): ?>
         <div class="form-group form-check">
             <label class="form-check-label">
-                <input type="checkbox" class="form-check-input" name="active" value="1"<?= (int) ($user['active'] ?? 1) ? ' checked' : '' ?>>
+                <input type="checkbox" class="form-check-input" name="active" value="1"<?= (int) ($editUser['active'] ?? 1) ? ' checked' : '' ?>>
                 <span>Active</span>
             </label>
         </div>

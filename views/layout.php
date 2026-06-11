@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=8">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=9">
     <script>
         (function () {
             var t = localStorage.getItem('dj_theme');
@@ -23,7 +23,7 @@
       data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
       data-csrf="<?= e(csrf_token()) ?>"
       data-filter-pending="<?= !empty($filterPending) ? '1' : '0' ?>">
-    <?php $sessionUser = $authUser ?? $user ?? null; ?>
+    <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
     <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
         <div class="loading-spinner" role="status">
             <span class="loading-ring"></span>

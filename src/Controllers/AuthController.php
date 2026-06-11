@@ -28,7 +28,7 @@ class AuthController
         $password = $_POST['password'] ?? '';
 
         if ($username === '' || $password === '') {
-            flash('error', 'Username and password or access code are required.');
+            flash('error', 'Username and password are required.');
             redirect('login');
         }
 
@@ -42,7 +42,7 @@ class AuthController
             if ($dbName === '' || $dbName === 'dj_webmail') {
                 flash('error', 'Server error: .env file missing. On the server the file must be named .env (not .env.production).');
             } else {
-                flash('error', 'Invalid username or password/access code.');
+                flash('error', 'Invalid username or password.');
             }
             redirect('login');
         }

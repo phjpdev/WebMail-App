@@ -112,7 +112,7 @@ class AdminController
         requireAdmin();
         $this->render('admin/users/form', [
             'title' => 'Add user',
-            'user' => null,
+            'editUser' => null,
             'adminSection' => 'users',
         ]);
     }
@@ -147,7 +147,7 @@ class AdminController
 
         $this->render('admin/users/form', [
             'title' => 'Edit user',
-            'user' => $user,
+            'editUser' => $user,
             'adminSection' => 'users',
         ]);
     }
@@ -409,7 +409,6 @@ class AdminController
             'alias_email' => trim($_POST['alias_email'] ?? ''),
             'folder_name' => trim($_POST['folder_name'] ?? ''),
             'active' => isset($_POST['active']) ? 1 : 0,
-            'access_code' => trim($_POST['access_code'] ?? ''),
             'must_change_password' => isset($_POST['must_change_password']) ? 1 : 0,
         ];
     }
@@ -448,10 +447,9 @@ class AdminController
     private function render(string $view, array $data): void
     {
         $data['authUser'] = Auth::user();
-        // users/form uses $user for the record being edited
-        if ($view !== 'admin/users/form') {
-            $data['user'] = $data['authUser'];
-        }
+        $data['sessionUser'] = $data['authUser'];
+        $data['user'] = $data['authUser'];
+        $data['filterPending'] = !empty($_SESSION['_filter_pending']);
         $folderData = FolderCache::load();
         $data['folders'] = $folderData['folders'];
         $data['unreadCounts'] = $folderData['unread_counts'] ?? [];

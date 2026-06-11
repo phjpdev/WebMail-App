@@ -23,11 +23,11 @@
                     <td><span class="badge badge-<?= e($u['role']) ?>"><?= e($u['role']) ?></span></td>
                     <td><span class="badge badge-<?= (int) $u['active'] ? 'active' : 'inactive' ?>"><?= (int) $u['active'] ? 'Active' : 'Disabled' ?></span></td>
                     <td class="admin-actions">
-                        <a href="<?= e(url('admin/users/' . $u['id'] . '/edit')) ?>">Edit</a>
+                        <a class="admin-action-link" href="<?= e(url('admin/users/' . $u['id'] . '/edit')) ?>">Edit</a>
                         <?php if ((int) $u['active'] && $u['role'] !== 'admin'): ?>
-                            <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/disable')) ?>" class="inline-form" onsubmit="return confirm('Disable this user?');">
+                            <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/disable')) ?>" class="admin-action-form" onsubmit="return confirm('Disable this user?');">
                                 <?= csrf_field() ?>
-                                <button type="submit" class="btn-link-danger">Disable</button>
+                                <button type="submit" class="admin-action-link admin-action-link-danger">Disable</button>
                             </form>
                         <?php endif; ?>
                     </td>

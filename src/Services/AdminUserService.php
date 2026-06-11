@@ -20,10 +20,21 @@ class AdminUserService
 
     public function find(int $id): ?array
     {
-        return Database::fetchOne(
-            'SELECT id, name, username, role, active, must_change_password FROM users WHERE id = ?',
+        $columns = 'id, name, username, role, active';
+        if (schema_has_column('users', 'must_change_password')) {
+            $columns .= ', must_change_password';
+        }
+
+        $row = Database::fetchOne(
+            "SELECT {$columns} FROM users WHERE id = ?",
             [$id]
         );
+
+        if ($row !== null && !array_key_exists('must_change_password', $row)) {
+            $row['must_change_password'] = 0;
+        }
+
+        return $row;
     }
 
     /**
@@ -33,18 +44,19 @@ class AdminUserService
     {
         $passwordHash = password_hash($data['password'], PASSWORD_BCRYPT);
         $role = $data['role'] ?? 'employee';
-
-        $accessHash = null;
-        if (!empty($data['access_code'])) {
-            $accessHash = password_hash($data['access_code'], PASSWORD_BCRYPT);
-        }
-
         $mustChange = (int) ($data['must_change_password'] ?? 1);
 
-        Database::query(
-            'INSERT INTO users (name, username, password_hash, access_code_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, ?, 1, ?)',
-            [$data['name'], $data['username'], $passwordHash, $accessHash, $role, $mustChange]
-        );
+        if (schema_has_column('users', 'must_change_password')) {
+            Database::query(
+                'INSERT INTO users (name, username, password_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, 1, ?)',
+                [$data['name'], $data['username'], $passwordHash, $role, $mustChange]
+            );
+        } else {
+            Database::query(
+                'INSERT INTO users (name, username, password_hash, role, active) VALUES (?, ?, ?, ?, 1)',
+                [$data['name'], $data['username'], $passwordHash, $role]
+            );
+        }
 
         $userId = (int) Database::connection()->lastInsertId();
 
@@ -94,12 +106,8 @@ class AdminUserService
             $data['role'] = 'admin';
         }
 
-        $accessHash = null;
-        if (!empty($data['access_code'])) {
-            $accessHash = password_hash($data['access_code'], PASSWORD_BCRYPT);
-        }
-
         $mustChange = isset($data['must_change_password']) ? (int) $data['must_change_password'] : null;
+        $hasMustChangeColumn = schema_has_column('users', 'must_change_password');
 
         if (!empty($data['password'])) {
             $sql = 'UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?, active = ?';
@@ -110,11 +118,7 @@ class AdminUserService
                 $data['role'],
                 (int) ($data['active'] ?? 1),
             ];
-            if ($accessHash !== null) {
-                $sql .= ', access_code_hash = ?';
-                $params[] = $accessHash;
-            }
-            if ($mustChange !== null) {
+            if ($hasMustChangeColumn && $mustChange !== null) {
                 $sql .= ', must_change_password = ?';
                 $params[] = $mustChange;
             }
@@ -129,11 +133,7 @@ class AdminUserService
                 $data['role'],
                 (int) ($data['active'] ?? 1),
             ];
-            if ($accessHash !== null) {
-                $sql .= ', access_code_hash = ?';
-                $params[] = $accessHash;
-            }
-            if ($mustChange !== null) {
+            if ($hasMustChangeColumn && $mustChange !== null) {
                 $sql .= ', must_change_password = ?';
                 $params[] = $mustChange;
             }

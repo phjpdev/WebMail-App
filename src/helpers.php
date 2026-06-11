@@ -276,6 +276,30 @@ function error_page(int $code, ?string $message = null): void
     exit;
 }
 
+function schema_has_column(string $table, string $column): bool
+{
+    static $cache = [];
+
+    $key = $table . '.' . $column;
+    if (array_key_exists($key, $cache)) {
+        return $cache[$key];
+    }
+
+    try {
+        $dbName = config('database')['name'];
+        $row = \App\Database::fetchOne(
+            'SELECT 1 AS ok FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+            [$dbName, $table, $column]
+        );
+        $cache[$key] = $row !== null;
+    } catch (\Throwable) {
+        $cache[$key] = false;
+    }
+
+    return $cache[$key];
+}
+
 /**
  * @return array<string, mixed>
  */

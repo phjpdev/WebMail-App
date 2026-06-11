@@ -22,10 +22,19 @@ class Auth
         }
 
         try {
+            $columns = 'id, name, username, password_hash, role, active';
+            if (schema_has_column('users', 'must_change_password')) {
+                $columns .= ', must_change_password';
+            }
+            if (schema_has_column('users', 'signature')) {
+                $columns .= ', signature';
+            }
+            if (schema_has_column('users', 'preferences')) {
+                $columns .= ', preferences';
+            }
+
             $user = Database::fetchOne(
-                'SELECT id, name, username, password_hash, access_code_hash, role, active,
-                        must_change_password, signature, preferences
-                 FROM users WHERE username = ? LIMIT 1',
+                "SELECT {$columns} FROM users WHERE username = ? LIMIT 1",
                 [$username]
             );
         } catch (\Throwable $e) {
@@ -40,13 +49,7 @@ class Auth
             return false;
         }
 
-        $authenticated = password_verify($password, $user['password_hash']);
-
-        if (!$authenticated && $user['role'] === 'employee' && !empty($user['access_code_hash'])) {
-            $authenticated = password_verify($password, $user['access_code_hash']);
-        }
-
-        if (!$authenticated) {
+        if (!password_verify($password, $user['password_hash'])) {
             LoginRateLimit::recordFailure($ip, $username);
 
             return false;
@@ -163,9 +166,19 @@ class Auth
         }
 
         try {
+            $columns = 'id, name, username, role';
+            if (schema_has_column('users', 'must_change_password')) {
+                $columns .= ', must_change_password';
+            }
+            if (schema_has_column('users', 'signature')) {
+                $columns .= ', signature';
+            }
+            if (schema_has_column('users', 'preferences')) {
+                $columns .= ', preferences';
+            }
+
             $user = Database::fetchOne(
-                'SELECT id, name, username, role, must_change_password, signature, preferences
-                 FROM users WHERE id = ? LIMIT 1',
+                "SELECT {$columns} FROM users WHERE id = ? LIMIT 1",
                 [$current['id']]
             );
         } catch (\Throwable $e) {

@@ -1313,11 +1313,48 @@ a:hover {
 .badge-active { background: #ecfdf5; color: #047857; }
 .badge-inactive { background: #f1f5f9; color: #64748b; }
 
+.data-table td.admin-actions {
+    vertical-align: middle;
+}
+
 .admin-actions {
     display: flex;
+    flex-wrap: nowrap;
     gap: 0.75rem;
     align-items: center;
     white-space: nowrap;
+}
+
+.admin-action-form {
+    display: contents;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.admin-action-link {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-primary);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.admin-action-link:hover {
+    text-decoration: underline;
+}
+
+.admin-action-link-danger {
+    color: var(--color-danger);
+}
+
+.admin-action-link-muted {
+    color: var(--color-text-muted);
 }
 
 .btn-link-danger,
