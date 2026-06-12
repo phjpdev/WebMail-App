@@ -200,6 +200,8 @@ class MailController
         }
 
         $imap->markSeen($folderPath, $uid);
+        (new FolderCache())->clear();
+        $folderData = FolderCache::load();
 
         $aliasService = new AliasService();
         $replyFrom = $aliasService->resolveReplyAlias(

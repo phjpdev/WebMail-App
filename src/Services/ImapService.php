@@ -286,13 +286,20 @@ class ImapService
             return false;
         }
 
+        $wasSeen = $this->isSeen($fromPath, $uid);
+
         $mailboxString = $this->getMailboxString();
         $target = $mailboxString . $this->encodeFolderPath($toPath);
 
         $moved = @imap_mail_move($this->connection, (string) $uid, $target, CP_UID);
 
         if (!$moved) {
-            $moved = $this->moveMessageCopyDelete($fromPath, $uid, $toPath);
+            $moved = $this->moveMessageCopyDelete($fromPath, $uid, $toPath, $wasSeen);
+        } else {
+            imap_expunge($this->connection);
+            if ($wasSeen) {
+                $this->markSeen($toPath, $uid);
+            }
         }
 
         if (!$moved) {
@@ -303,9 +310,18 @@ class ImapService
             return false;
         }
 
-        imap_expunge($this->connection);
-
         return true;
+    }
+
+    public function isSeen(string $path, int $uid): bool
+    {
+        if (!$this->openFolder($path)) {
+            return false;
+        }
+
+        $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
+
+        return $overview !== false && !empty($overview[0]->seen);
     }
 
     public function markSeen(string $path, int $uid): void
@@ -654,7 +670,7 @@ class ImapService
         $this->disconnect();
     }
 
-    private function moveMessageCopyDelete(string $fromPath, int $uid, string $toPath): bool
+    private function moveMessageCopyDelete(string $fromPath, int $uid, string $toPath, bool $wasSeen): bool
     {
         if (!$this->openFolder($fromPath)) {
             return false;
@@ -678,10 +694,48 @@ class ImapService
             return false;
         }
 
-        imap_delete($this->connection, (string) $uid, FT_UID);
+        if (!$this->openFolder($fromPath)) {
+            return false;
+        }
+
+        if (!imap_delete($this->connection, (string) $uid, FT_UID)) {
+            $this->lastError = 'Failed to delete message from source folder after copy.';
+
+            return false;
+        }
+
         imap_expunge($this->connection);
 
+        if (imap_msgno($this->connection, $uid) !== 0) {
+            $this->lastError = 'Message still present in source folder after move.';
+
+            return false;
+        }
+
+        if ($wasSeen) {
+            $this->markLastMessageSeen($toPath);
+        }
+
         return true;
+    }
+
+    private function markLastMessageSeen(string $path): void
+    {
+        if (!$this->openFolder($path)) {
+            return;
+        }
+
+        $total = imap_num_msg($this->connection) ?: 0;
+        if ($total === 0) {
+            return;
+        }
+
+        $overview = imap_fetch_overview($this->connection, (string) $total);
+        if ($overview === false || empty($overview[0]->uid)) {
+            return;
+        }
+
+        imap_setflag_full($this->connection, (string) (int) $overview[0]->uid, '\\Seen', ST_UID);
     }
 
     private function ensureConnected(): bool
