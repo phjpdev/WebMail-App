@@ -51,6 +51,7 @@
 
     document.addEventListener('submit', function (e) {
         var form = e.target;
+        if (e.defaultPrevented) return;
         if (form && form.method && form.method.toLowerCase() !== 'get') {
             showLoading();
         }
