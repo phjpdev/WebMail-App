@@ -139,7 +139,10 @@ class MailController
         requireAuth();
         header('Content-Type: application/json; charset=utf-8');
 
-        $folderData = FolderCache::load(true);
+        // Respect the cache TTL (folder list cached, unread refreshed at most
+        // once per minute) instead of forcing a full re-list + status sweep on
+        // every call. This keeps the background badge poll cheap.
+        $folderData = FolderCache::load();
         echo json_encode(['unread_counts' => $folderData['unread_counts'] ?? []]);
     }
 
@@ -200,12 +203,20 @@ class MailController
             redirect('folder/' . encode_folder_path($folderPath));
         }
 
+        $wasUnread = empty($message['seen']);
         $imap->markSeen($folderPath, $uid);
 
-        // Reflect the just-read message locally instead of clearing and re-listing
-        // every folder over IMAP (which made opening a message slow).
-        if (($folderData['unread_counts'][$folderPath] ?? 0) > 0) {
-            $folderData['unread_counts'][$folderPath]--;
+        // Reflect the just-read message in the cached counts instead of clearing
+        // and re-listing every folder over IMAP (which made opening slow). Only
+        // decrement when the message was actually unread, and persist it to the
+        // session cache so the sidebar badge stays correct after navigating Back.
+        if ($wasUnread) {
+            $updatedCounts = FolderCache::bumpUnread($folderPath, -1);
+            if ($updatedCounts !== []) {
+                $folderData['unread_counts'] = $updatedCounts;
+            } elseif (($folderData['unread_counts'][$folderPath] ?? 0) > 0) {
+                $folderData['unread_counts'][$folderPath]--;
+            }
         }
 
         $replyFrom = (new AliasService())->userAlias(Auth::user()['id'] ?? null);
@@ -430,17 +441,26 @@ class MailController
             }
         }
 
-        (new FolderCache())->clear();
-
         if (wants_json()) {
+            // The client tells us how many of the moved messages were unread so
+            // we can adjust the badge without a costly per-folder status sweep.
+            $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
+            $counts = $unreadDelta > 0
+                ? FolderCache::bumpUnread($folderPath, -$unreadDelta)
+                : FolderCache::bumpUnread($folderPath, 0);
+
             json_response([
                 'ok' => $moved > 0,
                 'moved' => $moved,
                 'errors' => $errors,
                 'uids' => array_values($uids),
                 'target' => $targetPath,
+                'unread_counts' => $counts,
             ], $moved > 0 ? 200 : 422);
         }
+
+        // Non-AJAX (full page) path: drop the cache so the next render is fresh.
+        (new FolderCache())->clear();
 
         if ($moved > 0) {
             flash('success', $successMsg ?? sprintf('%d message(s) moved successfully.', $moved));
@@ -483,10 +503,10 @@ class MailController
             $imap->markUnseen($folderPath, $uid);
         }
 
-        (new FolderCache())->clear();
+        $counts = FolderCache::bumpUnread($folderPath, $seen ? -1 : 1);
 
         if (wants_json()) {
-            json_response(['ok' => true, 'seen' => $seen, 'uid' => $uid]);
+            json_response(['ok' => true, 'seen' => $seen, 'uid' => $uid, 'unread_counts' => $counts]);
         }
 
         flash('success', $seen ? 'Marked as read.' : 'Marked as unread.');
@@ -515,7 +535,7 @@ class MailController
         }
 
         if (wants_json()) {
-            json_response(['ok' => true, 'flagged' => $flagged, 'uid' => $uid]);
+            json_response(['ok' => true, 'flagged' => $flagged, 'uid' => $uid, 'unread_counts' => FolderCache::bumpUnread($folderPath, 0)]);
         }
 
         flash('success', $flagged ? 'Marked as important.' : 'Importance removed.');
@@ -546,10 +566,11 @@ class MailController
             }
         }
 
-        (new FolderCache())->clear();
+        // Keep the folder list cached; only the unread counts need refreshing.
+        FolderCache::invalidateUnread();
 
         if (wants_json()) {
-            json_response(['ok' => true, 'seen' => $seen, 'uids' => $uids]);
+            json_response(['ok' => true, 'seen' => $seen, 'uids' => $uids, 'unread_counts' => []]);
         }
 
         flash('success', sprintf('%d message(s) marked as %s.', count($uids), $seen ? 'read' : 'unread'));

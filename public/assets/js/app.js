@@ -386,27 +386,33 @@
         return uids;
     }
 
+    function applyUnreadCounts(counts) {
+        if (!counts) return;
+        Object.keys(counts).forEach(function (path) {
+            var link = document.querySelector('.sidebar-link[data-folder-path="' + (window.CSS && CSS.escape ? CSS.escape(path) : path) + '"]');
+            if (!link) return;
+            var badge = link.querySelector('.folder-badge');
+            var n = counts[path];
+            if (n > 0) {
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'folder-badge';
+                    link.appendChild(badge);
+                }
+                badge.textContent = n > 99 ? '99+' : n;
+            } else if (badge) {
+                badge.remove();
+            }
+        });
+    }
+
     function refreshUnreadBadges() {
         fetch(apiUrl('folders/unread'), {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })
             .then(function (data) {
-                if (!data || !data.unread_counts) return;
-                Object.keys(data.unread_counts).forEach(function (path) {
-                    var link = document.querySelector('.sidebar-link[data-folder-path="' + CSS.escape(path) + '"]');
-                    if (!link) return;
-                    var badge = link.querySelector('.folder-badge');
-                    var n = data.unread_counts[path];
-                    if (n > 0) {
-                        if (!badge) {
-                            badge = document.createElement('span');
-                            badge.className = 'folder-badge';
-                            link.appendChild(badge);
-                        }
-                        badge.textContent = n > 99 ? '99+' : n;
-                    } else if (badge) badge.remove();
-                });
+                if (data && data.unread_counts) applyUnreadCounts(data.unread_counts);
             }).catch(function () {});
     }
 
@@ -805,6 +811,13 @@
         var fields = { folder: sourceFolderEnc, uid: uid };
         Object.keys(extra).forEach(function (k) { fields[k] = extra[k]; });
 
+        // Detect unread state before we mutate/remove the row, so the server can
+        // adjust the folder badge without a slow per-folder status sweep.
+        var wasUnread = false;
+        rowsForUid(uid).forEach(function (el) {
+            if (el.getAttribute('data-seen') === '0') wasUnread = true;
+        });
+
         if (kind === 'mark-read') {
             setRowSeen(uid, true);
         } else if (kind === 'mark-unread') {
@@ -814,12 +827,19 @@
         } else if (kind === 'unflag') {
             setRowFlagged(uid, false);
         } else if (kind === 'spam' || kind === 'trash' || kind === 'move') {
+            fields.unread_delta = wasUnread ? 1 : 0;
             removeRowByUid(uid);
         }
 
         beginTask();
         return ajaxAction('message/' + kind, fields)
-            .then(function () { refreshUnreadBadges(); })
+            .then(function (data) {
+                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                    applyUnreadCounts(data.unread_counts);
+                } else if (kind !== 'flag' && kind !== 'unflag') {
+                    refreshUnreadBadges();
+                }
+            })
             .catch(function (err) {
                 showToast('error', err.message || 'Action failed.');
                 if (mailPoll) mailPoll();

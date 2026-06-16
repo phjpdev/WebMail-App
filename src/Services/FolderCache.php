@@ -57,6 +57,37 @@ class FolderCache
     }
 
     /**
+     * Adjust a single folder's cached unread count in place, without throwing
+     * away the (rarely-changing) folder list or hitting the IMAP server. This
+     * keeps message actions fast: no re-list, no per-folder imap_status calls.
+     *
+     * @return array<string, int> The full (unfiltered) unread-count map, or [] if no cache.
+     */
+    public static function bumpUnread(string $path, int $delta): array
+    {
+        $key = self::SESSION_KEY;
+        if (!isset($_SESSION[$key]['unread_counts']) || !is_array($_SESSION[$key]['unread_counts'])) {
+            return [];
+        }
+
+        $current = (int) ($_SESSION[$key]['unread_counts'][$path] ?? 0);
+        $_SESSION[$key]['unread_counts'][$path] = max(0, $current + $delta);
+
+        return $_SESSION[$key]['unread_counts'];
+    }
+
+    /**
+     * Force only the unread counts to be recomputed on next load (keeps the
+     * cached folder list). Cheaper than clear() for bulk operations.
+     */
+    public static function invalidateUnread(): void
+    {
+        if (isset($_SESSION[self::SESSION_KEY])) {
+            $_SESSION[self::SESSION_KEY]['unread_expires'] = 0;
+        }
+    }
+
+    /**
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
     public static function load(bool $refresh = false): array

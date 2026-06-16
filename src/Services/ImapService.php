@@ -57,7 +57,16 @@ class ImapService
         imap_errors();
         imap_alerts();
 
-        $connection = @imap_open($this->getMailboxString() . 'INBOX', $mailbox, $password, 0, 1);
+        // Skip slow SASL negotiation (GSSAPI/NTLM) and go straight to LOGIN —
+        // this can cut 1–2 seconds off every connection on some mail hosts.
+        $connection = @imap_open(
+            $this->getMailboxString() . 'INBOX',
+            $mailbox,
+            $password,
+            0,
+            1,
+            ['DISABLE_AUTHENTICATOR' => ['GSSAPI', 'NTLM']]
+        );
 
         if ($connection === false) {
             $errors = imap_errors() ?: [];
@@ -243,9 +252,12 @@ class ImapService
 
         $messageId = $this->extractHeaderValue($rawHeader, 'Message-ID');
 
+        $unseen = (($header->Unseen ?? '') === 'U') || (($header->Recent ?? '') === 'N');
+
         return [
             'uid' => $uid,
             'msgno' => $msgno,
+            'seen' => !$unseen,
             'from' => $from,
             'to' => $to,
             'cc' => $cc,
