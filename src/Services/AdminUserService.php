@@ -61,38 +61,133 @@ class AdminUserService
         $userId = (int) Database::connection()->lastInsertId();
 
         if ($role === 'employee' && !empty($data['alias_email'])) {
-            $folderName = $data['folder_name'] ?? $data['username'];
-            $imapPath = 'INBOX.' . preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+            $this->provisionEmployeeMailbox(
+                $userId,
+                $data['name'],
+                $data['alias_email'],
+                $data['folder_name'] ?? null,
+                $data['username']
+            );
+        }
 
-            $folderService = new AdminFolderService();
-            $folderId = $folderService->insertFolder([
+        return $userId;
+    }
+
+    /**
+     * Idempotently ensure an employee has a personal folder, send-as alias, and routing rule.
+     * Safe to call repeatedly (used for onboarding and for backfilling existing users).
+     *
+     * @return bool true if anything new was created
+     */
+    public function provisionEmployeeMailbox(
+        int $userId,
+        string $displayName,
+        string $aliasEmail,
+        ?string $folderName,
+        string $username
+    ): bool {
+        $created = false;
+
+        $folderName = ($folderName !== null && trim($folderName) !== '') ? trim($folderName) : $username;
+        $imapPath = 'INBOX.' . preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+
+        $existingFolder = Database::fetchOne(
+            'SELECT id FROM folders WHERE linked_user_id = ? OR imap_path = ? LIMIT 1',
+            [$userId, $imapPath]
+        );
+
+        if ($existingFolder !== null) {
+            $folderId = (int) $existingFolder['id'];
+        } else {
+            $folderId = (new AdminFolderService())->insertFolder([
                 'imap_path' => $imapPath,
                 'display_name' => $folderName,
                 'folder_type' => 'employee',
                 'linked_user_id' => $userId,
             ]);
+            $created = true;
+        }
 
+        $existingAlias = Database::fetchOne(
+            'SELECT id FROM aliases WHERE user_id = ? OR email = ? LIMIT 1',
+            [$userId, $aliasEmail]
+        );
+        if ($existingAlias === null) {
             (new AdminAliasService())->create([
-                'email' => $data['alias_email'],
-                'display_name' => $data['name'],
+                'email' => $aliasEmail,
+                'display_name' => $displayName,
                 'user_id' => $userId,
                 'default_folder_id' => $folderId,
                 'active' => 1,
             ]);
+            $created = true;
+        }
 
+        $existingRule = Database::fetchOne(
+            "SELECT id FROM filter_rules WHERE condition_field = 'to' AND condition_value = ? LIMIT 1",
+            [$aliasEmail]
+        );
+        if ($existingRule === null) {
             (new AdminRuleService())->create([
-                'name' => 'Route ' . $data['alias_email'],
+                'name' => 'Route ' . $aliasEmail,
                 'priority' => 40,
                 'rule_type' => 'employee',
                 'condition_field' => 'to',
-                'condition_operator' => 'equals',
-                'condition_value' => $data['alias_email'],
+                'condition_operator' => 'contains',
+                'condition_value' => $aliasEmail,
                 'target_folder_id' => $folderId,
                 'active' => 1,
             ]);
+            $created = true;
         }
 
-        return $userId;
+        return $created;
+    }
+
+    /**
+     * Provision folder/alias/rule for any employee that is missing them.
+     * When a user has no alias yet, the address is derived as username@<mailbox-domain>.
+     *
+     * @return array{provisioned: int, skipped: int, users: list<string>}
+     */
+    public function backfillEmployees(): array
+    {
+        $mailbox = (string) (config('mail')['mailbox_email'] ?? '');
+        $domain = str_contains($mailbox, '@') ? substr($mailbox, strpos($mailbox, '@') + 1) : '';
+
+        $employees = Database::query(
+            "SELECT id, name, username FROM users WHERE role = 'employee' AND active = 1"
+        )->fetchAll();
+
+        $provisioned = 0;
+        $skipped = 0;
+        $names = [];
+
+        foreach ($employees as $emp) {
+            $userId = (int) $emp['id'];
+
+            $existingAlias = Database::fetchOne(
+                'SELECT email FROM aliases WHERE user_id = ? AND active = 1 LIMIT 1',
+                [$userId]
+            );
+
+            $aliasEmail = $existingAlias['email']
+                ?? ($domain !== '' ? $emp['username'] . '@' . $domain : '');
+
+            if ($aliasEmail === '') {
+                $skipped++;
+                continue;
+            }
+
+            if ($this->provisionEmployeeMailbox($userId, $emp['name'], $aliasEmail, null, $emp['username'])) {
+                $provisioned++;
+                $names[] = $emp['username'];
+            } else {
+                $skipped++;
+            }
+        }
+
+        return ['provisioned' => $provisioned, 'skipped' => $skipped, 'users' => $names];
     }
 
     /**

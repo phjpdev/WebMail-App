@@ -17,10 +17,21 @@ if (!$config['debug']) {
 }
 
 session_name('dj_webmail_session');
+
+// Don't let PHP emit its default "no-store" session cache headers — those
+// disable the browser's back/forward cache and make navigating Back slow
+// (a full reload + IMAP round-trip). We send our own headers below.
+session_cache_limiter('');
+
 session_start([
     'cookie_httponly' => true,
     'cookie_samesite' => 'Lax',
 ]);
+
+// Allow instant Back/Forward (bfcache) while keeping authenticated pages out
+// of shared/proxy caches. "no-cache" still forces revalidation for normal
+// navigations, but does not block bfcache the way "no-store" does.
+header('Cache-Control: private, no-cache, must-revalidate, max-age=0');
 
 use App\Controllers\AdminController;
 use App\Controllers\AuthController;
@@ -61,6 +72,11 @@ $router->post('/message/bulk-move', fn () => $mailController->bulkMove());
 $router->post('/message/bulk-trash', fn () => $mailController->bulkTrash());
 $router->post('/message/mark-read', fn () => $mailController->markRead());
 $router->post('/message/mark-unread', fn () => $mailController->markUnread());
+$router->post('/message/bulk-mark-read', fn () => $mailController->bulkMarkRead());
+$router->post('/message/bulk-mark-unread', fn () => $mailController->bulkMarkUnread());
+$router->post('/message/flag', fn () => $mailController->flag());
+$router->post('/message/unflag', fn () => $mailController->unflag());
+$router->post('/message/spam', fn () => $mailController->spam());
 $router->post('/filter/run', fn () => $mailController->runFilter());
 
 $router->get('/compose', fn () => $composeController->compose());
@@ -79,6 +95,7 @@ $router->get('/admin/audit', fn () => $adminController->auditIndex());
 $router->get('/admin/users', fn () => $adminController->usersIndex());
 $router->get('/admin/users/create', fn () => $adminController->usersCreate());
 $router->post('/admin/users/store', fn () => $adminController->usersStore());
+$router->post('/admin/users/backfill', fn () => $adminController->usersBackfill());
 $router->get('/admin/users/{id}/edit', fn ($p) => $adminController->usersEdit($p));
 $router->post('/admin/users/{id}/update', fn ($p) => $adminController->usersUpdate($p));
 $router->post('/admin/users/{id}/disable', fn ($p) => $adminController->usersDisable($p));

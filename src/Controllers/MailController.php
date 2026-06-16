@@ -121,6 +121,7 @@ class MailController
                 'subject' => $msg['subject'] ?? '(no subject)',
                 'date' => format_mail_date($msg['date'] ?? ''),
                 'seen' => (bool) ($msg['seen'] ?? false),
+                'flagged' => (bool) ($msg['flagged'] ?? false),
                 'url' => message_url($folderPath, $uid),
             ];
         }
@@ -200,14 +201,14 @@ class MailController
         }
 
         $imap->markSeen($folderPath, $uid);
-        (new FolderCache())->clear();
-        $folderData = FolderCache::load();
 
-        $aliasService = new AliasService();
-        $replyFrom = $aliasService->resolveReplyAlias(
-            $message['delivered_to'] ?? null,
-            $message['to'] ?? null
-        );
+        // Reflect the just-read message locally instead of clearing and re-listing
+        // every folder over IMAP (which made opening a message slow).
+        if (($folderData['unread_counts'][$folderPath] ?? 0) > 0) {
+            $folderData['unread_counts'][$folderPath]--;
+        }
+
+        $replyFrom = (new AliasService())->userAlias(Auth::user()['id'] ?? null);
 
         $prefs = user_preferences();
         $this->renderMailView('mail/read', [
@@ -276,8 +277,7 @@ class MailController
         $targetPath = $_POST['target_folder'] ?? '';
 
         if ($folderPath === '' || $uid <= 0 || $targetPath === '') {
-            flash('error', 'Invalid move request.');
-            redirect('folder/' . encode_folder_path('INBOX'));
+            $this->actionError('Invalid move request.', 'folder/' . encode_folder_path('INBOX'));
         }
 
         $this->performMove($folderPath, [$uid], $targetPath, 'folder/' . encode_folder_path($folderPath));
@@ -293,8 +293,7 @@ class MailController
         $trashPath = trash_folder_path();
 
         if ($folderPath === '' || $uid <= 0) {
-            flash('error', 'Invalid delete request.');
-            redirect('folder/' . encode_folder_path('INBOX'));
+            $this->actionError('Invalid delete request.', 'folder/' . encode_folder_path('INBOX'));
         }
 
         $this->performMove($folderPath, [$uid], $trashPath, 'folder/' . encode_folder_path($folderPath), 'Message moved to Trash.');
@@ -349,6 +348,49 @@ class MailController
         $this->setSeenFlag(false);
     }
 
+    public function flag(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setFlaggedFlag(true);
+    }
+
+    public function unflag(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setFlaggedFlag(false);
+    }
+
+    public function spam(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uid = (int) ($_POST['uid'] ?? 0);
+
+        if ($folderPath === '' || $uid <= 0) {
+            $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
+        }
+
+        $this->performMove($folderPath, [$uid], spam_folder_path(), 'folder/' . encode_folder_path($folderPath), 'Message moved to Spam.');
+    }
+
+    public function bulkMarkRead(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setSeenFlagBulk(true);
+    }
+
+    public function bulkMarkUnread(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setSeenFlagBulk(false);
+    }
+
     public function runFilter(): void
     {
         requireAuth();
@@ -370,14 +412,12 @@ class MailController
     {
         $imap = new ImapService();
         if (!$imap->connect()) {
-            flash('error', $imap->getLastError());
-            redirect($redirect);
+            $this->actionError($imap->getLastError(), $redirect);
         }
 
         $folders = FolderCache::load()['folders'];
         if (!$this->folderExists($folders, $targetPath)) {
-            flash('error', 'Target folder not found on mail server.');
-            redirect($redirect);
+            $this->actionError('Target folder not found on mail server.', $redirect);
         }
 
         $moved = 0;
@@ -392,6 +432,16 @@ class MailController
 
         (new FolderCache())->clear();
 
+        if (wants_json()) {
+            json_response([
+                'ok' => $moved > 0,
+                'moved' => $moved,
+                'errors' => $errors,
+                'uids' => array_values($uids),
+                'target' => $targetPath,
+            ], $moved > 0 ? 200 : 422);
+        }
+
         if ($moved > 0) {
             flash('success', $successMsg ?? sprintf('%d message(s) moved successfully.', $moved));
         }
@@ -402,6 +452,16 @@ class MailController
         redirect($redirect);
     }
 
+    private function actionError(string $message, string $redirect): never
+    {
+        if (wants_json()) {
+            json_response(['ok' => false, 'error' => $message], 422);
+        }
+
+        flash('error', $message);
+        redirect($redirect);
+    }
+
     private function setSeenFlag(bool $seen): void
     {
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
@@ -409,14 +469,12 @@ class MailController
         $redirect = $_POST['redirect'] ?? ('folder/' . encode_folder_path($folderPath));
 
         if ($folderPath === '' || $uid <= 0) {
-            flash('error', 'Invalid request.');
-            redirect('folder/' . encode_folder_path('INBOX'));
+            $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
         }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
-            flash('error', $imap->getLastError());
-            redirect($redirect);
+            $this->actionError($imap->getLastError(), $redirect);
         }
 
         if ($seen) {
@@ -426,7 +484,75 @@ class MailController
         }
 
         (new FolderCache())->clear();
+
+        if (wants_json()) {
+            json_response(['ok' => true, 'seen' => $seen, 'uid' => $uid]);
+        }
+
         flash('success', $seen ? 'Marked as read.' : 'Marked as unread.');
+        redirect($redirect);
+    }
+
+    private function setFlaggedFlag(bool $flagged): void
+    {
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uid = (int) ($_POST['uid'] ?? 0);
+        $redirect = $_POST['redirect'] ?? ('folder/' . encode_folder_path($folderPath));
+
+        if ($folderPath === '' || $uid <= 0) {
+            $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            $this->actionError($imap->getLastError(), $redirect);
+        }
+
+        if ($flagged) {
+            $imap->markFlagged($folderPath, $uid);
+        } else {
+            $imap->markUnflagged($folderPath, $uid);
+        }
+
+        if (wants_json()) {
+            json_response(['ok' => true, 'flagged' => $flagged, 'uid' => $uid]);
+        }
+
+        flash('success', $flagged ? 'Marked as important.' : 'Importance removed.');
+        redirect($redirect);
+    }
+
+    private function setSeenFlagBulk(bool $seen): void
+    {
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uids = array_map('intval', $_POST['uids'] ?? []);
+        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+        $redirect = 'folder/' . encode_folder_path($folderPath ?: 'INBOX');
+
+        if ($folderPath === '' || $uids === []) {
+            $this->actionError('No messages selected.', $redirect);
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            $this->actionError($imap->getLastError(), $redirect);
+        }
+
+        foreach ($uids as $uid) {
+            if ($seen) {
+                $imap->markSeen($folderPath, $uid);
+            } else {
+                $imap->markUnseen($folderPath, $uid);
+            }
+        }
+
+        (new FolderCache())->clear();
+
+        if (wants_json()) {
+            json_response(['ok' => true, 'seen' => $seen, 'uids' => $uids]);
+        }
+
+        flash('success', sprintf('%d message(s) marked as %s.', count($uids), $seen ? 'read' : 'unread'));
         redirect($redirect);
     }
 

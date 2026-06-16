@@ -235,6 +235,29 @@ function client_ip(): string
     return $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 }
 
+/**
+ * Whether the current request expects a JSON response (AJAX).
+ */
+function wants_json(): bool
+{
+    if (strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'xmlhttprequest') {
+        return true;
+    }
+
+    return str_contains(strtolower($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json');
+}
+
+/**
+ * @param array<string, mixed> $data
+ */
+function json_response(array $data, int $status = 200): never
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($data);
+    exit;
+}
+
 function requireAuth(): void
 {
     if (!App\Auth::isLoggedIn()) {
@@ -366,6 +389,22 @@ function message_url(string $folderPath, int $uid): string
 function trash_folder_path(): string
 {
     return 'INBOX.Trash';
+}
+
+function spam_folder_path(): string
+{
+    try {
+        foreach (\App\Services\FolderCache::load()['folders'] as $folder) {
+            $lower = strtolower($folder['path']);
+            if (str_contains($lower, 'spam') || str_contains($lower, 'junk')) {
+                return $folder['path'];
+            }
+        }
+    } catch (\Throwable) {
+        // fall through to default
+    }
+
+    return 'INBOX.spam';
 }
 
 function format_mail_date(?string $date): string

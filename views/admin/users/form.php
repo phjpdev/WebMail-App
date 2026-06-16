@@ -47,9 +47,11 @@ ob_start();
         </div>
         <?php endif; ?>
         <?php if (!$isEdit): ?>
-        <div class="form-group">
-            <label for="alias_email">Alias email (employee onboarding)</label>
-            <input type="email" id="alias_email" name="alias_email" placeholder="employee@example.com">
+        <div class="form-group" id="employee-onboarding-fields">
+            <label for="alias_email">Email address (required for employees)</label>
+            <input type="email" id="alias_email" name="alias_email" placeholder="employee@bebenailsmd.com">
+            <small class="form-hint">This becomes the employee's send-as address. A personal folder and an
+                auto-routing rule (incoming mail to this address &rarr; their folder) are created automatically.</small>
         </div>
         <div class="form-group">
             <label for="folder_name">IMAP folder name</label>

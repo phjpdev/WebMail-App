@@ -10,6 +10,7 @@ use PHPMailer\PHPMailer\PHPMailer;
 class SmtpService
 {
     private string $lastError = '';
+    private string $lastMime = '';
 
     public function sendTest(string $toEmail): bool
     {
@@ -53,6 +54,8 @@ class SmtpService
             $mail->Username = $config['mailbox_email'];
             $mail->Password = $config['mailbox_password'];
             $mail->Port = $config['smtp']['port'];
+            $mail->Timeout = 20;
+            $mail->CharSet = PHPMailer::CHARSET_UTF8;
 
             if ($config['smtp']['encryption'] === 'ssl') {
                 $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
@@ -74,6 +77,11 @@ class SmtpService
             $fromName = $options['from_name'] ?? config('app')['name'];
 
             $mail->setFrom($from, $fromName);
+
+            // Envelope sender stays the authenticated mailbox so the upstream
+            // server (e.g. GoDaddy) accepts the message and SPF aligns, even
+            // when the visible From: is an alias of that mailbox.
+            $mail->Sender = $config['mailbox_email'];
 
             $toAddresses = $this->splitAddresses($options['to']);
             if ($toAddresses === []) {
@@ -128,6 +136,7 @@ class SmtpService
             }
 
             $mail->send();
+            $this->lastMime = $mail->getSentMIMEMessage();
 
             return true;
         } catch (MailerException $e) {
@@ -141,6 +150,14 @@ class SmtpService
     public function getLastError(): string
     {
         return $this->lastError;
+    }
+
+    /**
+     * Full RFC822 MIME of the last successfully sent message (for saving to Sent).
+     */
+    public function getLastMime(): string
+    {
+        return $this->lastMime;
     }
 
     /**

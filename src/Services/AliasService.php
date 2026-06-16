@@ -37,6 +37,25 @@ class AliasService
         ]];
     }
 
+    /**
+     * Resolve the send-as identity for a specific logged-in user.
+     * Falls back to the shared mailbox address when the user has no active alias.
+     */
+    public function userAlias(?int $userId): string
+    {
+        if ($userId !== null && $userId > 0) {
+            $row = Database::fetchOne(
+                'SELECT email FROM aliases WHERE user_id = ? AND active = 1 ORDER BY id LIMIT 1',
+                [$userId]
+            );
+            if ($row !== null && !empty($row['email'])) {
+                return $row['email'];
+            }
+        }
+
+        return config('mail')['mailbox_email'];
+    }
+
     public function resolveReplyAlias(?string $deliveredTo, ?string $to): string
     {
         $candidates = $this->extractEmails($deliveredTo) + $this->extractEmails($to);

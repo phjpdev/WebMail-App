@@ -54,6 +54,18 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     <?php if (!empty($messages)): ?>
     <div class="bulk-toolbar" id="bulk-toolbar" hidden>
         <span id="bulk-count">0 selected</span>
+        <form method="post" action="<?= e(url('message/bulk-mark-read')) ?>" class="inline-form">
+            <?= csrf_field() ?>
+            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
+            <div id="bulk-read-uids"></div>
+            <button type="submit" class="btn btn-outline btn-sm">Mark read</button>
+        </form>
+        <form method="post" action="<?= e(url('message/bulk-mark-unread')) ?>" class="inline-form">
+            <?= csrf_field() ?>
+            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
+            <div id="bulk-unread-uids"></div>
+            <button type="submit" class="btn btn-outline btn-sm">Mark unread</button>
+        </form>
         <form method="post" action="<?= e(url('message/bulk-trash')) ?>" class="inline-form"
               onsubmit="return confirm('Move selected messages to Trash?');">
             <?= csrf_field() ?>
@@ -100,18 +112,23 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
             </thead>
             <tbody id="mail-list-body">
                 <?php foreach ($messages as $msg): ?>
-                    <tr class="mail-row<?= !$msg['seen'] ? ' mail-unread' : '' ?>"
+                    <tr class="mail-row<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
                         data-uid="<?= (int) $msg['uid'] ?>"
+                        data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
+                        data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
                         data-href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>"
                         data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                         data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
                         <td class="col-check" onclick="event.stopPropagation()">
                             <input type="checkbox" class="mail-check" value="<?= (int) $msg['uid'] ?>" aria-label="Select message">
                         </td>
-                        <td class="col-status"><?= !$msg['seen'] ? '<span class="unread-dot"></span>' : '' ?></td>
+                        <td class="col-status"><?= !$msg['seen'] ? '<span class="unread-dot"></span>' : '' ?><?= !empty($msg['flagged']) ? '<span class="flag-dot" title="Important">&#9733;</span>' : '' ?></td>
                         <td class="col-from"><?= e(format_mail_from($msg['from'])) ?></td>
                         <td class="col-subject"><?= e($msg['subject']) ?></td>
-                        <td class="col-date"><?= e(format_mail_date($msg['date'])) ?></td>
+                        <td class="col-date">
+                            <span class="col-date-text"><?= e(format_mail_date($msg['date'])) ?></span>
+                            <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -120,12 +137,15 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
 
     <div class="mail-list-mobile" id="mail-list-mobile"<?= empty($messages) ? ' hidden' : '' ?>>
         <?php foreach ($messages as $msg): ?>
-            <a class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?>"
+            <a class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
                data-uid="<?= (int) $msg['uid'] ?>"
+               data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
+               data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
                href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>">
                 <div class="mail-card-top">
-                    <span class="mail-card-from"><?= e(format_mail_from($msg['from'])) ?></span>
+                    <span class="mail-card-from"><?= !empty($msg['flagged']) ? '<span class="flag-dot" title="Important">&#9733;</span> ' : '' ?><?= e(format_mail_from($msg['from'])) ?></span>
                     <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
+                    <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
                 </div>
                 <div class="mail-card-subject"><?= e($msg['subject']) ?></div>
             </a>

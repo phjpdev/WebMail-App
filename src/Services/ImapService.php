@@ -7,10 +7,35 @@ namespace App\Services;
 class ImapService
 {
     private $connection = null;
+
+    /**
+     * A single authenticated IMAP connection is reused by every ImapService
+     * instance within one request. Repeatedly calling imap_open() previously
+     * caused slow page loads and "Too many login failures" throttling.
+     */
+    private static $sharedConnection = null;
+    private static bool $shutdownRegistered = false;
+
     private string $lastError = '';
 
     public function connect(): bool
     {
+        if ($this->connection !== null) {
+            return true;
+        }
+
+        if (self::$sharedConnection !== null) {
+            if (@imap_ping(self::$sharedConnection)) {
+                $this->connection = self::$sharedConnection;
+
+                return true;
+            }
+
+            // Stale/dropped connection — discard and reconnect below.
+            @imap_close(self::$sharedConnection);
+            self::$sharedConnection = null;
+        }
+
         if (!function_exists('imap_open')) {
             $this->lastError = 'PHP IMAP extension is not enabled. Enable extension=imap in php.ini.';
             app_log($this->lastError);
@@ -43,8 +68,28 @@ class ImapService
         }
 
         $this->connection = $connection;
+        self::$sharedConnection = $connection;
+        self::registerShutdown();
 
         return true;
+    }
+
+    private static function registerShutdown(): void
+    {
+        if (self::$shutdownRegistered) {
+            return;
+        }
+
+        self::$shutdownRegistered = true;
+        register_shutdown_function([self::class, 'closeShared']);
+    }
+
+    public static function closeShared(): void
+    {
+        if (self::$sharedConnection !== null) {
+            @imap_close(self::$sharedConnection);
+            self::$sharedConnection = null;
+        }
     }
 
     public function getLastError(): string
@@ -151,6 +196,7 @@ class ImapService
                 'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
                 'date' => $row->date ?? '',
                 'seen' => (bool) ($row->seen ?? false),
+                'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
             ];
         }
@@ -342,6 +388,24 @@ class ImapService
         imap_clearflag_full($this->connection, (string) $uid, '\\Seen', ST_UID);
     }
 
+    public function markFlagged(string $path, int $uid): void
+    {
+        if (!$this->openFolder($path)) {
+            return;
+        }
+
+        imap_setflag_full($this->connection, (string) $uid, '\\Flagged', ST_UID);
+    }
+
+    public function markUnflagged(string $path, int $uid): void
+    {
+        if (!$this->openFolder($path)) {
+            return;
+        }
+
+        imap_clearflag_full($this->connection, (string) $uid, '\\Flagged', ST_UID);
+    }
+
     public function messageExists(string $path, int $uid): bool
     {
         if (!$this->openFolder($path)) {
@@ -492,6 +556,7 @@ class ImapService
                 'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
                 'date' => $row->date ?? '',
                 'seen' => (bool) ($row->seen ?? false),
+                'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
             ];
         }
@@ -499,7 +564,7 @@ class ImapService
         return $messages;
     }
 
-    public function appendMessage(string $folderPath, string $rawMessage): bool
+    public function appendMessage(string $folderPath, string $rawMessage, ?string $flags = null): bool
     {
         if (!$this->ensureConnected()) {
             return false;
@@ -507,7 +572,11 @@ class ImapService
 
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($folderPath);
 
-        if (@imap_append($this->connection, $mailbox, $rawMessage)) {
+        $appended = $flags !== null && $flags !== ''
+            ? @imap_append($this->connection, $mailbox, $rawMessage, $flags)
+            : @imap_append($this->connection, $mailbox, $rawMessage);
+
+        if ($appended) {
             return true;
         }
 
@@ -659,10 +728,10 @@ class ImapService
 
     public function disconnect(): void
     {
-        if ($this->connection instanceof \IMAP\Connection) {
-            imap_close($this->connection);
-            $this->connection = null;
-        }
+        // The connection is shared across instances for the whole request, so
+        // detach only this instance's reference. The real close happens at
+        // shutdown via closeShared().
+        $this->connection = null;
     }
 
     public function __destruct()

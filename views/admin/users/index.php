@@ -4,7 +4,14 @@
     <div>
         <h2>Users</h2>
     </div>
-    <a class="btn btn-primary" href="<?= e(url('admin/users/create')) ?>">Add user</a>
+    <div class="page-header-actions">
+        <form method="post" action="<?= e(url('admin/users/backfill')) ?>" class="admin-action-form"
+              onsubmit="return confirm('Provision missing folders, aliases and routing rules for all employees, then re-route existing inbox mail?');">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-outline">Backfill onboarding</button>
+        </form>
+        <a class="btn btn-primary" href="<?= e(url('admin/users/create')) ?>">Add user</a>
+    </div>
 </section>
 
 <?php require base_path('views/partials/admin-nav.php'); ?>

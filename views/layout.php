@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=9">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=12">
     <script>
         (function () {
             var t = localStorage.getItem('dj_theme');
@@ -18,17 +18,15 @@
         })();
     </script>
 </head>
-<body data-poll-interval="<?= (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']) ?>"
+    <body data-poll-interval="<?= (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']) ?>"
       data-sound-enabled="<?= !empty($prefs['sound_enabled']) ? '1' : '0' ?>"
       data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
       data-csrf="<?= e(csrf_token()) ?>"
+      data-base-url="<?= e(url('')) ?>"
       data-filter-pending="<?= !empty($filterPending) ? '1' : '0' ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
-    <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
-        <div class="loading-spinner" role="status">
-            <span class="loading-ring"></span>
-            <span class="loading-text">Loading…</span>
-        </div>
+    <div id="nav-progress" class="nav-progress" role="status" aria-live="polite" aria-hidden="true">
+        <span class="nav-progress-bar"></span>
     </div>
 
     <div id="filter-progress" class="filter-progress" hidden aria-live="polite">
@@ -96,6 +94,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=8" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=11" defer></script>
 </body>
 </html>

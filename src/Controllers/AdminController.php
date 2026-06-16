@@ -127,8 +127,45 @@ class AdminController
             redirect('admin/users/create');
         }
 
+        if (($data['role'] ?? 'employee') === 'employee') {
+            if (($data['alias_email'] ?? '') === '' || !filter_var($data['alias_email'], FILTER_VALIDATE_EMAIL)) {
+                flash('error', 'A valid email address is required for employee accounts.');
+                redirect('admin/users/create');
+            }
+        }
+
         $this->users->createEmployee($data);
-        flash('success', 'User created with folder, alias, and filter rule.');
+        flash(
+            'success',
+            ($data['role'] ?? 'employee') === 'employee'
+                ? 'User created with folder, alias, and filter rule.'
+                : 'User created.'
+        );
+        redirect('admin/users');
+    }
+
+    public function usersBackfill(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+
+        $result = $this->users->backfillEmployees();
+
+        // Re-run routing so existing INBOX mail lands in the new folders.
+        FilterService::clearSessionFlag();
+        $filter = FilterService::runIfNeeded(true);
+
+        $moved = $filter['moved'] ?? 0;
+        flash(
+            'success',
+            sprintf(
+                'Backfill complete: %d employee(s) provisioned, %d already set up. %d existing message(s) routed.',
+                $result['provisioned'],
+                $result['skipped'],
+                $moved
+            )
+        );
+
         redirect('admin/users');
     }
 

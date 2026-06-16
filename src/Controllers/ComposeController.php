@@ -159,11 +159,14 @@ class ComposeController
         $smtp = new SmtpService();
         if ($smtp->send($options)) {
             unset($_SESSION[self::DRAFT_KEY]);
+            $sentFolder = $this->resolveSentFolder();
+            $this->saveToSent($sentFolder, $smtp->getLastMime());
             flash('success', 'Email sent successfully.');
-            redirect('folder/' . encode_folder_path('INBOX.Sent'));
+            redirect('folder/' . encode_folder_path($sentFolder));
         }
 
-        flash('error', 'Failed to send email: ' . $smtp->getLastError());
+        $error = $smtp->getLastError();
+        flash('error', 'Failed to send email: ' . ($error !== '' ? $error : 'unknown SMTP error.'));
         $this->saveDraftSession($draft, $mode, $folderPath, $uid);
     }
 
@@ -197,10 +200,7 @@ class ComposeController
 
         $aliasService = new AliasService();
         $quoted = $this->buildQuotedBody($message);
-        $replyFrom = $aliasService->resolveReplyAlias(
-            $message['delivered_to'] ?? null,
-            $message['to'] ?? null
-        );
+        $replyFrom = $aliasService->userAlias(Auth::user()['id'] ?? null);
 
         if ($mode === 'reply') {
             $subject = $this->replySubject($message['subject'] ?? '');
@@ -252,7 +252,7 @@ class ComposeController
             'bcc' => '',
             'subject' => $subject,
             'body' => $forwardHeader . ($message['plain'] ?? strip_tags($message['html'] ?? '')),
-            'from_email' => config('mail')['mailbox_email'],
+            'from_email' => $replyFrom,
             'folderPath' => $folderPath,
             'uid' => $uid,
         ]);
@@ -298,7 +298,7 @@ class ComposeController
             'subject' => '',
             'body' => '',
             'body_html' => '',
-            'from_email' => config('mail')['mailbox_email'],
+            'from_email' => (new AliasService())->userAlias(Auth::user()['id'] ?? null),
         ];
     }
 
@@ -389,15 +389,25 @@ class ComposeController
             return;
         }
 
-        $message = $imap->getMessageByUid($folderPath, $uid);
-        if ($message !== null && !empty($message['message_id'])) {
-            $options['in_reply_to'] = $message['message_id'];
-            $options['references'] = $message['message_id'];
+        // Only the Message-ID is needed here, so avoid downloading/parsing the
+        // whole message body again.
+        $headers = $imap->fetchFilterHeaders($folderPath, $uid);
+        if ($headers !== null && !empty($headers['message_id'])) {
+            $options['in_reply_to'] = $headers['message_id'];
+            $options['references'] = $headers['message_id'];
         }
     }
 
     private function isValidFrom(AliasService $aliasService, string $fromEmail): bool
     {
+        if (strcasecmp($aliasService->userAlias(Auth::user()['id'] ?? null), $fromEmail) === 0) {
+            return true;
+        }
+
+        if (strcasecmp(config('mail')['mailbox_email'], $fromEmail) === 0) {
+            return true;
+        }
+
         foreach ($aliasService->listActive() as $alias) {
             if (strcasecmp($alias['email'], $fromEmail) === 0) {
                 return true;
@@ -479,6 +489,36 @@ class ComposeController
         }
 
         return 'INBOX.Drafts';
+    }
+
+    private function resolveSentFolder(): string
+    {
+        foreach (FolderCache::load()['folders'] as $folder) {
+            if (str_contains(strtolower($folder['path']), 'sent')) {
+                return $folder['path'];
+            }
+        }
+
+        return 'INBOX.Sent';
+    }
+
+    /**
+     * Save a copy of an outgoing message to the Sent folder (best effort).
+     */
+    private function saveToSent(string $sentFolder, string $mime): void
+    {
+        if ($mime === '') {
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return;
+        }
+
+        if (!$imap->appendMessage($sentFolder, $mime, '\\Seen')) {
+            app_log('Could not save sent copy: ' . $imap->getLastError());
+        }
     }
 
     /**

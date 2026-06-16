@@ -23,8 +23,24 @@
             <?= csrf_field() ?>
             <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
             <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
-            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath) . '/message/' . (int) $message['uid']) ?>">
+            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath)) ?>">
             <button type="submit" class="btn btn-outline">Mark unread</button>
+        </form>
+
+        <form method="post" action="<?= e(url('message/flag')) ?>" class="inline-form">
+            <?= csrf_field() ?>
+            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
+            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
+            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath) . '/message/' . (int) $message['uid']) ?>">
+            <button type="submit" class="btn btn-outline">Mark important</button>
+        </form>
+
+        <form method="post" action="<?= e(url('message/spam')) ?>" class="inline-form"
+              onsubmit="return confirm('Move this message to Spam?');">
+            <?= csrf_field() ?>
+            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
+            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
+            <button type="submit" class="btn btn-outline">Spam</button>
         </form>
 
         <form method="post" action="<?= e(url('message/trash')) ?>" class="inline-form" id="delete-form"
