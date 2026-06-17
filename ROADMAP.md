@@ -70,7 +70,7 @@ Replace **Thunderbird on a VM** with a **PHP webmail application** so the team c
 └───────────────────────────────┬──────────────────────────────────┘
                                 ↓
 ┌──────────────────────────────────────────────────────────────────┐
-│  MySQL — users, aliases, filter_rules, folders, processed_uids   │
+│  MySQL — users, aliases, filter_rules, folders, processed_messages │
 │  IMAP/SMTP — mail stored and moved on mail server                │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -146,12 +146,13 @@ gantt
 - [ ] Composer optional (e.g. PHPMailer, php-imap library) or native PHP IMAP extension
 
 **MySQL tables (v1)**
-- [ ] `users` — id, name, username, password_hash, access_code_hash, role (`admin`/`employee`), active
-- [ ] `mail_config` — imap_host, imap_port, smtp_host, smtp_port, mailbox_email (encrypted or env-only)
-- [ ] `aliases` — id, email, display_name, linked_user_id, default_folder, active
-- [ ] `folders` — id, imap_path, display_name, folder_type (`employee`/`client`/`spam`/`trash`/`inbox`/`other`), active
-- [ ] `filter_rules` — id, priority, rule_type, condition_field, condition_operator, condition_value, target_folder_id, active
-- [ ] `processed_messages` — imap_uid, folder_path, processed_at (avoid re-processing)
+- [x] `users` — id, name, username, password_hash, role (`admin`/`employee`), active, must_change_password, signature, preferences
+- [x] Mail server config is environment-only (`.env`), not a DB table — there is no `mail_config` table
+- [x] `aliases` — id, email, display_name, user_id, default_folder_id, active
+- [x] `folders` — id, imap_path, display_name, folder_type (`inbox`/`employee`/`client`/`spam`/`trash`/`sent`/`other`), linked_user_id, active
+- [x] `filter_rules` — id, name, priority, rule_type (`spam`/`company`/`employee`/`client`), condition_field, condition_operator, condition_value, target_folder_id, active
+- [x] `processed_messages` — id, imap_uid, folder_path, message_id, processed_at (avoid re-processing)
+- [x] `login_attempts`, `audit_log` (rate limiting + audit trail)
 
 **Auth**
 - [ ] Login page (username/password or access code — confirm with client)
@@ -362,11 +363,18 @@ Only if time remains or as Phase 2 contract:
 
 ## 7. MySQL Data Model (Full)
 
+> The canonical schema lives in [`database/schema.sql`](database/schema.sql).
+> Fresh installs: run `database/schema.sql`. Existing installs: apply
+> `database/migrations-phase2.sql` for the `must_change_password`, `signature`,
+> and `preferences` columns. The sketch below mirrors that schema.
+
 ```sql
 -- Users & auth
 users (
-  id, name, username, password_hash, access_code_hash,
-  role ENUM('admin','employee'), active, created_at, updated_at
+  id, name, username, password_hash,
+  role ENUM('admin','employee'), active,
+  must_change_password, signature NULL, preferences JSON NULL,
+  created_at, updated_at
 )
 
 -- Email aliases (send-as + filter targets)

@@ -27,6 +27,16 @@ class AdminAliasService
         return Database::fetchOne('SELECT * FROM aliases WHERE id = ?', [$id]);
     }
 
+    public function findByEmail(string $email): ?array
+    {
+        return Database::fetchOne('SELECT * FROM aliases WHERE email = ? LIMIT 1', [$email]);
+    }
+
+    public function delete(int $id): void
+    {
+        Database::query('DELETE FROM aliases WHERE id = ?', [$id]);
+    }
+
     /**
      * @param array<string, mixed> $data
      */

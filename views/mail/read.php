@@ -17,6 +17,9 @@
         <a class="btn btn-primary" id="reply-btn" href="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $message['uid'])) ?>">Reply</a>
         <a class="btn btn-outline" id="reply-all-btn" href="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $message['uid'])) ?>">Reply all</a>
         <a class="btn btn-outline" href="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $message['uid'])) ?>">Forward</a>
+        <?php if (folder_icon_type($folderPath) === 'draft'): ?>
+            <a class="btn btn-outline" href="<?= e(url('compose/edit-draft?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $message['uid'])) ?>">Edit draft</a>
+        <?php endif; ?>
         <button type="button" class="btn btn-outline" onclick="window.print()">Print</button>
 
         <form method="post" action="<?= e(url('message/mark-unread')) ?>" class="inline-form">
@@ -33,6 +36,14 @@
             <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
             <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath) . '/message/' . (int) $message['uid']) ?>">
             <button type="submit" class="btn btn-outline">Mark important</button>
+        </form>
+
+        <form method="post" action="<?= e(url('message/unflag')) ?>" class="inline-form">
+            <?= csrf_field() ?>
+            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
+            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
+            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath) . '/message/' . (int) $message['uid']) ?>">
+            <button type="submit" class="btn btn-outline">Remove importance</button>
         </form>
 
         <form method="post" action="<?= e(url('message/spam')) ?>" class="inline-form"

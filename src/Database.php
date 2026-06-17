@@ -55,4 +55,30 @@ class Database
 
         return $row === false ? null : $row;
     }
+
+    /**
+     * Run a callback inside a DB transaction, committing on success and rolling
+     * back on any exception. Safe to nest (re-uses the outer transaction).
+     */
+    public static function transaction(callable $fn): mixed
+    {
+        $pdo = self::connection();
+
+        if ($pdo->inTransaction()) {
+            return $fn();
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $result = $fn();
+            $pdo->commit();
+
+            return $result;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
 }

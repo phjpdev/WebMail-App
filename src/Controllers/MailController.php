@@ -32,6 +32,7 @@ class MailController
         if ($folderPath === '') {
             error_page(404, 'Folder not found.');
         }
+        assert_folder_access($folderPath);
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
@@ -96,6 +97,11 @@ class MailController
             echo json_encode(['error' => 'Folder not found']);
             return;
         }
+        if (!FolderCache::canAccess($folderPath)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Access denied']);
+            return;
+        }
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
@@ -123,6 +129,9 @@ class MailController
                 'seen' => (bool) ($msg['seen'] ?? false),
                 'flagged' => (bool) ($msg['flagged'] ?? false),
                 'url' => message_url($folderPath, $uid),
+                'reply_url' => url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
+                'reply_all_url' => url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
+                'forward_url' => url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
             ];
         }
 
@@ -162,6 +171,11 @@ class MailController
             echo json_encode(['exists' => false]);
             return;
         }
+        if (!FolderCache::canAccess($folderPath)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Access denied']);
+            return;
+        }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -186,6 +200,7 @@ class MailController
         if ($folderPath === '' || $uid <= 0) {
             error_page(404);
         }
+        assert_folder_access($folderPath);
 
         $folderData = FolderCache::load();
         $folders = $folderData['folders'];
@@ -219,7 +234,9 @@ class MailController
             }
         }
 
-        $replyFrom = (new AliasService())->userAlias(Auth::user()['id'] ?? null);
+        $aliasService = new AliasService();
+        $replyFrom = $aliasService->resolveReplyAlias($message['delivered_to'] ?? null, $message['to'] ?? null)
+            ?? $aliasService->userAlias(Auth::user()['id'] ?? null);
 
         $prefs = user_preferences();
         $this->renderMailView('mail/read', [
@@ -254,6 +271,7 @@ class MailController
         if ($folderPath === '' || $uid <= 0 || $partId === '') {
             error_page(404);
         }
+        assert_folder_access($folderPath);
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -265,17 +283,52 @@ class MailController
             error_page(404, 'Attachment not found.');
         }
 
-        $mime = $attachment['mime'];
+        $mime = $this->safeAttachmentMime($attachment['mime'] ?? '');
         $canInline = $inline && (str_starts_with($mime, 'image/') || $mime === 'application/pdf');
+        $filename = $this->safeAttachmentName($attachment['filename'] ?? 'attachment');
 
         header('Content-Type: ' . $mime);
+        header('X-Content-Type-Options: nosniff');
         header(
             'Content-Disposition: ' . ($canInline ? 'inline' : 'attachment')
-            . '; filename="' . addslashes($attachment['filename']) . '"'
+            . '; filename="' . $filename . '"'
+            . "; filename*=UTF-8''" . rawurlencode($filename)
         );
         header('Content-Length: ' . strlen($attachment['content']));
         echo $attachment['content'];
         exit;
+    }
+
+    /**
+     * Strip path separators and header-injection characters from a download
+     * filename so it is safe to echo into a Content-Disposition header.
+     */
+    private function safeAttachmentName(string $name): string
+    {
+        $name = str_replace(["\r", "\n", "\0", '"', '\\', '/'], '', $name);
+        $name = preg_replace('/[\x00-\x1F\x7F]/', '', $name) ?? '';
+        $name = trim($name);
+
+        if ($name === '') {
+            return 'attachment';
+        }
+
+        return mb_substr($name, 0, 200);
+    }
+
+    /**
+     * Validate an attachment MIME type, defaulting unknown/garbage to a safe
+     * binary type so the browser never sniffs and executes the content.
+     */
+    private function safeAttachmentMime(string $mime): string
+    {
+        $mime = strtolower(trim($mime));
+
+        if ($mime === '' || !preg_match('#^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$#', $mime)) {
+            return 'application/octet-stream';
+        }
+
+        return $mime;
     }
 
     public function move(): void
@@ -290,6 +343,8 @@ class MailController
         if ($folderPath === '' || $uid <= 0 || $targetPath === '') {
             $this->actionError('Invalid move request.', 'folder/' . encode_folder_path('INBOX'));
         }
+        assert_folder_access($folderPath);
+        assert_folder_access($targetPath);
 
         $this->performMove($folderPath, [$uid], $targetPath, 'folder/' . encode_folder_path($folderPath));
     }
@@ -306,6 +361,7 @@ class MailController
         if ($folderPath === '' || $uid <= 0) {
             $this->actionError('Invalid delete request.', 'folder/' . encode_folder_path('INBOX'));
         }
+        assert_folder_access($folderPath);
 
         $this->performMove($folderPath, [$uid], $trashPath, 'folder/' . encode_folder_path($folderPath), 'Message moved to Trash.');
     }
@@ -324,6 +380,8 @@ class MailController
             flash('error', 'Invalid bulk move request.');
             redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
         }
+        assert_folder_access($folderPath);
+        assert_folder_access($targetPath);
 
         $this->performMove($folderPath, $uids, $targetPath, 'folder/' . encode_folder_path($folderPath));
     }
@@ -341,6 +399,7 @@ class MailController
             flash('error', 'Invalid bulk delete request.');
             redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
         }
+        assert_folder_access($folderPath);
 
         $this->performMove($folderPath, $uids, trash_folder_path(), 'folder/' . encode_folder_path($folderPath), 'Selected messages moved to Trash.');
     }
@@ -384,6 +443,7 @@ class MailController
         if ($folderPath === '' || $uid <= 0) {
             $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
         }
+        assert_folder_access($folderPath);
 
         $this->performMove($folderPath, [$uid], spam_folder_path(), 'folder/' . encode_folder_path($folderPath), 'Message moved to Spam.');
     }
@@ -428,7 +488,12 @@ class MailController
 
         $folders = FolderCache::load()['folders'];
         if (!$this->folderExists($folders, $targetPath)) {
-            $this->actionError('Target folder not found on mail server.', $redirect);
+            // Standard destinations like Trash/Spam may not exist yet on a fresh
+            // mailbox — create them on demand instead of failing the move.
+            if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
+                $this->actionError('Target folder could not be created on the mail server.', $redirect);
+            }
+            (new FolderCache())->clear();
         }
 
         $moved = 0;
@@ -443,11 +508,14 @@ class MailController
 
         if (wants_json()) {
             // The client tells us how many of the moved messages were unread so
-            // we can adjust the badge without a costly per-folder status sweep.
+            // we can adjust both folder badges without a costly status sweep.
             $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
-            $counts = $unreadDelta > 0
-                ? FolderCache::bumpUnread($folderPath, -$unreadDelta)
-                : FolderCache::bumpUnread($folderPath, 0);
+            if ($unreadDelta > 0 && $moved > 0) {
+                FolderCache::bumpUnread($folderPath, -$unreadDelta);
+                $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
+            } else {
+                $counts = FolderCache::bumpUnread($folderPath, 0);
+            }
 
             json_response([
                 'ok' => $moved > 0,
@@ -491,11 +559,18 @@ class MailController
         if ($folderPath === '' || $uid <= 0) {
             $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
         }
+        assert_folder_access($folderPath);
 
         $imap = new ImapService();
         if (!$imap->connect()) {
             $this->actionError($imap->getLastError(), $redirect);
         }
+
+        // Only adjust the badge if the flag actually changes, so repeated clicks
+        // (or acting on an already-read message) can't drive the count negative
+        // or inflate it.
+        $current = $imap->getMessageByUid($folderPath, $uid);
+        $alreadySeen = $current !== null ? !empty($current['seen']) : null;
 
         if ($seen) {
             $imap->markSeen($folderPath, $uid);
@@ -503,7 +578,16 @@ class MailController
             $imap->markUnseen($folderPath, $uid);
         }
 
-        $counts = FolderCache::bumpUnread($folderPath, $seen ? -1 : 1);
+        $delta = 0;
+        if ($alreadySeen === null) {
+            $delta = $seen ? -1 : 1;
+        } elseif ($seen && !$alreadySeen) {
+            $delta = -1;
+        } elseif (!$seen && $alreadySeen) {
+            $delta = 1;
+        }
+
+        $counts = FolderCache::bumpUnread($folderPath, $delta);
 
         if (wants_json()) {
             json_response(['ok' => true, 'seen' => $seen, 'uid' => $uid, 'unread_counts' => $counts]);
@@ -522,6 +606,7 @@ class MailController
         if ($folderPath === '' || $uid <= 0) {
             $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
         }
+        assert_folder_access($folderPath);
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -552,6 +637,7 @@ class MailController
         if ($folderPath === '' || $uids === []) {
             $this->actionError('No messages selected.', $redirect);
         }
+        assert_folder_access($folderPath);
 
         $imap = new ImapService();
         if (!$imap->connect()) {

@@ -12,7 +12,7 @@ class DashboardController
 {
     public function status(): void
     {
-        requireAuth();
+        requireAdmin();
 
         $folderData = FolderCache::load(refresh: true);
         $imapConnected = $folderData['connected'];

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'Access denied') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=5">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=19">
 </head>
 <body class="error-body">
     <div class="error-page">
@@ -17,3 +17,4 @@
     </div>
 </body>
 </html>
+

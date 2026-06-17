@@ -11,7 +11,7 @@
     <div class="table-wrap">
         <table class="data-table">
             <thead>
-                <tr><th>Display name</th><th>IMAP path</th><th>Type</th><th>Linked user</th><th>Status</th></tr>
+                <tr><th>Display name</th><th>IMAP path</th><th>Type</th><th>Linked user</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
                 <?php foreach ($folders as $f): ?>
@@ -21,6 +21,7 @@
                     <td><span class="badge badge-<?= e($f['folder_type']) ?>"><?= e($f['folder_type']) ?></span></td>
                     <td><?= e($f['linked_user_name'] ?? '—') ?></td>
                     <td><span class="badge badge-<?= (int) $f['active'] ? 'active' : 'inactive' ?>"><?= (int) $f['active'] ? 'Active' : 'Inactive' ?></span></td>
+                    <td><a href="<?= e(url('admin/folders/' . $f['id'] . '/edit')) ?>">Edit</a></td>
                 </tr>
                 <?php endforeach; ?>
             </tbody>

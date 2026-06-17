@@ -42,35 +42,54 @@ class AdminUserService
      */
     public function createEmployee(array $data): int
     {
-        $passwordHash = password_hash($data['password'], PASSWORD_BCRYPT);
         $role = $data['role'] ?? 'employee';
+
+        // Guard against duplicates up-front so we can return a friendly message
+        // instead of a raw integrity-constraint error.
+        if (Database::fetchOne('SELECT id FROM users WHERE username = ? LIMIT 1', [$data['username']]) !== null) {
+            throw new \RuntimeException('That username is already taken.');
+        }
+        if (
+            $role === 'employee'
+            && !empty($data['alias_email'])
+            && Database::fetchOne('SELECT id FROM aliases WHERE email = ? LIMIT 1', [$data['alias_email']]) !== null
+        ) {
+            throw new \RuntimeException('That email address is already assigned to another user.');
+        }
+
+        $passwordHash = password_hash($data['password'], PASSWORD_BCRYPT);
         $mustChange = (int) ($data['must_change_password'] ?? 1);
 
-        if (schema_has_column('users', 'must_change_password')) {
-            Database::query(
-                'INSERT INTO users (name, username, password_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, 1, ?)',
-                [$data['name'], $data['username'], $passwordHash, $role, $mustChange]
-            );
-        } else {
-            Database::query(
-                'INSERT INTO users (name, username, password_hash, role, active) VALUES (?, ?, ?, ?, 1)',
-                [$data['name'], $data['username'], $passwordHash, $role]
-            );
-        }
+        // User + folder/alias/rule provisioning is all-or-nothing: if IMAP folder
+        // creation fails we roll the whole thing back rather than leave a half
+        // provisioned account.
+        return Database::transaction(function () use ($data, $role, $passwordHash, $mustChange): int {
+            if (schema_has_column('users', 'must_change_password')) {
+                Database::query(
+                    'INSERT INTO users (name, username, password_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, 1, ?)',
+                    [$data['name'], $data['username'], $passwordHash, $role, $mustChange]
+                );
+            } else {
+                Database::query(
+                    'INSERT INTO users (name, username, password_hash, role, active) VALUES (?, ?, ?, ?, 1)',
+                    [$data['name'], $data['username'], $passwordHash, $role]
+                );
+            }
 
-        $userId = (int) Database::connection()->lastInsertId();
+            $userId = (int) Database::connection()->lastInsertId();
 
-        if ($role === 'employee' && !empty($data['alias_email'])) {
-            $this->provisionEmployeeMailbox(
-                $userId,
-                $data['name'],
-                $data['alias_email'],
-                $data['folder_name'] ?? null,
-                $data['username']
-            );
-        }
+            if ($role === 'employee' && !empty($data['alias_email'])) {
+                $this->provisionEmployeeMailbox(
+                    $userId,
+                    $data['name'],
+                    $data['alias_email'],
+                    $data['folder_name'] ?? null,
+                    $data['username']
+                );
+            }
 
-        return $userId;
+            return $userId;
+        });
     }
 
     /**
@@ -171,8 +190,9 @@ class AdminUserService
                 [$userId]
             );
 
-            $aliasEmail = $existingAlias['email']
-                ?? ($domain !== '' ? $emp['username'] . '@' . $domain : '');
+            $aliasEmail = ($existingAlias !== null && !empty($existingAlias['email']))
+                ? $existingAlias['email']
+                : ($domain !== '' ? $emp['username'] . '@' . $domain : '');
 
             if ($aliasEmail === '') {
                 $skipped++;

@@ -56,20 +56,39 @@ class AliasService
         return config('mail')['mailbox_email'];
     }
 
-    public function resolveReplyAlias(?string $deliveredTo, ?string $to): string
+    /**
+     * Resolve which configured alias a message was received on.
+     *
+     * We check the visible To/Cc recipients BEFORE the envelope Delivered-To,
+     * and prefer a personal alias over the shared mailbox. The shared mailbox
+     * is the delivery target for every message (it always appears in
+     * Delivered-To), so without this it would always win and a reply to mail
+     * addressed to ankeshv@ would incorrectly send as support@.
+     *
+     * Returns null when none of our aliases match so the caller can fall back
+     * (e.g. to the logged-in user's own alias).
+     */
+    public function resolveReplyAlias(?string $deliveredTo, ?string $to): ?string
     {
-        $candidates = $this->extractEmails($deliveredTo) + $this->extractEmails($to);
+        $shared = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
+        $candidates = array_merge($this->extractEmails($to), $this->extractEmails($deliveredTo));
         $aliases = $this->listActive();
 
+        $sharedMatch = null;
         foreach ($candidates as $email) {
             foreach ($aliases as $alias) {
-                if (strcasecmp($alias['email'], $email) === 0) {
-                    return $alias['email'];
+                if (strcasecmp($alias['email'], $email) !== 0) {
+                    continue;
                 }
+                if ($shared !== '' && strcasecmp($alias['email'], $shared) === 0) {
+                    $sharedMatch = $alias['email'];
+                    continue 2;
+                }
+                return $alias['email'];
             }
         }
 
-        return config('mail')['mailbox_email'];
+        return $sharedMatch;
     }
 
     public function getDisplayName(string $email): string

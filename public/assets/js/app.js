@@ -136,9 +136,20 @@
             showLoading();
             window.location = row.getAttribute('data-href');
         });
+        // Keyboard activation for role="link" cards (mobile list a11y).
+        if (row.getAttribute('role') === 'link') {
+            row.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    if (e.target.closest('.mail-kebab')) return;
+                    e.preventDefault();
+                    showLoading();
+                    window.location = row.getAttribute('data-href');
+                }
+            });
+        }
     }
 
-    document.querySelectorAll('.mail-row[data-href]').forEach(bindMailRow);
+    document.querySelectorAll('.mail-row[data-href], .mail-card[data-href]').forEach(bindMailRow);
 
     function escapeHtml(text) {
         var div = document.createElement('div');
@@ -349,6 +360,9 @@
         tr.setAttribute('data-seen', msg.seen ? '1' : '0');
         tr.setAttribute('data-flagged', msg.flagged ? '1' : '0');
         tr.setAttribute('data-href', msg.url);
+        if (msg.reply_url) tr.setAttribute('data-reply-url', msg.reply_url);
+        if (msg.reply_all_url) tr.setAttribute('data-reply-all-url', msg.reply_all_url);
+        if (msg.forward_url) tr.setAttribute('data-forward-url', msg.forward_url);
         tr.innerHTML =
             '<td class="col-check" onclick="event.stopPropagation()"><input type="checkbox" class="mail-check" value="' + msg.uid + '"></td>' +
             '<td class="col-status">' + (msg.seen ? '' : '<span class="unread-dot"></span>') + (msg.flagged ? '<span class="flag-dot" title="Important">\u2605</span>' : '') + '</td>' +
@@ -363,17 +377,23 @@
     }
 
     function buildMobileCard(msg, isNew) {
-        var a = document.createElement('a');
+        var a = document.createElement('div');
         a.className = 'mail-card' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (isNew ? ' mail-row-new' : '');
+        a.setAttribute('role', 'link');
+        a.setAttribute('tabindex', '0');
         a.setAttribute('data-uid', String(msg.uid));
         a.setAttribute('data-seen', msg.seen ? '1' : '0');
         a.setAttribute('data-flagged', msg.flagged ? '1' : '0');
-        a.href = msg.url;
+        a.setAttribute('data-href', msg.url);
+        if (msg.reply_url) a.setAttribute('data-reply-url', msg.reply_url);
+        if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
+        if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
         a.innerHTML =
             '<div class="mail-card-top"><span class="mail-card-from">' + (msg.flagged ? '<span class="flag-dot" title="Important">\u2605</span> ' : '') + escapeHtml(msg.from) +
             '</span><span class="mail-card-date">' + escapeHtml(msg.date) + '</span>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button></div>' +
             '<div class="mail-card-subject">' + escapeHtml(msg.subject) + '</div>';
+        bindMailRow(a);
         if (isNew) window.setTimeout(function () { a.classList.remove('mail-row-new'); }, 3000);
         return a;
     }
@@ -631,15 +651,193 @@
         });
     }
 
-    function initCcBccToggle() {
-        var btn = document.getElementById('toggle-cc-bcc');
-        var fields = document.getElementById('cc-bcc-fields');
-        if (!btn || !fields) return;
-        btn.addEventListener('click', function () {
-            var open = fields.hidden;
-            fields.hidden = !open;
-            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-            if (open) fields.querySelector('input')?.focus();
+    function avatarColor(email) {
+        var colors = ['#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1', '#14b8a6'];
+        var h = 0;
+        for (var i = 0; i < email.length; i++) {
+            h = ((h << 5) - h) + email.charCodeAt(i);
+            h |= 0;
+        }
+        return colors[Math.abs(h) % colors.length];
+    }
+
+    function parseRecipientToken(token) {
+        token = (token || '').trim();
+        if (!token) return { email: '', display: '', valid: false };
+
+        var email = token;
+        var display = '';
+        var m = token.match(/^(.+?)\s*<([^>]+)>$/);
+        if (m) {
+            display = m[1].replace(/^["']|["']$/g, '').trim();
+            email = m[2].trim();
+        } else if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(token)) {
+            display = token.split('@')[0];
+        }
+
+        var valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+        return { email: email, display: display || email, valid: valid };
+    }
+
+    function parseInitialRecipients(value) {
+        if (!value) return [];
+        return value.split(/[,;]+/).map(function (part) {
+            return parseRecipientToken(part.trim());
+        }).filter(function (item) {
+            return item.valid;
+        });
+    }
+
+    function getChipEmails(container) {
+        return Array.prototype.map.call(
+            container.querySelectorAll('.recipient-chip'),
+            function (chip) { return chip.getAttribute('data-email') || ''; }
+        ).filter(Boolean);
+    }
+
+    function addRecipientChip(container, data) {
+        if (!data || !data.valid) return false;
+        var existing = container.querySelector('.recipient-chip[data-email="' + (window.CSS && CSS.escape ? CSS.escape(data.email) : data.email) + '"]');
+        if (existing) return false;
+
+        var chip = document.createElement('span');
+        chip.className = 'recipient-chip';
+        chip.setAttribute('data-email', data.email);
+        var initial = (data.display || data.email).charAt(0).toUpperCase();
+        var color = avatarColor(data.email);
+        chip.innerHTML =
+            '<span class="recipient-chip-avatar" style="background:' + color + '">' + escapeHtml(initial) + '</span>' +
+            '<span class="recipient-chip-label" title="' + escapeHtml(data.email) + '">' + escapeHtml(data.display || data.email) + '</span>' +
+            '<button type="button" class="recipient-chip-remove" aria-label="Remove ' + escapeHtml(data.email) + '">&times;</button>';
+        container.appendChild(chip);
+        return true;
+    }
+
+    function initRecipientRow(row) {
+        var field = row.getAttribute('data-field');
+        var hidden = document.getElementById(field);
+        var chipsEl = row.querySelector('.recipient-chips');
+        var input = row.querySelector('.recipient-input');
+        if (!hidden || !chipsEl || !input) return;
+
+        function syncHidden() {
+            hidden.value = getChipEmails(chipsEl).join(', ');
+        }
+
+        function commitInput() {
+            var raw = input.value.trim();
+            if (!raw) return;
+            raw.split(/[,;]+/).forEach(function (part) {
+                part = part.trim();
+                if (!part) return;
+                var parsed = parseRecipientToken(part);
+                if (parsed.valid) {
+                    addRecipientChip(chipsEl, parsed);
+                }
+            });
+            input.value = '';
+            syncHidden();
+        }
+
+        parseInitialRecipients(hidden.value).forEach(function (item) {
+            addRecipientChip(chipsEl, item);
+        });
+        syncHidden();
+
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === 'Tab' || e.key === ',') {
+                if (input.value.trim()) {
+                    e.preventDefault();
+                    commitInput();
+                }
+            } else if (e.key === 'Backspace' && input.value === '') {
+                var chips = chipsEl.querySelectorAll('.recipient-chip');
+                if (chips.length) {
+                    chips[chips.length - 1].remove();
+                    syncHidden();
+                }
+            }
+        });
+
+        input.addEventListener('blur', commitInput);
+
+        input.addEventListener('paste', function (e) {
+            var text = (e.clipboardData || window.clipboardData).getData('text');
+            if (!text || text.indexOf(',') === -1 && text.indexOf(';') === -1) return;
+            e.preventDefault();
+            input.value = text;
+            commitInput();
+        });
+
+        chipsEl.addEventListener('click', function (e) {
+            var btn = e.target.closest('.recipient-chip-remove');
+            if (!btn) return;
+            e.preventDefault();
+            var chip = btn.closest('.recipient-chip');
+            if (chip) chip.remove();
+            syncHidden();
+            input.focus();
+        });
+
+        var label = row.querySelector('.compose-recipient-label');
+        if (label) {
+            label.addEventListener('click', function () { input.focus(); });
+        }
+
+        return { syncHidden: syncHidden, commitInput: commitInput, input: input, hidden: hidden, chipsEl: chipsEl };
+    }
+
+    function initRecipientFields() {
+        var form = document.getElementById('compose-form');
+        if (!form) return;
+
+        var rows = {};
+        document.querySelectorAll('.compose-recipient-row[data-field]').forEach(function (row) {
+            rows[row.getAttribute('data-field')] = initRecipientRow(row);
+        });
+
+        function showRow(id, btn) {
+            var row = document.getElementById(id);
+            if (!row) return;
+            row.hidden = false;
+            if (btn) btn.classList.add('is-active');
+            var input = row.querySelector('.recipient-input');
+            if (input) input.focus();
+        }
+
+        var toggleCc = document.getElementById('toggle-cc');
+        var toggleBcc = document.getElementById('toggle-bcc');
+        var ccRow = document.getElementById('cc-row');
+        var bccRow = document.getElementById('bcc-row');
+
+        if (toggleCc && ccRow) {
+            if (!ccRow.hidden) toggleCc.classList.add('is-active');
+            toggleCc.addEventListener('click', function () {
+                showRow('cc-row', toggleCc);
+            });
+        }
+
+        if (toggleBcc && bccRow) {
+            if (!bccRow.hidden) toggleBcc.classList.add('is-active');
+            toggleBcc.addEventListener('click', function () {
+                showRow('bcc-row', toggleBcc);
+            });
+        }
+
+        form.addEventListener('submit', function (e) {
+            Object.keys(rows).forEach(function (key) {
+                var row = rows[key];
+                if (!row) return;
+                row.commitInput();
+                row.syncHidden();
+            });
+
+            var toHidden = document.getElementById('to');
+            if (toHidden && !toHidden.value.trim()) {
+                e.preventDefault();
+                showToast('error', 'At least one To address is required.');
+                if (rows.to && rows.to.input) rows.to.input.focus();
+            }
         });
     }
 
@@ -702,8 +900,12 @@
 
             if (modal && !modal.hidden) return;
 
-            var row = document.querySelector('.mail-row.is-focused') || document.querySelector('.mail-row');
-            var rows = Array.prototype.slice.call(document.querySelectorAll('.mail-row'));
+            // Operate on whichever list is currently visible (desktop rows or
+            // mobile cards) so shortcuts work in both layouts.
+            var selector = '.mail-row, .mail-card';
+            var rows = Array.prototype.slice.call(document.querySelectorAll(selector))
+                .filter(function (el) { return el.offsetParent !== null; });
+            var row = rows.filter(function (el) { return el.classList.contains('is-focused'); })[0] || rows[0];
             var idx = row ? rows.indexOf(row) : -1;
 
             if (e.key === 'c') {
@@ -865,17 +1067,126 @@
             menu.innerHTML = '';
         }
 
-        function addItem(label, handler, danger) {
+        var ICONS = {
+            open: '<path d="M3 8.5l9 5.5 9-5.5"/><path d="M5 6h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/>',
+            reply: '<path d="M9 15L4 10l5-5"/><path d="M4 10h9a7 7 0 0 1 7 7v2"/>',
+            replyAll: '<path d="M7 15l-5-5 5-5"/><path d="M12 15l-5-5 5-5"/><path d="M7 10h8a6 6 0 0 1 6 6v2"/>',
+            forward: '<path d="M15 15l5-5-5-5"/><path d="M20 10h-9a7 7 0 0 0-7 7v2"/>',
+            markUnread: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+            markRead: '<path d="M3 9l9-6 9 6v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 9l9 6 9-6"/>',
+            star: '<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/>',
+            folder: '<path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+            spam: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
+            trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M9 7V4h6v3"/>',
+            chevron: '<path d="M9 6l6 6-6 6"/>'
+        };
+
+        function iconSvg(paths, extraClass) {
+            return '<svg class="ctx-ico' + (extraClass ? ' ' + extraClass : '') +
+                '" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
+                'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+                paths + '</svg>';
+        }
+
+        function addItem(label, iconPaths, handler, danger) {
             var item = document.createElement('button');
             item.type = 'button';
             item.className = 'context-menu-item' + (danger ? ' is-danger' : '');
-            item.textContent = label;
+            item.innerHTML = iconSvg(iconPaths) + '<span class="ctx-label"></span>';
+            item.querySelector('.ctx-label').textContent = label;
             item.addEventListener('click', function (e) {
                 e.preventDefault();
                 hide();
                 handler();
             });
             menu.appendChild(item);
+            return item;
+        }
+
+        function folderIconTypeFromPath(path) {
+            var lower = (path || '').toLowerCase();
+            if (path === 'INBOX') return 'inbox';
+            if (lower.indexOf('sent') >= 0) return 'sent';
+            if (lower.indexOf('draft') >= 0) return 'draft';
+            if (lower.indexOf('trash') >= 0) return 'trash';
+            if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0) return 'spam';
+            return 'folder';
+        }
+
+        function iconTypeFromSidebarLink(link) {
+            var iconEl = link.querySelector('.folder-icon');
+            if (iconEl) {
+                var classes = iconEl.className.split(/\s+/);
+                for (var i = 0; i < classes.length; i++) {
+                    if (classes[i].indexOf('folder-icon-') === 0 && classes[i] !== 'folder-icon') {
+                        return classes[i].replace('folder-icon-', '');
+                    }
+                }
+            }
+            return folderIconTypeFromPath(link.getAttribute('data-folder-path') || '');
+        }
+
+        function folderIconHtml(iconType) {
+            return '<span class="ctx-folder-icon folder-icon folder-icon-' + iconType + '" aria-hidden="true"></span>';
+        }
+
+        function folderSortKey(folder) {
+            var lower = folder.path.toLowerCase();
+            if (folder.path === 'INBOX') return '0';
+            if (lower.indexOf('sent') >= 0) return '1';
+            if (lower.indexOf('draft') >= 0) return '2';
+            return '3' + folder.name.toLowerCase();
+        }
+
+        function addSubmenu(label, iconPaths, folders, onPick) {
+            var item = document.createElement('div');
+            item.className = 'context-menu-item has-submenu';
+            item.setAttribute('tabindex', '0');
+            item.innerHTML = iconSvg(iconPaths) + '<span class="ctx-label"></span>' +
+                iconSvg(ICONS.chevron, 'ctx-chevron');
+            item.querySelector('.ctx-label').textContent = label;
+
+            var sub = document.createElement('div');
+            sub.className = 'context-submenu';
+
+            var header = document.createElement('div');
+            header.className = 'context-submenu-header';
+            header.textContent = 'Choose folder';
+            sub.appendChild(header);
+
+            folders.forEach(function (f) {
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'context-menu-item context-submenu-item';
+                b.innerHTML = folderIconHtml(f.icon || 'folder') + '<span class="ctx-label"></span>';
+                b.querySelector('.ctx-label').textContent = f.name;
+                b.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    hide();
+                    onPick(f);
+                });
+                sub.appendChild(b);
+            });
+            item.appendChild(sub);
+
+            function place() {
+                sub.classList.remove('flip-left');
+                var rect = item.getBoundingClientRect();
+                var subW = sub.offsetWidth || 200;
+                if (rect.right + subW + 8 > window.innerWidth) {
+                    sub.classList.add('flip-left');
+                }
+                sub.style.top = '';
+                var subH = sub.offsetHeight;
+                var overflowBottom = (rect.top + subH + 8) - window.innerHeight;
+                if (overflowBottom > 0) {
+                    sub.style.top = (-overflowBottom - 4) + 'px';
+                }
+            }
+            item.addEventListener('mouseenter', place);
+            item.addEventListener('focus', place);
+            menu.appendChild(item);
+            return item;
         }
 
         function addSep() {
@@ -898,7 +1209,14 @@
                 var lower = path.toLowerCase();
                 if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0 || lower.indexOf('trash') >= 0) return;
                 var textEl = link.querySelector('.sidebar-link-text');
-                out.push({ path: path, name: textEl ? textEl.textContent.trim() : path });
+                out.push({
+                    path: path,
+                    name: textEl ? textEl.textContent.trim() : path,
+                    icon: iconTypeFromSidebarLink(link)
+                });
+            });
+            out.sort(function (a, b) {
+                return folderSortKey(a).localeCompare(folderSortKey(b));
             });
             return out;
         }
@@ -910,42 +1228,49 @@
             var seen = row.getAttribute('data-seen') === '1';
             var flagged = row.getAttribute('data-flagged') === '1';
             var href = row.getAttribute('data-href') || row.getAttribute('href');
+            var replyUrl = row.getAttribute('data-reply-url');
+            var replyAllUrl = row.getAttribute('data-reply-all-url');
+            var forwardUrl = row.getAttribute('data-forward-url');
+
+            function go(target) { if (target) { showLoading(); window.location = target; } }
 
             menu.innerHTML = '';
 
-            addItem('Open', function () { if (href) { showLoading(); window.location = href; } });
+            addItem('Open', ICONS.open, function () { go(href); });
+
+            if (replyUrl || replyAllUrl || forwardUrl) {
+                addSep();
+                if (replyUrl) addItem('Reply', ICONS.reply, function () { go(replyUrl); });
+                if (replyAllUrl) addItem('Reply all', ICONS.replyAll, function () { go(replyAllUrl); });
+                if (forwardUrl) addItem('Forward', ICONS.forward, function () { go(forwardUrl); });
+            }
+
             addSep();
 
             if (seen) {
-                addItem('Mark as unread', function () { dispatchMessageAction('mark-unread', sourceFolderEnc, uid); });
+                addItem('Mark as unread', ICONS.markUnread, function () { dispatchMessageAction('mark-unread', sourceFolderEnc, uid); });
             } else {
-                addItem('Mark as read', function () { dispatchMessageAction('mark-read', sourceFolderEnc, uid); });
+                addItem('Mark as read', ICONS.markRead, function () { dispatchMessageAction('mark-read', sourceFolderEnc, uid); });
             }
 
             if (flagged) {
-                addItem('Remove importance', function () { dispatchMessageAction('unflag', sourceFolderEnc, uid); });
+                addItem('Remove importance', ICONS.star, function () { dispatchMessageAction('unflag', sourceFolderEnc, uid); });
             } else {
-                addItem('Mark as important', function () { dispatchMessageAction('flag', sourceFolderEnc, uid); });
+                addItem('Mark as important', ICONS.star, function () { dispatchMessageAction('flag', sourceFolderEnc, uid); });
             }
 
             addSep();
-            addItem('Move to Spam', function () { dispatchMessageAction('spam', sourceFolderEnc, uid); });
 
             var folders = collectMoveFolders();
             if (folders.length) {
-                var header = document.createElement('div');
-                header.className = 'context-menu-header';
-                header.textContent = 'Move to';
-                menu.appendChild(header);
-                folders.forEach(function (f) {
-                    addItem(f.name, function () {
-                        dispatchMessageAction('move', sourceFolderEnc, uid, { target_folder: f.path });
-                    });
+                addSubmenu('Move to', ICONS.folder, folders, function (f) {
+                    dispatchMessageAction('move', sourceFolderEnc, uid, { target_folder: f.path });
                 });
             }
+            addItem('Move to Spam', ICONS.spam, function () { dispatchMessageAction('spam', sourceFolderEnc, uid); });
 
             addSep();
-            addItem('Delete', function () { dispatchMessageAction('trash', sourceFolderEnc, uid); }, true);
+            addItem('Delete', ICONS.trash, function () { dispatchMessageAction('trash', sourceFolderEnc, uid); }, true);
 
             menu.hidden = false;
             var mw = menu.offsetWidth;
@@ -983,7 +1308,12 @@
             if (e.key === 'Escape') hide();
         });
         window.addEventListener('resize', hide);
-        window.addEventListener('scroll', hide, true);
+        window.addEventListener('scroll', function (e) {
+            if (menu.hidden) return;
+            // Don't close when the user is scrolling inside the menu/submenu itself.
+            if (e.target && e.target.nodeType === 1 && menu.contains(e.target)) return;
+            hide();
+        }, true);
     }
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -993,7 +1323,7 @@
         initFilterProgress();
         initBulkSelect();
         initRichEditor();
-        initCcBccToggle();
+        initRecipientFields();
         initRulesDragDrop();
         initKeyboardShortcuts();
         initThemeFromSettings();

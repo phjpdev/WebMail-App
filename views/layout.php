@@ -7,14 +7,28 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=12">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=19">
     <script>
         (function () {
-            var t = localStorage.getItem('dj_theme');
-            if (t) document.documentElement.setAttribute('data-theme', t);
-            else if (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-            }
+            // The saved account preference is authoritative; keep localStorage in
+            // sync with it so the theme can't drift between the DB and this device.
+            var serverTheme = <?= json_encode($prefs['theme'] ?? null) ?>;
+            try {
+                if (serverTheme && serverTheme !== 'auto') {
+                    document.documentElement.setAttribute('data-theme', serverTheme);
+                    localStorage.setItem('dj_theme', serverTheme);
+                    return;
+                }
+                if (serverTheme === 'auto') {
+                    localStorage.removeItem('dj_theme');
+                }
+                var t = localStorage.getItem('dj_theme');
+                if (t) {
+                    document.documentElement.setAttribute('data-theme', t);
+                } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                }
+            } catch (e) { /* storage blocked */ }
         })();
     </script>
 </head>
@@ -72,7 +86,10 @@
                     <span class="header-divider" aria-hidden="true"></span>
                     <nav class="header-nav" aria-label="Account">
                         <a class="header-nav-link" href="<?= e(url('settings')) ?>">Settings</a>
-                        <a class="header-nav-link" href="<?= e(url('logout')) ?>">Logout</a>
+                        <form method="post" action="<?= e(url('logout')) ?>" class="header-nav-form">
+                            <?= csrf_field() ?>
+                            <button type="submit" class="header-nav-link header-nav-button">Logout</button>
+                        </form>
                     </nav>
                 </div>
             <?php endif; ?>
@@ -94,6 +111,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=12" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=19" defer></script>
 </body>
 </html>

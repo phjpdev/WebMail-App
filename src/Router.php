@@ -41,6 +41,26 @@ class Router
             }
         }
 
+        // If the path matches under a different HTTP method, this is a 405 rather
+        // than a 404 — report it accurately and advertise the allowed methods.
+        $allowed = [];
+        foreach ($this->routes as $routeMethod => $routes) {
+            if ($routeMethod === $method) {
+                continue;
+            }
+            foreach ($routes as $route) {
+                if ($this->matchRoute($route['pattern'], $path) !== null) {
+                    $allowed[] = $routeMethod;
+                    break;
+                }
+            }
+        }
+
+        if ($allowed !== []) {
+            header('Allow: ' . implode(', ', array_unique($allowed)));
+            error_page(405);
+        }
+
         error_page(404);
     }
 

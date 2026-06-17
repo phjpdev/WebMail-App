@@ -18,6 +18,11 @@ if (!$config['debug']) {
 
 session_name('dj_webmail_session');
 
+$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https')
+    || (($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '') === 'on')
+    || ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443);
+
 // Don't let PHP emit its default "no-store" session cache headers — those
 // disable the browser's back/forward cache and make navigating Back slow
 // (a full reload + IMAP round-trip). We send our own headers below.
@@ -26,12 +31,35 @@ session_cache_limiter('');
 session_start([
     'cookie_httponly' => true,
     'cookie_samesite' => 'Lax',
+    // Only mark the session cookie Secure over HTTPS so local HTTP dev still works.
+    'cookie_secure' => $isHttps,
 ]);
 
 // Allow instant Back/Forward (bfcache) while keeping authenticated pages out
 // of shared/proxy caches. "no-cache" still forces revalidation for normal
 // navigations, but does not block bfcache the way "no-store" does.
 header('Cache-Control: private, no-cache, must-revalidate, max-age=0');
+
+// Baseline security headers. The CSP allows inline scripts/styles because the
+// layout and rendered email bodies rely on them, but it locks down framing,
+// plugins, base URI and form targets, and blocks mixed-origin script/object loads.
+header(
+    "Content-Security-Policy: default-src 'self'; "
+    . "img-src 'self' data: https: http:; "
+    . "style-src 'self' 'unsafe-inline'; "
+    . "script-src 'self' 'unsafe-inline'; "
+    . "font-src 'self' data:; "
+    . "object-src 'none'; "
+    . "base-uri 'self'; "
+    . "form-action 'self'; "
+    . "frame-ancestors 'none'"
+);
+header('X-Frame-Options: DENY');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+if ($isHttps) {
+    header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+}
 
 use App\Controllers\AdminController;
 use App\Controllers\AuthController;
@@ -52,7 +80,7 @@ $router = new Router();
 
 $router->get('/login', fn () => $authController->showLogin());
 $router->post('/login', fn () => $authController->login());
-$router->get('/logout', fn () => $authController->logout());
+$router->post('/logout', fn () => $authController->logout());
 
 $router->get('/change-password', fn () => $settingsController->changePasswordForm());
 $router->post('/change-password', fn () => $settingsController->changePassword());
@@ -83,6 +111,7 @@ $router->get('/compose', fn () => $composeController->compose());
 $router->get('/compose/reply', fn () => $composeController->reply());
 $router->get('/compose/reply-all', fn () => $composeController->replyAll());
 $router->get('/compose/forward', fn () => $composeController->forward());
+$router->get('/compose/edit-draft', fn () => $composeController->editDraft());
 $router->post('/compose/send', fn () => $composeController->send());
 $router->post('/compose/draft', fn () => $composeController->saveDraft());
 
@@ -104,9 +133,12 @@ $router->get('/admin/aliases/create', fn () => $adminController->aliasesCreate()
 $router->post('/admin/aliases/store', fn () => $adminController->aliasesStore());
 $router->get('/admin/aliases/{id}/edit', fn ($p) => $adminController->aliasesEdit($p));
 $router->post('/admin/aliases/{id}/update', fn ($p) => $adminController->aliasesUpdate($p));
+$router->post('/admin/aliases/{id}/delete', fn ($p) => $adminController->aliasesDelete($p));
 $router->get('/admin/folders', fn () => $adminController->foldersIndex());
 $router->get('/admin/folders/create', fn () => $adminController->foldersCreate());
 $router->post('/admin/folders/store', fn () => $adminController->foldersStore());
+$router->get('/admin/folders/{id}/edit', fn ($p) => $adminController->foldersEdit($p));
+$router->post('/admin/folders/{id}/update', fn ($p) => $adminController->foldersUpdate($p));
 $router->get('/admin/rules', fn () => $adminController->rulesIndex());
 $router->get('/admin/rules/create', fn () => $adminController->rulesCreate());
 $router->post('/admin/rules/store', fn () => $adminController->rulesStore());
@@ -114,6 +146,8 @@ $router->post('/admin/rules/reorder', fn () => $adminController->rulesReorder())
 $router->get('/admin/rules/{id}/edit', fn ($p) => $adminController->rulesEdit($p));
 $router->post('/admin/rules/{id}/update', fn ($p) => $adminController->rulesUpdate($p));
 $router->post('/admin/rules/{id}/toggle', fn ($p) => $adminController->rulesToggle($p));
+$router->post('/admin/rules/{id}/delete', fn ($p) => $adminController->rulesDelete($p));
+$router->post('/admin/reprocess', fn () => $adminController->reprocess());
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';

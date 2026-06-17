@@ -38,12 +38,13 @@ class AuthController
         }
 
         if (!Auth::login($username, $password)) {
+            // Always show a generic message so we don't leak whether the username
+            // exists or reveal server/config details to an attacker.
             $dbName = env('DB_NAME', '');
             if ($dbName === '' || $dbName === 'dj_webmail') {
-                flash('error', 'Server error: .env file missing. On the server the file must be named .env (not .env.production).');
-            } else {
-                flash('error', 'Invalid username or password.');
+                app_log('Login failed: DB_NAME not configured (.env missing or default).');
             }
+            flash('error', 'Invalid username or password.');
             redirect('login');
         }
 
@@ -56,7 +57,11 @@ class AuthController
 
     public function logout(): void
     {
+        verify_csrf_or_fail();
         Auth::logout();
+        // Clear bfcache/storage so pressing Back can't reveal cached authenticated
+        // pages after logout (we deliberately allow bfcache for speed otherwise).
+        header('Clear-Site-Data: "cache", "cookies", "storage"');
         flash('success', 'You have been logged out.');
         redirect('login');
     }

@@ -21,7 +21,13 @@
                     <td><?= e($a['user_name'] ?? '—') ?></td>
                     <td><?= e($a['folder_name'] ?? '—') ?></td>
                     <td><span class="badge badge-<?= (int) $a['active'] ? 'active' : 'inactive' ?>"><?= (int) $a['active'] ? 'Active' : 'Inactive' ?></span></td>
-                    <td><a href="<?= e(url('admin/aliases/' . $a['id'] . '/edit')) ?>">Edit</a></td>
+                    <td class="table-actions">
+                        <a href="<?= e(url('admin/aliases/' . $a['id'] . '/edit')) ?>">Edit</a>
+                        <form method="post" action="<?= e(url('admin/aliases/' . $a['id'] . '/delete')) ?>" onsubmit="return confirm('Delete this alias?');">
+                            <?= csrf_field() ?>
+                            <button type="submit" class="btn-link-danger">Delete</button>
+                        </form>
+                    </td>
                 </tr>
                 <?php endforeach; ?>
             </tbody>

@@ -28,10 +28,17 @@
     <?php if (!empty($filterStats)): ?>
         <p class="text-muted">Last run: <?= (int) $filterStats['processed'] ?> processed, <?= (int) $filterStats['moved'] ?> moved (<?= (int) $filterStats['duration_ms'] ?>ms)</p>
     <?php endif; ?>
-    <form method="post" action="<?= e(url('admin/sync')) ?>">
-        <?= csrf_field() ?>
-        <button type="submit" class="btn btn-primary">Sync now</button>
-    </form>
+    <div class="admin-action-row">
+        <form method="post" action="<?= e(url('admin/sync')) ?>">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-primary">Sync now</button>
+        </form>
+        <form method="post" action="<?= e(url('admin/reprocess')) ?>" onsubmit="return confirm('Reprocess the whole inbox against all current rules?');">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-outline">Reprocess inbox</button>
+        </form>
+    </div>
+    <p class="text-muted form-hint">Reprocess clears the filtered history and re-applies every rule to existing inbox mail.</p>
 </section>
 
 <?php

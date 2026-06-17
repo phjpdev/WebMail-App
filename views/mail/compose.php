@@ -13,6 +13,10 @@
             <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
             <input type="hidden" name="uid" value="<?= (int) $uid ?>">
         <?php endif; ?>
+        <?php if (!empty($draftFolder) && !empty($draftUid)): ?>
+            <input type="hidden" name="draft_folder" value="<?= e(encode_folder_path($draftFolder)) ?>">
+            <input type="hidden" name="draft_uid" value="<?= (int) $draftUid ?>">
+        <?php endif; ?>
 
         <div class="form-group">
             <label for="from_email">Send as</label>
@@ -27,32 +31,40 @@
             </div>
         </div>
 
-        <div class="form-group">
-            <label for="to">To</label>
-            <input type="text" id="to" name="to" value="<?= e($to) ?>" required
-                   placeholder="email@example.com, other@example.com" autocomplete="email">
+        <div class="compose-recipients">
+            <div class="compose-recipient-row" data-field="to">
+                <label class="compose-recipient-label" for="to-input">To</label>
+                <div class="recipient-field">
+                    <div class="recipient-chips" id="to-chips" aria-live="polite"></div>
+                    <input type="text" class="recipient-input" id="to-input" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="compose-recipient-meta">
+                    <button type="button" class="recipient-toggle-cc" id="toggle-cc" aria-controls="cc-row">Cc</button>
+                    <button type="button" class="recipient-toggle-bcc" id="toggle-bcc" aria-controls="bcc-row">Bcc</button>
+                </div>
+                <input type="hidden" name="to" id="to" value="<?= e($to) ?>">
+            </div>
+
+            <div class="compose-recipient-row" id="cc-row" data-field="cc"<?= empty($cc) ? ' hidden' : '' ?>>
+                <label class="compose-recipient-label" for="cc-input">Cc</label>
+                <div class="recipient-field">
+                    <div class="recipient-chips" id="cc-chips" aria-live="polite"></div>
+                    <input type="text" class="recipient-input" id="cc-input" autocomplete="off" spellcheck="false">
+                </div>
+                <input type="hidden" name="cc" id="cc" value="<?= e($cc ?? '') ?>">
+            </div>
+
+            <div class="compose-recipient-row" id="bcc-row" data-field="bcc"<?= empty($bcc) ? ' hidden' : '' ?>>
+                <label class="compose-recipient-label" for="bcc-input">Bcc</label>
+                <div class="recipient-field">
+                    <div class="recipient-chips" id="bcc-chips" aria-live="polite"></div>
+                    <input type="text" class="recipient-input" id="bcc-input" autocomplete="off" spellcheck="false">
+                </div>
+                <input type="hidden" name="bcc" id="bcc" value="<?= e($bcc ?? '') ?>">
+            </div>
         </div>
 
-        <p class="compose-cc-toggle">
-            <button type="button" class="btn-link-muted" id="toggle-cc-bcc" aria-expanded="<?= (!empty($cc) || !empty($bcc)) ? 'true' : 'false' ?>">
-                Cc / Bcc
-            </button>
-        </p>
-
-        <div id="cc-bcc-fields" class="cc-bcc-fields"<?= (empty($cc) && empty($bcc)) ? ' hidden' : '' ?>>
-            <div class="form-group">
-                <label for="cc">Cc</label>
-                <input type="text" id="cc" name="cc" value="<?= e($cc ?? '') ?>"
-                       placeholder="email@example.com" autocomplete="off">
-            </div>
-            <div class="form-group">
-                <label for="bcc">Bcc</label>
-                <input type="text" id="bcc" name="bcc" value="<?= e($bcc ?? '') ?>"
-                       placeholder="email@example.com" autocomplete="off">
-            </div>
-        </div>
-
-        <div class="form-group">
+        <div class="form-group compose-subject-group">
             <label for="subject">Subject</label>
             <input type="text" id="subject" name="subject" value="<?= e($subject) ?>" required>
         </div>
@@ -66,9 +78,21 @@
                 <button type="button" data-cmd="insertUnorderedList" title="Bullet list">•</button>
                 <button type="button" data-cmd="createLink" title="Link">Link</button>
             </div>
-            <div id="body-editor" class="rich-editor" contenteditable="true"><?= !empty($body_html) ? $body_html : nl2br(e($body)) ?></div>
+            <div id="body-editor" class="rich-editor" contenteditable="true"><?= !empty($body_html) ? \App\HtmlSanitizer::sanitize($body_html) : nl2br(e($body)) ?></div>
             <textarea id="body" name="body" rows="14" class="sr-only"><?= e($body) ?></textarea>
         </div>
+
+        <?php if (!empty($forwardedAttachments)): ?>
+            <div class="form-group">
+                <label>Forwarded attachments</label>
+                <ul class="forwarded-attachments">
+                    <?php foreach ($forwardedAttachments as $fa): ?>
+                        <li><?= e($fa['filename'] ?? 'attachment') ?></li>
+                    <?php endforeach; ?>
+                </ul>
+                <p class="file-upload-hint">These will be included with your forward.</p>
+            </div>
+        <?php endif; ?>
 
         <div class="form-group">
             <label>Attachments</label>

@@ -45,6 +45,34 @@ class FilterService
     }
 
     /**
+     * Forget which messages have been filtered so they are re-evaluated against
+     * the current rule set on the next pass. Called when rules, users, or
+     * aliases change (new routing should apply to already-seen mail).
+     */
+    public static function clearProcessed(?string $folderPath = null): void
+    {
+        try {
+            if ($folderPath === null) {
+                Database::query('DELETE FROM processed_messages');
+            } else {
+                Database::query('DELETE FROM processed_messages WHERE folder_path = ?', [$folderPath]);
+            }
+        } catch (\Throwable $e) {
+            app_log('Failed to clear processed_messages: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Clear processed tracking for the configured filter source folder and reset
+     * the session flag so the next page load re-runs a full filter pass.
+     */
+    public static function reprocess(): void
+    {
+        self::clearProcessed(config('app')['filter_source_folder']);
+        self::clearSessionFlag();
+    }
+
+    /**
      * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int}|null
      */
     public static function lastStats(): ?array
@@ -80,15 +108,35 @@ class FilterService
             return $result;
         }
 
-        $allUids = $imap->getFolderUids($sourceFolder, $batchLimit * 3);
+        // Page through the inbox in growing windows until we have a full batch of
+        // unprocessed messages or we run out of mail. A small window can be fully
+        // "already processed", which previously starved older unrouted mail.
         $candidates = [];
-        foreach ($allUids as $uid) {
-            if (!isset($processedUids[$uid])) {
-                $candidates[] = $uid;
+        $window = $batchLimit * 3;
+        $maxWindow = max($window, $batchLimit * 20);
+
+        while (true) {
+            $allUids = $imap->getFolderUids($sourceFolder, $window);
+
+            $candidates = [];
+            foreach ($allUids as $uid) {
+                if (!isset($processedUids[$uid])) {
+                    $candidates[] = $uid;
+                    if (count($candidates) >= $batchLimit) {
+                        break;
+                    }
+                }
             }
-            if (count($candidates) >= $batchLimit) {
+
+            if (
+                count($candidates) >= $batchLimit
+                || count($allUids) < $window
+                || $window >= $maxWindow
+            ) {
                 break;
             }
+
+            $window += $batchLimit * 3;
         }
 
         $userId = Auth::user()['id'] ?? null;
@@ -118,12 +166,20 @@ class FilterService
                 if ($imap->moveMessage($sourceFolder, $uid, $targetPath)) {
                     $result['moved']++;
                     $this->logFilterMove($userId, $uid, $targetPath, $matchedRule['name']);
+                    // Only record as processed once the move actually succeeded.
+                    $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
                 } else {
+                    // Move failed (transient IMAP error): leave the UID unprocessed
+                    // so it is retried on the next filter pass instead of being lost.
                     $result['errors'][] = 'UID ' . $uid . ': ' . $imap->getLastError();
                 }
+            } else {
+                // No rule matched: mark processed so we don't rescan it every pass.
+                // clearProcessed() is called when rules/users/aliases change so this
+                // mail is re-evaluated against the new rule set.
+                $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
             }
 
-            $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
             $result['processed']++;
         }
 
@@ -137,12 +193,15 @@ class FilterService
      */
     private function loadRules(): array
     {
+        // Enforce a deterministic precedence so a spam rule always wins over a
+        // company rule, which wins over an employee rule, which wins over a
+        // client rule, with priority/id as the tie-breaker within each type.
         return Database::query(
-            'SELECT r.*, f.imap_path
+            "SELECT r.*, f.imap_path
              FROM filter_rules r
              INNER JOIN folders f ON r.target_folder_id = f.id
              WHERE r.active = 1 AND f.active = 1
-             ORDER BY r.priority ASC, r.id ASC'
+             ORDER BY FIELD(r.rule_type, 'spam', 'company', 'employee', 'client'), r.priority ASC, r.id ASC"
         )->fetchAll();
     }
 

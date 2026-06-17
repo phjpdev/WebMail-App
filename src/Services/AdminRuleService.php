@@ -33,17 +33,24 @@ class AdminRuleService
      */
     public function reorder(array $order): void
     {
-        foreach ($order as $item) {
-            Database::query(
-                'UPDATE filter_rules SET priority = ? WHERE id = ?',
-                [(int) $item['priority'], (int) $item['id']]
-            );
-        }
+        Database::transaction(function () use ($order): void {
+            foreach ($order as $item) {
+                Database::query(
+                    'UPDATE filter_rules SET priority = ? WHERE id = ?',
+                    [(int) $item['priority'], (int) $item['id']]
+                );
+            }
+        });
     }
 
     public function find(int $id): ?array
     {
         return Database::fetchOne('SELECT * FROM filter_rules WHERE id = ?', [$id]);
+    }
+
+    public function delete(int $id): void
+    {
+        Database::query('DELETE FROM filter_rules WHERE id = ?', [$id]);
     }
 
     /**

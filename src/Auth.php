@@ -59,6 +59,10 @@ class Auth
 
         session_regenerate_id(true);
 
+        // Rotate the CSRF token on privilege change so a token captured before
+        // login can't be replayed against the authenticated session.
+        unset($_SESSION['_csrf_token']);
+
         $_SESSION[self::SESSION_USER_KEY] = [
             'id' => (int) $user['id'],
             'name' => $user['name'],
@@ -134,6 +138,33 @@ class Auth
         $user = self::user();
 
         return $user !== null && $user['role'] === 'admin';
+    }
+
+    /**
+     * Verify the logged-in account is still active. Checked once per request so
+     * an admin disabling a user takes effect immediately instead of lasting
+     * until their session expires.
+     */
+    public static function ensureActive(): bool
+    {
+        static $checked = null;
+        if ($checked !== null) {
+            return $checked;
+        }
+
+        $current = self::user();
+        if ($current === null) {
+            return $checked = false;
+        }
+
+        try {
+            $row = Database::fetchOne('SELECT active FROM users WHERE id = ? LIMIT 1', [$current['id']]);
+        } catch (\Throwable $e) {
+            // On a transient DB error, don't lock the user out.
+            return $checked = true;
+        }
+
+        return $checked = ($row !== null && (int) $row['active'] === 1);
     }
 
     public static function mustChangePassword(): bool

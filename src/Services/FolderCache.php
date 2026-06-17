@@ -154,6 +154,31 @@ class FolderCache
     }
 
     /**
+     * Authorization check for direct folder access (read, attachment, move, etc.).
+     * Admins may access any folder; employees may only access INBOX, the standard
+     * shared folders (Sent/Drafts/Trash/Spam), and their own linked folder.
+     */
+    public static function canAccess(string $path): bool
+    {
+        if ($path === '') {
+            return false;
+        }
+
+        $user = Auth::user();
+        if ($user === null) {
+            return false;
+        }
+
+        if (($user['role'] ?? '') === 'admin') {
+            return true;
+        }
+
+        $allowedPaths = (new self())->employeeAllowedPaths((int) $user['id']);
+
+        return (new self())->isEmployeeFolderAllowed($path, $allowedPaths);
+    }
+
+    /**
      * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */

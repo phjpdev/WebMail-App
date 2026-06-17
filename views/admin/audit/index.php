@@ -24,13 +24,31 @@
 
             <select id="action" name="action" onchange="this.form.submit()">
 
+                <?php
+                $auditActions = [
+                    'login' => 'Login',
+                    'logout' => 'Logout',
+                    'filter_move' => 'Filter move',
+                    'reprocess_inbox' => 'Reprocess inbox',
+                    'user_create' => 'User create',
+                    'user_update' => 'User update',
+                    'user_disable' => 'User disable',
+                    'alias_create' => 'Alias create',
+                    'alias_update' => 'Alias update',
+                    'alias_delete' => 'Alias delete',
+                    'folder_create' => 'Folder create',
+                    'folder_update' => 'Folder update',
+                    'rule_create' => 'Rule create',
+                    'rule_update' => 'Rule update',
+                    'rule_toggle' => 'Rule toggle',
+                    'rule_reorder' => 'Rule reorder',
+                    'rule_delete' => 'Rule delete',
+                ];
+                ?>
                 <option value="">All actions</option>
-
-                <option value="login"<?= ($filterAction ?? '') === 'login' ? ' selected' : '' ?>>Login</option>
-
-                <option value="logout"<?= ($filterAction ?? '') === 'logout' ? ' selected' : '' ?>>Logout</option>
-
-                <option value="filter_move"<?= ($filterAction ?? '') === 'filter_move' ? ' selected' : '' ?>>Filter move</option>
+                <?php foreach ($auditActions as $value => $label): ?>
+                    <option value="<?= e($value) ?>"<?= ($filterAction ?? '') === $value ? ' selected' : '' ?>><?= e($label) ?></option>
+                <?php endforeach; ?>
 
             </select>
 

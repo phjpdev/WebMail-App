@@ -14,6 +14,7 @@ use App\Services\SmtpService;
 class ComposeController
 {
     private const DRAFT_KEY = '_compose_draft';
+    private const FORWARD_KEY = '_forward_attachments';
     private const MAX_ATTACHMENTS = 5;
     private const MAX_ATTACHMENT_BYTES = 10485760;
 
@@ -87,6 +88,10 @@ class ComposeController
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
 
+        if ($folderPath !== '') {
+            assert_folder_access($folderPath);
+        }
+
         $body = $this->appendSignature($body);
         if ($bodyHtml !== '') {
             $bodyHtml = $this->appendSignatureHtml($bodyHtml);
@@ -156,18 +161,57 @@ class ComposeController
             $options['attachments'] = $attachments['files'];
         }
 
+        // Re-attach the original attachments when forwarding.
+        if ($mode === 'forward') {
+            $forwarded = $this->collectForwardAttachments();
+            if ($forwarded !== []) {
+                $options['raw_attachments'] = $forwarded;
+            }
+        }
+
         $smtp = new SmtpService();
         if ($smtp->send($options)) {
-            unset($_SESSION[self::DRAFT_KEY]);
+            unset($_SESSION[self::DRAFT_KEY], $_SESSION[self::FORWARD_KEY]);
+            $this->deleteSourceDraftIfRequested();
             $sentFolder = $this->resolveSentFolder();
             $this->saveToSent($sentFolder, $smtp->getLastMime());
             flash('success', 'Email sent successfully.');
             redirect('folder/' . encode_folder_path($sentFolder));
         }
 
-        $error = $smtp->getLastError();
-        flash('error', 'Failed to send email: ' . ($error !== '' ? $error : 'unknown SMTP error.'));
+        flash('error', $this->friendlySendError($smtp->getLastError()));
         $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+    }
+
+    /**
+     * Translate raw SMTP errors into actionable, user-friendly messages. The
+     * underlying error is still logged by SmtpService for diagnostics.
+     */
+    private function friendlySendError(string $error): string
+    {
+        $lower = strtolower($error);
+
+        if (str_contains($lower, 'spam') || str_contains($lower, '550')) {
+            return 'The mail server rejected this message as spam. Try editing the subject and message text (remove spammy wording or quoted spam), then send again.';
+        }
+
+        if (str_contains($lower, 'authenticat') || str_contains($lower, '535')) {
+            return 'Could not sign in to the mail server. Please check the mailbox credentials in the server settings.';
+        }
+
+        if (
+            str_contains($lower, 'connect')
+            || str_contains($lower, 'timed out')
+            || str_contains($lower, 'timeout')
+        ) {
+            return 'Could not reach the mail server. Please check your connection and try again.';
+        }
+
+        if (str_contains($lower, 'recipient') || str_contains($lower, '5.1.1') || str_contains($lower, '550 5.1.1')) {
+            return 'The recipient address was rejected by the mail server. Please check the To/Cc addresses.';
+        }
+
+        return 'Failed to send email. ' . ($error !== '' ? 'Mail server said: ' . $error : 'Please try again.');
     }
 
     private function loadMessageForm(string $mode): void
@@ -185,6 +229,7 @@ class ComposeController
             flash('error', 'Message not specified.');
             redirect('folder/' . encode_folder_path('INBOX'));
         }
+        assert_folder_access($folderPath);
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -200,7 +245,10 @@ class ComposeController
 
         $aliasService = new AliasService();
         $quoted = $this->buildQuotedBody($message);
-        $replyFrom = $aliasService->userAlias(Auth::user()['id'] ?? null);
+        // Default the From to the alias the message was received on, falling back
+        // to the logged-in user's own alias when nothing matches.
+        $replyFrom = $aliasService->resolveReplyAlias($message['delivered_to'] ?? null, $message['to'] ?? null)
+            ?? $aliasService->userAlias(Auth::user()['id'] ?? null);
 
         if ($mode === 'reply') {
             $subject = $this->replySubject($message['subject'] ?? '');
@@ -233,7 +281,7 @@ class ComposeController
             return;
         }
 
-        $subject = $message['subject'] ?? '';
+        $subject = $this->cleanSubject($message['subject'] ?? '');
         if (!preg_match('/^Fwd:\s/i', $subject)) {
             $subject = 'Fwd: ' . $subject;
         }
@@ -246,6 +294,10 @@ class ComposeController
             $message['to'] ?? ''
         );
 
+        // Remember the original message's attachments so they can be re-attached
+        // when the forward is actually sent.
+        $this->rememberForwardAttachments($folderPath, $uid, $message['attachments'] ?? []);
+
         $this->showForm('forward', [
             'to' => '',
             'cc' => '',
@@ -256,6 +308,100 @@ class ComposeController
             'folderPath' => $folderPath,
             'uid' => $uid,
         ]);
+    }
+
+    public function editDraft(): void
+    {
+        requireAuth();
+
+        $folderPath = decode_folder_path($_GET['folder'] ?? '');
+        $uid = (int) ($_GET['uid'] ?? 0);
+
+        if ($folderPath === '' || $uid <= 0) {
+            flash('error', 'Draft not specified.');
+            redirect('compose');
+        }
+        assert_folder_access($folderPath);
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            flash('error', $imap->getLastError());
+            redirect('folder/' . encode_folder_path($folderPath));
+        }
+
+        $message = $imap->getMessageByUid($folderPath, $uid);
+        if ($message === null) {
+            flash('error', 'Draft not found.');
+            redirect('folder/' . encode_folder_path($folderPath));
+        }
+
+        $this->showForm('compose', [
+            'to' => $message['to'] ?? '',
+            'cc' => $message['cc'] ?? '',
+            'bcc' => '',
+            'subject' => $message['subject'] ?? '',
+            'body' => $message['plain'] ?? '',
+            'body_html' => $message['html'] ?? '',
+            'from_email' => (new AliasService())->userAlias(Auth::user()['id'] ?? null),
+            // Carry the source draft so it can be removed once re-sent.
+            'draftFolder' => $folderPath,
+            'draftUid' => $uid,
+        ]);
+    }
+
+    /**
+     * @param list<array{id: string, filename: string, size: int, mime: string}> $attachments
+     */
+    private function rememberForwardAttachments(string $folderPath, int $uid, array $attachments): void
+    {
+        if ($attachments === []) {
+            unset($_SESSION[self::FORWARD_KEY]);
+
+            return;
+        }
+
+        $_SESSION[self::FORWARD_KEY] = [
+            'folder' => $folderPath,
+            'uid' => $uid,
+            'parts' => array_map(fn ($a) => [
+                'id' => $a['id'],
+                'filename' => $a['filename'],
+                'mime' => $a['mime'],
+            ], $attachments),
+        ];
+    }
+
+    /**
+     * Fetch any remembered forwarded attachments from IMAP for re-sending.
+     *
+     * @return list<array{content: string, name: string, mime: string}>
+     */
+    private function collectForwardAttachments(): array
+    {
+        $ref = $_SESSION[self::FORWARD_KEY] ?? null;
+        if (!is_array($ref) || empty($ref['parts'])) {
+            return [];
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($ref['parts'] as $part) {
+            $attachment = $imap->getAttachment($ref['folder'], (int) $ref['uid'], (string) $part['id']);
+            if ($attachment === null) {
+                continue;
+            }
+            $out[] = [
+                'content' => $attachment['content'],
+                'name' => $part['filename'] ?? ($attachment['filename'] ?? 'attachment'),
+                'mime' => $part['mime'] ?? ($attachment['mime'] ?? 'application/octet-stream'),
+            ];
+        }
+
+        return $out;
     }
 
     /**
@@ -283,7 +429,32 @@ class ComposeController
 
     private function replySubject(string $subject): string
     {
+        $subject = $this->cleanSubject($subject);
+
         return preg_match('/^Re:\s/i', $subject) ? $subject : 'Re: ' . $subject;
+    }
+
+    /**
+     * Strip spam/scanner tags the mail server prepends to inbound subjects
+     * (e.g. "***SPAM***", "[SPAM]", "[BULK]"). Carrying these into a reply or
+     * forward subject causes the outbound spam filter to reject the message
+     * with a 550 ("classified as SPAM"), so we remove them before composing.
+     */
+    private function cleanSubject(string $subject): string
+    {
+        $subject = trim($subject);
+
+        do {
+            $before = $subject;
+            $subject = preg_replace(
+                '/^\s*(\*{2,}\s*[A-Z]+\s*\*{2,}|\[(?:SPAM|BULK|SUSPECTED SPAM|VIRUS)\])\s*/i',
+                '',
+                $subject
+            ) ?? $subject;
+            $subject = trim($subject);
+        } while ($subject !== $before);
+
+        return $subject;
     }
 
     /**
@@ -329,6 +500,11 @@ class ComposeController
             'from_email' => $defaults['from_email'] ?? config('mail')['mailbox_email'],
             'folderPath' => $defaults['folderPath'] ?? '',
             'uid' => $defaults['uid'] ?? 0,
+            'draftFolder' => $defaults['draftFolder'] ?? '',
+            'draftUid' => $defaults['draftUid'] ?? 0,
+            'forwardedAttachments' => ($mode === 'forward' && isset($_SESSION[self::FORWARD_KEY]['parts']))
+                ? $_SESSION[self::FORWARD_KEY]['parts']
+                : [],
             'folders' => $folderData['folders'],
             'unreadCounts' => $folderData['unread_counts'] ?? [],
             'activeFolder' => null,
@@ -400,17 +576,24 @@ class ComposeController
 
     private function isValidFrom(AliasService $aliasService, string $fromEmail): bool
     {
+        // The user's own alias is always allowed.
         if (strcasecmp($aliasService->userAlias(Auth::user()['id'] ?? null), $fromEmail) === 0) {
             return true;
         }
 
+        // The shared mailbox address is always allowed.
         if (strcasecmp(config('mail')['mailbox_email'], $fromEmail) === 0) {
             return true;
         }
 
-        foreach ($aliasService->listActive() as $alias) {
-            if (strcasecmp($alias['email'], $fromEmail) === 0) {
-                return true;
+        // Only admins may send as any other configured alias; employees must not
+        // be able to impersonate another person's address.
+        $user = Auth::user();
+        if ($user !== null && ($user['role'] ?? '') === 'admin') {
+            foreach ($aliasService->listActive() as $alias) {
+                if (strcasecmp($alias['email'], $fromEmail) === 0) {
+                    return true;
+                }
             }
         }
 
@@ -462,6 +645,8 @@ class ComposeController
     ): string {
         $date = date('r');
         $msgId = '<draft.' . bin2hex(random_bytes(8)) . '@webmail.local>';
+        $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
+
         $headers = "From: {$from}\r\n";
         if ($to !== '') {
             $headers .= "To: {$to}\r\n";
@@ -469,13 +654,35 @@ class ComposeController
         if ($cc !== '') {
             $headers .= "Cc: {$cc}\r\n";
         }
-        $headers .= "Subject: {$subject}\r\n";
+        $headers .= "Subject: {$encodedSubject}\r\n";
         $headers .= "Date: {$date}\r\n";
         $headers .= "Message-ID: {$msgId}\r\n";
         $headers .= "MIME-Version: 1.0\r\n";
-        $content = $bodyHtml !== '' ? $bodyHtml : $body;
-        $headers .= "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
-        $headers .= $content;
+
+        // Save HTML drafts as multipart/alternative so they re-open with full
+        // formatting (plus a plain-text fallback), not as raw markup text.
+        if ($bodyHtml !== '') {
+            $boundary = 'draft-' . bin2hex(random_bytes(8));
+            $plain = $body !== '' ? $body : trim(strip_tags($bodyHtml));
+            $sanitizedHtml = HtmlSanitizer::sanitize($bodyHtml);
+
+            $headers .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+            $headers .= "--{$boundary}\r\n";
+            $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+            $headers .= "Content-Transfer-Encoding: base64\r\n\r\n";
+            $headers .= chunk_split(base64_encode($plain)) . "\r\n";
+            $headers .= "--{$boundary}\r\n";
+            $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+            $headers .= "Content-Transfer-Encoding: base64\r\n\r\n";
+            $headers .= chunk_split(base64_encode($sanitizedHtml)) . "\r\n";
+            $headers .= "--{$boundary}--\r\n";
+
+            return $headers;
+        }
+
+        $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+        $headers .= "Content-Transfer-Encoding: base64\r\n\r\n";
+        $headers .= chunk_split(base64_encode($body));
 
         return $headers;
     }
@@ -518,6 +725,21 @@ class ComposeController
 
         if (!$imap->appendMessage($sentFolder, $mime, '\\Seen')) {
             app_log('Could not save sent copy: ' . $imap->getLastError());
+        }
+    }
+
+    private function deleteSourceDraftIfRequested(): void
+    {
+        $draftFolder = decode_folder_path($_POST['draft_folder'] ?? '');
+        $draftUid = (int) ($_POST['draft_uid'] ?? 0);
+
+        if ($draftFolder === '' || $draftUid <= 0 || !FolderCache::canAccess($draftFolder)) {
+            return;
+        }
+
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            $imap->moveMessage($draftFolder, $draftUid, trash_folder_path());
         }
     }
 

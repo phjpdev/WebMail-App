@@ -1,3 +1,14 @@
+# Deny access to dotfiles and environment/config files (.env, .git, etc.)
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+<FilesMatch "(?i)(^\.env|\.env\..*|\.git.*|composer\.(json|lock)|.*\.(ini|log|sql))$">
+    Require all denied
+</FilesMatch>
+
+# Block direct access to the application source, config and storage directories.
+RedirectMatch 404 (?i)/(src|config|storage|vendor|views)(/|$)
+
 <IfModule mod_rewrite.c>
     RewriteEngine On
 

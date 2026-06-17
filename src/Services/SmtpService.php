@@ -126,6 +126,19 @@ class SmtpService
                 }
             }
 
+            // In-memory attachments (e.g. parts carried over from a forwarded
+            // message that we fetched straight from IMAP).
+            if (!empty($options['raw_attachments'])) {
+                foreach ($options['raw_attachments'] as $raw) {
+                    $mail->addStringAttachment(
+                        $raw['content'],
+                        $raw['name'],
+                        PHPMailer::ENCODING_BASE64,
+                        $raw['mime'] ?? 'application/octet-stream'
+                    );
+                }
+            }
+
             if (!empty($options['html_body'])) {
                 $mail->isHTML(true);
                 $mail->Body = $options['html_body'];

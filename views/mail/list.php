@@ -118,7 +118,8 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                         data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
                         data-href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>"
                         data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
-                        data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
+                        data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
+                        data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
                         <td class="col-check" onclick="event.stopPropagation()">
                             <input type="checkbox" class="mail-check" value="<?= (int) $msg['uid'] ?>" aria-label="Select message">
                         </td>
@@ -137,18 +138,22 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
 
     <div class="mail-list-mobile" id="mail-list-mobile"<?= empty($messages) ? ' hidden' : '' ?>>
         <?php foreach ($messages as $msg): ?>
-            <a class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
+            <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
+               role="link" tabindex="0"
                data-uid="<?= (int) $msg['uid'] ?>"
                data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
                data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
-               href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>">
+               data-href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>"
+               data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
+               data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
+               data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
                 <div class="mail-card-top">
                     <span class="mail-card-from"><?= !empty($msg['flagged']) ? '<span class="flag-dot" title="Important">&#9733;</span> ' : '' ?><?= e(format_mail_from($msg['from'])) ?></span>
                     <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
                     <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
                 </div>
                 <div class="mail-card-subject"><?= e($msg['subject']) ?></div>
-            </a>
+            </div>
         <?php endforeach; ?>
     </div>
 

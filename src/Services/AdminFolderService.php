@@ -62,9 +62,14 @@ class AdminFolderService
      */
     public function insertFolder(array $data): int
     {
+        // Create the folder on the IMAP server first; only persist the DB row
+        // once the mailbox actually exists so we never reference a phantom folder.
         $imap = new ImapService();
-        if ($imap->connect() && !$imap->folderExistsOnServer($data['imap_path'])) {
-            $imap->createFolder($data['imap_path']);
+        if (!$imap->connect()) {
+            throw new \RuntimeException('Could not connect to the mail server to create the folder.');
+        }
+        if (!$imap->folderExistsOnServer($data['imap_path']) && !$imap->createFolder($data['imap_path'])) {
+            throw new \RuntimeException('Could not create the folder on the mail server: ' . $imap->getLastError());
         }
 
         Database::query(

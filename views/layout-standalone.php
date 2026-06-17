@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=8">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=19">
     <script>
         (function () {
             var t = localStorage.getItem('dj_theme');
@@ -22,7 +22,10 @@
     <header class="standalone-header">
         <a href="<?= e(url('')) ?>" class="standalone-back">← Back to mail</a>
         <div class="standalone-header-right">
-            <a href="<?= e(url('logout')) ?>" class="btn btn-ghost-standalone">Logout</a>
+            <form method="post" action="<?= e(url('logout')) ?>">
+                <?= csrf_field() ?>
+                <button type="submit" class="btn btn-ghost-standalone">Logout</button>
+            </form>
         </div>
     </header>
 
@@ -31,6 +34,7 @@
         <?= $content ?? '' ?>
     </main>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=8" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=19" defer></script>
 </body>
 </html>
+

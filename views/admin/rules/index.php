@@ -19,6 +19,7 @@
 <nav class="rule-type-tabs">
     <a href="<?= e(url('admin/rules')) ?>" class="<?= empty($ruleType) ? 'active' : '' ?>">All</a>
     <a href="<?= e(url('admin/rules?type=spam')) ?>" class="<?= ($ruleType ?? '') === 'spam' ? 'active' : '' ?>">Spam</a>
+    <a href="<?= e(url('admin/rules?type=company')) ?>" class="<?= ($ruleType ?? '') === 'company' ? 'active' : '' ?>">Company</a>
     <a href="<?= e(url('admin/rules?type=employee')) ?>" class="<?= ($ruleType ?? '') === 'employee' ? 'active' : '' ?>">Employee</a>
     <a href="<?= e(url('admin/rules?type=client')) ?>" class="<?= ($ruleType ?? '') === 'client' ? 'active' : '' ?>">Client</a>
 </nav>
@@ -49,6 +50,10 @@
                         <form method="post" action="<?= e(url('admin/rules/' . $r['id'] . '/toggle')) ?>" class="admin-action-form">
                             <?= csrf_field() ?>
                             <button type="submit" class="admin-action-link admin-action-link-muted">Toggle</button>
+                        </form>
+                        <form method="post" action="<?= e(url('admin/rules/' . $r['id'] . '/delete')) ?>" class="admin-action-form" onsubmit="return confirm('Delete this rule?');">
+                            <?= csrf_field() ?>
+                            <button type="submit" class="admin-action-link btn-link-danger">Delete</button>
                         </form>
                     </td>
                 </tr>

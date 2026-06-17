@@ -134,7 +134,17 @@ class AdminController
             }
         }
 
-        $this->users->createEmployee($data);
+        try {
+            $this->users->createEmployee($data);
+        } catch (\Throwable $e) {
+            app_log('User create failed: ' . $e->getMessage());
+            flash('error', $e->getMessage() ?: 'Could not create the user.');
+            redirect('admin/users/create');
+        }
+
+        // New employee aliases/rules mean existing inbox mail should be re-routed.
+        FilterService::reprocess();
+        $this->audit('user_create', 'Created user ' . $data['username']);
         flash(
             'success',
             ($data['role'] ?? 'employee') === 'employee'
@@ -151,8 +161,10 @@ class AdminController
 
         $result = $this->users->backfillEmployees();
 
-        // Re-run routing so existing INBOX mail lands in the new folders.
-        FilterService::clearSessionFlag();
+        // Re-run routing so existing INBOX mail lands in the new folders. Clear
+        // the processed log too, otherwise previously-unmatched mail would be
+        // skipped and never routed to the freshly created folders.
+        FilterService::reprocess();
         $filter = FilterService::runIfNeeded(true);
 
         $moved = $filter['moved'] ?? 0;
@@ -197,8 +209,22 @@ class AdminController
         requireAdmin();
         verify_csrf_or_fail();
         $id = (int) ($params['id'] ?? 0);
+        if ($this->users->find($id) === null) {
+            flash('error', 'User not found.');
+            redirect('admin/users');
+        }
         $data = $this->userFormData();
+        if ($data['name'] === '' || $data['username'] === '') {
+            flash('error', 'Name and username are required.');
+            redirect('admin/users/' . $id . '/edit');
+        }
+        $dupe = Database::fetchOne('SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1', [$data['username'], $id]);
+        if ($dupe !== null) {
+            flash('error', 'That username is already taken.');
+            redirect('admin/users/' . $id . '/edit');
+        }
         $this->users->update($id, $data);
+        $this->audit('user_update', 'Updated user #' . $id);
         flash('success', 'User updated.');
         redirect('admin/users');
     }
@@ -215,6 +241,7 @@ class AdminController
             flash('error', 'Admin accounts cannot be disabled.');
             redirect('admin/users');
         }
+        $this->audit('user_disable', 'Disabled user #' . $id);
         flash('success', 'User disabled.');
         redirect('admin/users');
     }
@@ -250,7 +277,17 @@ class AdminController
             flash('error', 'Email and display name are required.');
             redirect('admin/aliases/create');
         }
-        $this->aliases->create($data);
+        if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+            flash('error', 'Please enter a valid email address.');
+            redirect('admin/aliases/create');
+        }
+        if ($this->aliases->findByEmail($data['email']) !== null) {
+            flash('error', 'An alias with that email already exists.');
+            redirect('admin/aliases/create');
+        }
+        $newId = $this->aliases->create($data);
+        FilterService::reprocess();
+        $this->audit('alias_create', 'Created alias #' . $newId . ' ' . $data['email']);
         flash('success', 'Alias created.');
         redirect('admin/aliases');
     }
@@ -282,8 +319,44 @@ class AdminController
     {
         requireAdmin();
         verify_csrf_or_fail();
-        $this->aliases->update((int) ($params['id'] ?? 0), $this->aliasFormData());
+        $id = (int) ($params['id'] ?? 0);
+        if ($this->aliases->find($id) === null) {
+            flash('error', 'Alias not found.');
+            redirect('admin/aliases');
+        }
+        $data = $this->aliasFormData();
+        if ($data['email'] === '' || !filter_var($data['email'], FILTER_VALIDATE_EMAIL) || $data['display_name'] === '') {
+            flash('error', 'A valid email and display name are required.');
+            redirect('admin/aliases/' . $id . '/edit');
+        }
+        $existing = $this->aliases->findByEmail($data['email']);
+        if ($existing !== null && (int) $existing['id'] !== $id) {
+            flash('error', 'Another alias already uses that email.');
+            redirect('admin/aliases/' . $id . '/edit');
+        }
+        $this->aliases->update($id, $data);
+        FilterService::reprocess();
+        $this->audit('alias_update', 'Updated alias #' . $id);
         flash('success', 'Alias updated.');
+        redirect('admin/aliases');
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function aliasesDelete(array $params): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+        $id = (int) ($params['id'] ?? 0);
+        if ($this->aliases->find($id) === null) {
+            flash('error', 'Alias not found.');
+            redirect('admin/aliases');
+        }
+        $this->aliases->delete($id);
+        FilterService::reprocess();
+        $this->audit('alias_delete', 'Deleted alias #' . $id);
+        flash('success', 'Alias deleted.');
         redirect('admin/aliases');
     }
 
@@ -312,24 +385,84 @@ class AdminController
         requireAdmin();
         verify_csrf_or_fail();
         $displayName = trim($_POST['display_name'] ?? '');
-        $folderType = $_POST['folder_type'] ?? 'client';
+        $folderType = $this->normalizeFolderType($_POST['folder_type'] ?? 'client');
         if ($displayName === '') {
             flash('error', 'Display name is required.');
             redirect('admin/folders/create');
         }
 
-        $this->folders->createClientFolder([
-            'display_name' => $displayName,
-            'folder_type' => $folderType,
-            'imap_path' => trim($_POST['imap_path'] ?? '') ?: null,
-            'create_rule' => isset($_POST['create_rule']),
-            'rule_field' => $_POST['rule_field'] ?? 'subject',
-            'rule_operator' => $_POST['rule_operator'] ?? 'contains',
-            'rule_value' => trim($_POST['rule_value'] ?? ''),
-        ]);
+        try {
+            $newId = $this->folders->createClientFolder([
+                'display_name' => $displayName,
+                'folder_type' => $folderType,
+                'imap_path' => trim($_POST['imap_path'] ?? '') ?: null,
+                'create_rule' => isset($_POST['create_rule']),
+                'rule_field' => $_POST['rule_field'] ?? 'subject',
+                'rule_operator' => $_POST['rule_operator'] ?? 'contains',
+                'rule_value' => trim($_POST['rule_value'] ?? ''),
+            ]);
+        } catch (\Throwable $e) {
+            app_log('Folder create failed: ' . $e->getMessage());
+            flash('error', $e->getMessage() ?: 'Could not create the folder.');
+            redirect('admin/folders/create');
+        }
 
+        FilterService::reprocess();
+        $this->audit('folder_create', 'Created folder #' . $newId . ' ' . $displayName);
         flash('success', 'Folder created on IMAP and in database.');
         redirect('admin/folders');
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function foldersEdit(array $params): void
+    {
+        requireAdmin();
+        $folder = $this->folders->find((int) ($params['id'] ?? 0));
+        if ($folder === null) {
+            flash('error', 'Folder not found.');
+            redirect('admin/folders');
+        }
+        $this->render('admin/folders/form', [
+            'title' => 'Edit folder',
+            'folder' => $folder,
+            'adminSection' => 'folders',
+        ]);
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function foldersUpdate(array $params): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+        $id = (int) ($params['id'] ?? 0);
+        if ($this->folders->find($id) === null) {
+            flash('error', 'Folder not found.');
+            redirect('admin/folders');
+        }
+        $displayName = trim($_POST['display_name'] ?? '');
+        if ($displayName === '') {
+            flash('error', 'Display name is required.');
+            redirect('admin/folders/' . $id . '/edit');
+        }
+        $this->folders->update($id, [
+            'display_name' => $displayName,
+            'folder_type' => $this->normalizeFolderType($_POST['folder_type'] ?? 'client'),
+            'active' => isset($_POST['active']) ? 1 : 0,
+        ]);
+        $this->audit('folder_update', 'Updated folder #' . $id);
+        flash('success', 'Folder updated.');
+        redirect('admin/folders');
+    }
+
+    private function normalizeFolderType(string $type): string
+    {
+        $allowed = ['client', 'company', 'employee', 'system'];
+
+        return in_array($type, $allowed, true) ? $type : 'client';
     }
 
     public function rulesIndex(): void
@@ -364,10 +497,11 @@ class AdminController
             flash('error', 'Name and condition value are required.');
             redirect('admin/rules/create');
         }
-        $this->rules->create($data);
-        FilterService::clearSessionFlag();
+        $newId = $this->rules->create($data);
+        FilterService::reprocess();
+        $this->audit('rule_create', 'Created rule #' . $newId . ' ' . $data['name']);
         flash('success', 'Rule created. Mail will be re-organized on next inbox visit.');
-        redirect('admin/rules');
+        redirect('admin/rules' . ($data['rule_type'] === 'spam' ? '?type=spam' : ''));
     }
 
     /**
@@ -396,8 +530,14 @@ class AdminController
     {
         requireAdmin();
         verify_csrf_or_fail();
-        $this->rules->update((int) ($params['id'] ?? 0), $this->ruleFormData());
-        FilterService::clearSessionFlag();
+        $id = (int) ($params['id'] ?? 0);
+        if ($this->rules->find($id) === null) {
+            flash('error', 'Rule not found.');
+            redirect('admin/rules');
+        }
+        $this->rules->update($id, $this->ruleFormData());
+        FilterService::reprocess();
+        $this->audit('rule_update', 'Updated rule #' . $id);
         flash('success', 'Rule updated. Mail will be re-organized on next inbox visit.');
         redirect('admin/rules');
     }
@@ -409,8 +549,14 @@ class AdminController
     {
         requireAdmin();
         verify_csrf_or_fail();
-        $this->rules->toggle((int) ($params['id'] ?? 0));
-        FilterService::clearSessionFlag();
+        $id = (int) ($params['id'] ?? 0);
+        if ($this->rules->find($id) === null) {
+            flash('error', 'Rule not found.');
+            redirect('admin/rules');
+        }
+        $this->rules->toggle($id);
+        FilterService::reprocess();
+        $this->audit('rule_toggle', 'Toggled rule #' . $id);
         flash('success', 'Rule status toggled. Mail will be re-organized on next inbox visit.');
         redirect('admin/rules');
     }
@@ -428,9 +574,42 @@ class AdminController
         }
 
         $this->rules->reorder($order);
-        FilterService::clearSessionFlag();
+        FilterService::reprocess();
+        $this->audit('rule_reorder', 'Reordered ' . count($order) . ' rule(s)');
         flash('success', 'Rule order updated.');
         redirect('admin/rules');
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function rulesDelete(array $params): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+        $id = (int) ($params['id'] ?? 0);
+        if ($this->rules->find($id) === null) {
+            flash('error', 'Rule not found.');
+            redirect('admin/rules');
+        }
+        $this->rules->delete($id);
+        FilterService::reprocess();
+        $this->audit('rule_delete', 'Deleted rule #' . $id);
+        flash('success', 'Rule deleted.');
+        redirect('admin/rules');
+    }
+
+    public function reprocess(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+
+        FilterService::reprocess();
+        $result = FilterService::runIfNeeded(true);
+        $moved = $result['moved'] ?? 0;
+        $this->audit('reprocess_inbox', sprintf('Reprocessed inbox: %d moved', $moved));
+        flash('success', sprintf('Inbox reprocessed. %d message(s) routed.', $moved));
+        redirect('admin');
     }
 
     /**
@@ -479,6 +658,18 @@ class AdminController
             'condition_value' => trim($_POST['condition_value'] ?? ''),
             'target_folder_id' => (int) ($_POST['target_folder_id'] ?? 0),
         ];
+    }
+
+    private function audit(string $action, string $details): void
+    {
+        try {
+            Database::query(
+                'INSERT INTO audit_log (user_id, action, details) VALUES (?, ?, ?)',
+                [Auth::user()['id'] ?? null, $action, $details]
+            );
+        } catch (\Throwable $e) {
+            app_log('Audit log failed (' . $action . '): ' . $e->getMessage());
+        }
     }
 
     private function render(string $view, array $data): void

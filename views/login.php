@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=8">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=19">
 </head>
 <body class="login-body">
     <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
@@ -39,7 +39,7 @@
             </form>
         </div>
     </div>
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=8" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=19" defer></script>
     <script>
         document.querySelector('.login-form')?.addEventListener('submit', function () {
             var o = document.getElementById('loading-overlay');
@@ -48,3 +48,4 @@
     </script>
 </body>
 </html>
+

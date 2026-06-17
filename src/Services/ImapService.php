@@ -116,17 +116,22 @@ class ImapService
         }
 
         $mailboxString = $this->getMailboxString();
-        $folders = imap_list($this->connection, $mailboxString, '*') ?: [];
+        // imap_getmailboxes exposes the server's real hierarchy delimiter, which
+        // can differ from "." on some IMAP servers.
+        $mailboxes = imap_getmailboxes($this->connection, $mailboxString, '*') ?: [];
         $result = [];
 
-        foreach ($folders as $folder) {
-            $path = $this->decodeFolderName($folder);
+        foreach ($mailboxes as $mailbox) {
+            $path = $this->decodeFolderName($mailbox->name ?? '');
+            if ($path === '') {
+                continue;
+            }
             $name = $path === 'INBOX' ? 'Inbox' : $path;
 
             $result[] = [
                 'path' => $path,
                 'name' => $name,
-                'delimiter' => '.',
+                'delimiter' => $mailbox->delimiter ?? '.',
             ];
         }
 
@@ -277,7 +282,7 @@ class ImapService
      */
     public function fetchBody(string $path, int $uid): array
     {
-        $result = ['html' => null, 'plain' => null, 'attachments' => []];
+        $result = ['html' => null, 'plain' => null, 'attachments' => [], 'inline' => []];
 
         if (!$this->openFolder($path)) {
             return $result;
@@ -295,7 +300,39 @@ class ImapService
 
         $this->parseStructure($msgno, $structure, '', $result);
 
+        // Rewrite inline cid: references in HTML to point at the attachment
+        // endpoint so embedded images render in the browser.
+        if ($result['html'] !== null && $result['inline'] !== []) {
+            $result['html'] = $this->rewriteCidReferences($result['html'], $result['inline'], $path, $uid);
+        }
+
         return $result;
+    }
+
+    /**
+     * @param array<string, string> $inline contentId => part section
+     */
+    private function rewriteCidReferences(string $html, array $inline, string $path, int $uid): string
+    {
+        foreach ($inline as $cid => $section) {
+            if ($cid === '') {
+                continue;
+            }
+
+            $src = url('attachment')
+                . '?folder=' . encode_folder_path($path)
+                . '&uid=' . $uid
+                . '&part=' . rawurlencode($section)
+                . '&disposition=inline';
+
+            $html = str_ireplace(
+                ['cid:' . $cid, 'cid:%3C' . $cid . '%3E'],
+                $src,
+                $html
+            );
+        }
+
+        return $html;
     }
 
     /**
@@ -654,10 +691,11 @@ class ImapService
             $from = $header->from[0]->mailbox . '@' . $header->from[0]->host;
         }
 
-        $to = '';
-        if (isset($header->to[0])) {
-            $to = $header->to[0]->mailbox . '@' . $header->to[0]->host;
-        }
+        // Capture every recipient (To + Cc), not just the first, so filter rules
+        // still match when a message is addressed to several people.
+        $to = trim(
+            $this->joinAddresses($header->to ?? []) . ' ' . $this->joinAddresses($header->cc ?? [])
+        );
 
         return [
             'from' => $from,
@@ -667,6 +705,21 @@ class ImapService
             'x_original_to' => $this->extractHeaderValue($rawHeader, 'X-Original-To'),
             'message_id' => $this->extractHeaderValue($rawHeader, 'Message-ID'),
         ];
+    }
+
+    /**
+     * @param array<int, object> $addresses
+     */
+    private function joinAddresses(array $addresses): string
+    {
+        $emails = [];
+        foreach ($addresses as $addr) {
+            if (isset($addr->mailbox, $addr->host) && $addr->host !== '') {
+                $emails[] = $addr->mailbox . '@' . $addr->host;
+            }
+        }
+
+        return implode(' ', $emails);
     }
 
     public function fetchFilterBody(string $path, int $uid): string
@@ -762,8 +815,11 @@ class ImapService
             return false;
         }
 
+        // Fetch the complete raw message (full header + raw MIME body) without
+        // altering the \Seen flag, so the copied message keeps every part,
+        // boundary and encoding intact.
         $header = imap_fetchheader($this->connection, $msgno);
-        $body = imap_body($this->connection, $msgno);
+        $body = imap_body($this->connection, $msgno, FT_PEEK);
         if ($header === false || $body === false) {
             return false;
         }
@@ -869,6 +925,19 @@ class ImapService
     private function parseStructure(int $msgno, object $structure, string $partId, array &$result): void
     {
         if (isset($structure->parts) && is_array($structure->parts)) {
+            // Embedded messages (message/rfc822) are surfaced as a single
+            // downloadable attachment rather than having their inner parts
+            // flattened into the parent message body.
+            if (($structure->type ?? -1) === TYPEMESSAGE && $partId !== '') {
+                $result['attachments'][] = [
+                    'id' => $partId,
+                    'filename' => $this->getPartFilename($structure) ?? 'forwarded-message.eml',
+                    'size' => 0,
+                    'mime' => 'message/rfc822',
+                ];
+                return;
+            }
+
             foreach ($structure->parts as $index => $subPart) {
                 $subId = $partId === '' ? (string) ($index + 1) : $partId . '.' . ($index + 1);
                 $this->parseStructure($msgno, $subPart, $subId, $result);
@@ -888,7 +957,18 @@ class ImapService
         $filename = $this->getPartFilename($structure);
         $disposition = strtolower($structure->disposition ?? '');
 
-        if ($filename !== null || $disposition === 'attachment') {
+        // Record any part carrying a Content-ID so HTML cid: references can be
+        // rewritten to a viewable URL (inline images, etc.).
+        $contentId = (!empty($structure->ifid) && isset($structure->id))
+            ? trim((string) $structure->id, '<>')
+            : null;
+        if ($contentId !== null && $contentId !== '') {
+            $result['inline'][$contentId] = $section;
+        }
+
+        $isInlineImage = $contentId !== null && str_starts_with($mime, 'image/');
+
+        if (($filename !== null || $disposition === 'attachment') && !$isInlineImage) {
             $result['attachments'][] = [
                 'id' => $section,
                 'filename' => $filename ?? 'attachment',
@@ -899,10 +979,47 @@ class ImapService
         }
 
         if (str_starts_with($mime, 'text/html') && $result['html'] === null) {
-            $result['html'] = $decoded;
+            $result['html'] = $this->toUtf8($decoded, $this->getPartCharset($structure));
         } elseif (str_starts_with($mime, 'text/plain') && $result['plain'] === null) {
-            $result['plain'] = $decoded;
+            $result['plain'] = $this->toUtf8($decoded, $this->getPartCharset($structure));
         }
+    }
+
+    private function getPartCharset(object $part): ?string
+    {
+        if (isset($part->parameters) && is_array($part->parameters)) {
+            foreach ($part->parameters as $param) {
+                if (strtolower($param->attribute ?? '') === 'charset') {
+                    return (string) $param->value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Convert a decoded text part to UTF-8 based on its declared charset.
+     */
+    private function toUtf8(string $text, ?string $charset): string
+    {
+        $charset = $charset !== null ? strtoupper(trim($charset)) : '';
+        if ($text === '' || $charset === '' || in_array($charset, ['UTF-8', 'US-ASCII', 'ASCII'], true)) {
+            return $text;
+        }
+
+        try {
+            $converted = mb_convert_encoding($text, 'UTF-8', $charset);
+            if (is_string($converted) && $converted !== '') {
+                return $converted;
+            }
+        } catch (\Throwable) {
+            // Unknown/unsupported charset for mbstring — fall back to iconv.
+        }
+
+        $alt = @iconv($charset, 'UTF-8//TRANSLIT//IGNORE', $text);
+
+        return $alt !== false ? $alt : $text;
     }
 
     private function findPart(object $structure, string $partId): ?object
@@ -994,7 +1111,11 @@ class ImapService
 
     private function extractHeaderValue(string $rawHeader, string $headerName): ?string
     {
-        if (preg_match('/^' . preg_quote($headerName, '/') . ':\s*(.+)$/im', $rawHeader, $matches)) {
+        // Unfold folded headers first: per RFC 5322 a CRLF (or LF) followed by
+        // whitespace is a continuation of the previous header line.
+        $unfolded = preg_replace('/\r?\n[ \t]+/', ' ', $rawHeader) ?? $rawHeader;
+
+        if (preg_match('/^' . preg_quote($headerName, '/') . ':\s*(.+)$/im', $unfolded, $matches)) {
             return trim($matches[1]);
         }
 

@@ -232,7 +232,33 @@ function verify_csrf_or_fail(): void
 
 function client_ip(): string
 {
-    return $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $remote = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+
+    // Only trust X-Forwarded-For when the direct peer is a local/private reverse
+    // proxy. Otherwise the header is fully attacker-controlled and could be used
+    // to evade the login rate limiter.
+    $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+    if ($forwarded !== '' && is_private_ip($remote)) {
+        $first = trim(explode(',', $forwarded)[0]);
+        if (filter_var($first, FILTER_VALIDATE_IP)) {
+            return $first;
+        }
+    }
+
+    return $remote;
+}
+
+function is_private_ip(string $ip): bool
+{
+    if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+        return false;
+    }
+
+    if ($ip === '127.0.0.1' || $ip === '::1') {
+        return true;
+    }
+
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
 }
 
 /**
@@ -264,6 +290,15 @@ function requireAuth(): void
         redirect('login');
     }
 
+    // An account disabled mid-session is logged out immediately.
+    if (!App\Auth::ensureActive()) {
+        App\Auth::logout();
+        if (wants_json()) {
+            json_response(['ok' => false, 'error' => 'Your session has ended.'], 401);
+        }
+        redirect('login');
+    }
+
     App\Auth::enforcePasswordChange();
 }
 
@@ -277,16 +312,35 @@ function requireAdmin(): void
     }
 }
 
+/**
+ * Abort the request unless the current user may access the given IMAP folder.
+ * Prevents employees from reaching other people's folders via crafted URLs.
+ */
+function assert_folder_access(string $imapPath): void
+{
+    if (\App\Services\FolderCache::canAccess($imapPath)) {
+        return;
+    }
+
+    if (wants_json()) {
+        json_response(['ok' => false, 'error' => 'You do not have access to that folder.'], 403);
+    }
+
+    error_page(403, 'You do not have access to that folder.');
+}
+
 function error_page(int $code, ?string $message = null): void
 {
     $titles = [
         403 => 'Access denied',
         404 => 'Page not found',
+        405 => 'Method not allowed',
         500 => 'Server error',
     ];
     $defaults = [
         403 => 'You do not have permission to access this page.',
         404 => 'The page you requested could not be found.',
+        405 => 'That action is not allowed on this URL.',
         500 => 'Something went wrong. Please try again later.',
     ];
 
@@ -388,23 +442,36 @@ function message_url(string $folderPath, int $uid): string
 
 function trash_folder_path(): string
 {
-    return 'INBOX.Trash';
+    return resolve_system_folder(['trash'], 'INBOX.Trash');
 }
 
 function spam_folder_path(): string
 {
+    return resolve_system_folder(['spam', 'junk'], 'INBOX.spam');
+}
+
+/**
+ * Resolve a system folder (Trash/Spam) from the folders table/cache by matching
+ * any of the given keywords in the path, falling back to a sensible default.
+ *
+ * @param list<string> $keywords
+ */
+function resolve_system_folder(array $keywords, string $default): string
+{
     try {
         foreach (\App\Services\FolderCache::load()['folders'] as $folder) {
             $lower = strtolower($folder['path']);
-            if (str_contains($lower, 'spam') || str_contains($lower, 'junk')) {
-                return $folder['path'];
+            foreach ($keywords as $keyword) {
+                if (str_contains($lower, $keyword)) {
+                    return $folder['path'];
+                }
             }
         }
     } catch (\Throwable) {
         // fall through to default
     }
 
-    return 'INBOX.spam';
+    return $default;
 }
 
 function format_mail_date(?string $date): string
@@ -510,6 +577,7 @@ function mail_per_page(): int
         $requested = (int) $_GET['per_page'];
         if (in_array($requested, $allowed, true)) {
             $_SESSION['mail_per_page'] = $requested;
+            persist_user_preference('mail_per_page', $requested);
 
             return $requested;
         }
@@ -520,9 +588,44 @@ function mail_per_page(): int
         return $session;
     }
 
+    // Fall back to the per-user saved preference before the global default.
+    $pref = (int) (user_preferences()['mail_per_page'] ?? 0);
+    if (in_array($pref, $allowed, true)) {
+        $_SESSION['mail_per_page'] = $pref;
+
+        return $pref;
+    }
+
     $default = (int) config('app')['mail_per_page'];
 
     return in_array($default, $allowed, true) ? $default : 15;
+}
+
+/**
+ * Persist a single key into the current user's JSON preferences (best effort).
+ */
+function persist_user_preference(string $key, mixed $value): void
+{
+    $user = App\Auth::user();
+    if ($user === null || empty($user['id']) || !schema_has_column('users', 'preferences')) {
+        return;
+    }
+
+    $prefs = user_preferences($user);
+    if (($prefs[$key] ?? null) === $value) {
+        return;
+    }
+    $prefs[$key] = $value;
+
+    try {
+        $encoded = json_encode($prefs);
+        App\Database::query('UPDATE users SET preferences = ? WHERE id = ?', [$encoded, (int) $user['id']]);
+        if (isset($_SESSION['auth_user']) && is_array($_SESSION['auth_user'])) {
+            $_SESSION['auth_user']['preferences'] = $encoded;
+        }
+    } catch (\Throwable $e) {
+        app_log('Failed to persist preference ' . $key . ': ' . $e->getMessage());
+    }
 }
 
 function format_mail_from(?string $from): string
