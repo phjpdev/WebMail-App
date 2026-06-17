@@ -97,7 +97,12 @@ class FolderCache
     public static function refreshPaths(array $paths): void
     {
         $paths = array_values(array_unique(array_filter($paths)));
-        if ($paths === [] || !isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+        if ($paths === []) {
+            return;
+        }
+
+        self::ensureCache();
+        if (!isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
             return;
         }
 
@@ -108,6 +113,28 @@ class FolderCache
 
         foreach ($imap->getFolderUnreadCounts($paths) as $path => $count) {
             $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $count;
+        }
+    }
+
+    /**
+     * Refresh sidebar badge counts for the folders the user is looking at plus
+     * the filter inbox. Cheap (1–2 IMAP status calls) and keeps badges accurate
+     * after filter moves even when the throttle skips another filter pass.
+     *
+     * @param string ...$paths
+     */
+    public static function syncUnreadBadges(string ...$paths): void
+    {
+        $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+        $all = array_unique(array_merge($paths, [$inbox]));
+
+        self::refreshPaths($all);
+    }
+
+    private static function ensureCache(): void
+    {
+        if (!isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+            self::load(skipUnreadRefresh: true);
         }
     }
 

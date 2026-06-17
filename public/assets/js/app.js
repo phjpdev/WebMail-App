@@ -424,6 +424,27 @@
                 badge.remove();
             }
         });
+
+        document.querySelectorAll('.sidebar-group.is-collapsible').forEach(function (group) {
+            var total = 0;
+            group.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
+                var p = link.getAttribute('data-folder-path');
+                if (p && counts[p]) total += counts[p];
+            });
+            var toggle = group.querySelector('.sidebar-group-toggle');
+            if (!toggle) return;
+            var groupBadge = toggle.querySelector('.folder-badge-sm');
+            if (total > 0) {
+                if (!groupBadge) {
+                    groupBadge = document.createElement('span');
+                    groupBadge.className = 'folder-badge folder-badge-sm';
+                    toggle.appendChild(groupBadge);
+                }
+                groupBadge.textContent = total > 99 ? '99+' : total;
+            } else if (groupBadge) {
+                groupBadge.remove();
+            }
+        });
     }
 
     function refreshUnreadBadges() {

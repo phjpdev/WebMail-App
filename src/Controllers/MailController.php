@@ -35,6 +35,7 @@ class MailController
         // Load sidebar cache first so filter moves can patch unread badges.
         FolderCache::load(skipUnreadRefresh: true);
         FilterService::runBackground();
+        FolderCache::syncUnreadBadges($folderPath);
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
@@ -109,6 +110,7 @@ class MailController
         // Sort new INBOX mail during the existing list-sync poll (no extra HTTP
         // request — this endpoint is already called every ~30s while mail is open).
         FilterService::runBackground();
+        FolderCache::syncUnreadBadges($folderPath);
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
@@ -156,9 +158,8 @@ class MailController
         requireAuth();
         header('Content-Type: application/json; charset=utf-8');
 
-        // Serve cached counts (updated incrementally by read/actions) — no per-
-        // folder imap_status sweep on every background poll.
-        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        // Refresh expired counts so sidebar badges stay accurate between filter runs.
+        $folderData = FolderCache::load(skipUnreadRefresh: false);
         echo json_encode(['unread_counts' => $folderData['unread_counts'] ?? []]);
     }
 
@@ -210,6 +211,8 @@ class MailController
         assert_folder_access($folderPath);
 
         $folderData = FolderCache::load(skipUnreadRefresh: true);
+        FolderCache::syncUnreadBadges($folderPath);
+        $folderData['unread_counts'] = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? $folderData['unread_counts'];
         $folders = $folderData['folders'];
 
         $imap = new ImapService();
