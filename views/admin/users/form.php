@@ -59,6 +59,12 @@ ob_start();
         </div>
         <?php endif; ?>
         <?php if ($isEdit && ($editUser['role'] ?? '') !== 'admin'): ?>
+        <div class="form-group">
+            <label for="alias_email">Email address</label>
+            <input type="email" id="alias_email" name="alias_email"
+                   value="<?= e($editUser['alias_email'] ?? '') ?>" required>
+            <small class="form-hint">Send-as address for this employee. Changing it updates the alias and routing rule.</small>
+        </div>
         <div class="form-group form-check">
             <label class="form-check-label">
                 <input type="checkbox" class="form-check-input" name="active" value="1"<?= (int) ($editUser['active'] ?? 1) ? ' checked' : '' ?>>

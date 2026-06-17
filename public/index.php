@@ -128,6 +128,7 @@ $router->post('/admin/users/backfill', fn () => $adminController->usersBackfill(
 $router->get('/admin/users/{id}/edit', fn ($p) => $adminController->usersEdit($p));
 $router->post('/admin/users/{id}/update', fn ($p) => $adminController->usersUpdate($p));
 $router->post('/admin/users/{id}/disable', fn ($p) => $adminController->usersDisable($p));
+$router->post('/admin/users/{id}/delete', fn ($p) => $adminController->usersDelete($p));
 $router->get('/admin/aliases', fn () => $adminController->aliasesIndex());
 $router->get('/admin/aliases/create', fn () => $adminController->aliasesCreate());
 $router->post('/admin/aliases/store', fn () => $adminController->aliasesStore());

@@ -1,5 +1,6 @@
 <?php
 /**
+ * @var list<array{path: string, name: string}> $sidebarFolders
  * @var list<array{path: string, name: string}> $folders
  * @var string|null $activeFolder
  * @var array<string, int> $unreadCounts
@@ -16,7 +17,7 @@ $grouped = [
 $unreadCounts = $unreadCounts ?? [];
 $fixedGroups = ['inbox', 'sent', 'drafts', 'trash'];
 
-foreach ($folders as $folder) {
+foreach (($sidebarFolders ?? $folders ?? []) as $folder) {
     $path = $folder['path'];
     $lower = strtolower($path);
 
@@ -111,13 +112,13 @@ $labels = [
         <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
             <div class="sidebar-divider" aria-hidden="true"></div>
             <div class="sidebar-group is-open is-collapsible" data-group="admin">
-                <button type="button" class="sidebar-group-toggle" aria-expanded="true">
+                <!-- <button type="button" class="sidebar-group-toggle" aria-expanded="true">
                     <span class="sidebar-group-chevron-btn" aria-hidden="true">
                         <svg class="sidebar-group-chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
                     </span>
                     <span class="sidebar-group-icon folder-icon folder-icon-admin-section" aria-hidden="true"></span>
                     <span class="sidebar-group-title">Admin</span>
-                </button>
+                </button> -->
                 <div class="sidebar-group-items">
                     <a class="sidebar-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
                        href="<?= e(url('admin')) ?>">

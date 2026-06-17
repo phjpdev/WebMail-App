@@ -37,6 +37,13 @@
                                 <button type="submit" class="admin-action-link admin-action-link-danger">Disable</button>
                             </form>
                         <?php endif; ?>
+                        <?php if ($u['role'] !== 'admin'): ?>
+                            <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/delete')) ?>" class="admin-action-form"
+                                  onsubmit="return confirm('Permanently delete this user? Their alias and routing rules will be removed. This cannot be undone.');">
+                                <?= csrf_field() ?>
+                                <button type="submit" class="admin-action-link admin-action-link-danger">Delete</button>
+                            </form>
+                        <?php endif; ?>
                     </td>
                 </tr>
                 <?php endforeach; ?>

@@ -103,4 +103,32 @@ class AdminFolderService
         );
         (new FolderCache())->clear();
     }
+
+    /**
+     * Remove a folder from the IMAP server (best effort) and the DB registry.
+     * Filter rules targeting the folder are removed via ON DELETE CASCADE.
+     */
+    public function delete(int $id): void
+    {
+        $folder = $this->find($id);
+        if ($folder === null) {
+            return;
+        }
+
+        $protected = ['INBOX', 'INBOX.Sent', 'INBOX.Drafts', 'INBOX.Trash', 'INBOX.Spam', 'INBOX.Junk'];
+        if (in_array($folder['imap_path'], $protected, true)) {
+            throw new \RuntimeException('System folders cannot be deleted.');
+        }
+
+        $imap = new ImapService();
+        if ($imap->connect() && $imap->folderExistsOnServer($folder['imap_path'])) {
+            if (!$imap->deleteFolder($folder['imap_path'])) {
+                app_log('IMAP folder delete failed for ' . $folder['imap_path'] . ': ' . $imap->getLastError());
+            }
+        }
+
+        Database::query('UPDATE aliases SET default_folder_id = NULL WHERE default_folder_id = ?', [$id]);
+        Database::query('DELETE FROM folders WHERE id = ?', [$id]);
+        (new FolderCache())->clear();
+    }
 }

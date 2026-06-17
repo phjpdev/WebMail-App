@@ -748,6 +748,34 @@ class ImapService
         return false;
     }
 
+    /**
+     * Remove a mailbox folder from the IMAP server. Some servers require the
+     * folder to be empty; failures are logged but callers may still drop the
+     * DB registry row.
+     */
+    public function deleteFolder(string $path): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        if (!$this->folderExistsOnServer($path)) {
+            return true;
+        }
+
+        $mailbox = $this->getMailboxString() . $this->encodeFolderPath($path);
+
+        if (@imap_deletemailbox($this->connection, $mailbox)) {
+            return true;
+        }
+
+        $errors = imap_errors() ?: [];
+        $this->lastError = 'Failed to delete folder: ' . implode('; ', $errors);
+        app_log($this->lastError);
+
+        return false;
+    }
+
     public function folderExistsOnServer(string $path): bool
     {
         foreach ($this->listFolders() as $folder) {

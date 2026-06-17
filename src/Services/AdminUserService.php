@@ -211,12 +211,16 @@ class AdminUserService
     }
 
     /**
-     * @param array{name?: string, username?: string, password?: string, role?: string, active?: int} $data
+     * @param array{name?: string, username?: string, password?: string, role?: string, active?: int, alias_email?: string} $data
      */
     public function update(int $id, array $data): void
     {
         $existing = $this->find($id);
-        if ($existing !== null && $existing['role'] === 'admin') {
+        if ($existing === null) {
+            throw new \RuntimeException('User not found.');
+        }
+
+        if ($existing['role'] === 'admin') {
             $data['active'] = 1;
             $data['role'] = 'admin';
         }
@@ -256,6 +260,59 @@ class AdminUserService
             $params[] = $id;
             Database::query($sql, $params);
         }
+
+        if (($data['role'] ?? '') === 'employee' && !empty($data['alias_email'])) {
+            $this->syncEmployeeAlias($id, $data['name'], $data['username'], trim($data['alias_email']));
+        }
+    }
+
+    /**
+     * Keep the employee's send-as alias and routing rule in sync when their
+     * email or display name changes from the user edit form.
+     */
+    private function syncEmployeeAlias(int $userId, string $displayName, string $username, string $newEmail): void
+    {
+        if (!filter_var($newEmail, FILTER_VALIDATE_EMAIL)) {
+            throw new \RuntimeException('Invalid email address.');
+        }
+
+        $taken = Database::fetchOne(
+            'SELECT id FROM aliases WHERE email = ? AND (user_id IS NULL OR user_id != ?) LIMIT 1',
+            [$newEmail, $userId]
+        );
+        if ($taken !== null) {
+            throw new \RuntimeException('That email address is already assigned to another user.');
+        }
+
+        $alias = Database::fetchOne(
+            'SELECT id, email FROM aliases WHERE user_id = ? ORDER BY id LIMIT 1',
+            [$userId]
+        );
+
+        if ($alias === null) {
+            $this->provisionEmployeeMailbox($userId, $displayName, $newEmail, null, $username);
+
+            return;
+        }
+
+        $oldEmail = (string) $alias['email'];
+        $aliasId = (int) $alias['id'];
+
+        Database::transaction(function () use ($aliasId, $oldEmail, $newEmail, $displayName): void {
+            Database::query(
+                'UPDATE aliases SET email = ?, display_name = ? WHERE id = ?',
+                [$newEmail, $displayName, $aliasId]
+            );
+
+            if (strcasecmp($oldEmail, $newEmail) !== 0) {
+                Database::query(
+                    "UPDATE filter_rules
+                     SET name = ?, condition_value = ?
+                     WHERE condition_field = 'to' AND condition_value = ?",
+                    ['Route ' . $newEmail, $newEmail, $oldEmail]
+                );
+            }
+        });
     }
 
     public function disable(int $id): bool
@@ -273,6 +330,50 @@ class AdminUserService
              WHERE a.user_id = ? AND r.condition_field = \'to\'',
             [$id]
         );
+
+        return true;
+    }
+
+    /**
+     * Permanently remove an employee account and clean up their alias + routing rules.
+     * Admins and the currently logged-in user cannot be deleted.
+     */
+    public function delete(int $id, int $actingUserId = 0): bool
+    {
+        $user = $this->find($id);
+        if ($user === null || $user['role'] === 'admin') {
+            return false;
+        }
+        if ($actingUserId > 0 && $id === $actingUserId) {
+            return false;
+        }
+
+        Database::transaction(function () use ($id): void {
+            $aliases = Database::query(
+                'SELECT id, email FROM aliases WHERE user_id = ?',
+                [$id]
+            )->fetchAll();
+
+            foreach ($aliases as $alias) {
+                Database::query(
+                    "DELETE FROM filter_rules WHERE condition_field = 'to' AND condition_value = ?",
+                    [$alias['email']]
+                );
+                Database::query('DELETE FROM aliases WHERE id = ?', [(int) $alias['id']]);
+            }
+
+            $folderService = new AdminFolderService();
+            $linkedFolders = Database::query(
+                'SELECT id FROM folders WHERE linked_user_id = ?',
+                [$id]
+            )->fetchAll();
+
+            foreach ($linkedFolders as $folder) {
+                $folderService->delete((int) $folder['id']);
+            }
+
+            Database::query('DELETE FROM users WHERE id = ? AND role != \'admin\'', [$id]);
+        });
 
         return true;
     }

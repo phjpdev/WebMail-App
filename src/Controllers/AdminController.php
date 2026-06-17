@@ -194,6 +194,14 @@ class AdminController
             redirect('admin/users');
         }
 
+        if ($user['role'] === 'employee') {
+            $alias = Database::fetchOne(
+                'SELECT email FROM aliases WHERE user_id = ? ORDER BY id LIMIT 1',
+                [$id]
+            );
+            $user['alias_email'] = $alias['email'] ?? '';
+        }
+
         $this->render('admin/users/form', [
             'title' => 'Edit user',
             'editUser' => $user,
@@ -223,7 +231,25 @@ class AdminController
             flash('error', 'That username is already taken.');
             redirect('admin/users/' . $id . '/edit');
         }
-        $this->users->update($id, $data);
+
+        if (($data['role'] ?? 'employee') === 'employee') {
+            if (($data['alias_email'] ?? '') === '' || !filter_var($data['alias_email'], FILTER_VALIDATE_EMAIL)) {
+                flash('error', 'A valid email address is required for employee accounts.');
+                redirect('admin/users/' . $id . '/edit');
+            }
+        }
+
+        try {
+            $this->users->update($id, $data);
+        } catch (\Throwable $e) {
+            app_log('User update failed: ' . $e->getMessage());
+            flash('error', $e->getMessage() ?: 'Could not update the user.');
+            redirect('admin/users/' . $id . '/edit');
+        }
+
+        if (($data['role'] ?? 'employee') === 'employee') {
+            FilterService::reprocess();
+        }
         $this->audit('user_update', 'Updated user #' . $id);
         flash('success', 'User updated.');
         redirect('admin/users');
@@ -243,6 +269,27 @@ class AdminController
         }
         $this->audit('user_disable', 'Disabled user #' . $id);
         flash('success', 'User disabled.');
+        redirect('admin/users');
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
+    public function usersDelete(array $params): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+        $id = (int) ($params['id'] ?? 0);
+        $actingId = (int) (Auth::user()['id'] ?? 0);
+
+        if (!$this->users->delete($id, $actingId)) {
+            flash('error', 'This user cannot be deleted (admin account or your own account).');
+            redirect('admin/users');
+        }
+
+        FilterService::reprocess();
+        $this->audit('user_delete', 'Deleted user #' . $id);
+        flash('success', 'User deleted.');
         redirect('admin/users');
     }
 
@@ -679,8 +726,10 @@ class AdminController
         $data['user'] = $data['authUser'];
         $data['filterPending'] = !empty($_SESSION['_filter_pending']);
         $folderData = FolderCache::load();
-        $data['folders'] = $folderData['folders'];
+        $data['sidebarFolders'] = $folderData['folders'];
         $data['unreadCounts'] = $folderData['unread_counts'] ?? [];
+        // Do not overwrite $data['folders'] — admin views use it for the DB folder
+        // registry (display_name, imap_path, …). The sidebar uses $sidebarFolders.
         $data['activeFolder'] = '__admin__';
         $data['success'] = flash('success');
         $data['error'] = flash('error');
