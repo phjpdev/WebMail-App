@@ -127,15 +127,13 @@ php composer.phar install
 | GET/POST | `/admin/folders/*` | Manage folder registry |
 | GET/POST | `/admin/rules/*` | Manage filter rules |
 
-## Filter behavior (Milestone 3)
+## Filter behavior
 
-When any user logs in and opens mail, the app runs a **filter pass** on `INBOX` once per session:
+Mail is delivered to the shared `INBOX`, then **moved** to the correct folder by PHP (rules in MySQL). **No cron required** — works on Hostinger from the zip alone.
 
-- Evaluates rules from MySQL (spam → company → employee → client)
-- Moves matching mail via IMAP to target folders
-- Processes up to 200 messages per pass (configurable via `FILTER_BATCH_LIMIT`)
-
-Mail is **not** filtered when nobody has the site open. First login each day runs the filter.
+1. **Opening mail** — filter runs server-side on folder page loads (throttled).
+2. **While webmail is open** — filter runs inside the existing list-sync poll (~30s); no separate filter AJAX.
+3. **Admin → Sync now** — forces an immediate pass.
 
 ## Milestone 3 exit criteria
 

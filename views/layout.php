@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=20">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=23">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -36,18 +36,10 @@
       data-sound-enabled="<?= !empty($prefs['sound_enabled']) ? '1' : '0' ?>"
       data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
       data-csrf="<?= e(csrf_token()) ?>"
-      data-base-url="<?= e(url('')) ?>"
-      data-filter-pending="<?= !empty($filterPending) ? '1' : '0' ?>">
+      data-base-url="<?= e(url('')) ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
     <div id="nav-progress" class="nav-progress" role="status" aria-live="polite" aria-hidden="true">
         <span class="nav-progress-bar"></span>
-    </div>
-
-    <div id="filter-progress" class="filter-progress" hidden aria-live="polite">
-        <div class="filter-progress-card">
-            <span class="loading-ring"></span>
-            <p>Organizing mail…</p>
-        </div>
     </div>
 
     <div id="shortcuts-modal" class="shortcuts-modal" hidden>
@@ -111,6 +103,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=20" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=23" defer></script>
 </body>
 </html>

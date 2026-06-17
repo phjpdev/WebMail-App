@@ -91,8 +91,8 @@ class AdminController
     {
         requireAdmin();
         verify_csrf_or_fail();
-        FilterService::clearSessionFlag();
-        FilterService::runIfNeeded(true);
+        FilterService::resetThrottle();
+        FilterService::runBackground(true);
         flash('success', 'Mail sync completed.');
         redirect('admin');
     }
@@ -165,7 +165,7 @@ class AdminController
         // the processed log too, otherwise previously-unmatched mail would be
         // skipped and never routed to the freshly created folders.
         FilterService::reprocess();
-        $filter = FilterService::runIfNeeded(true);
+        $filter = FilterService::runBackground(true);
 
         $moved = $filter['moved'] ?? 0;
         flash(
@@ -652,7 +652,7 @@ class AdminController
         verify_csrf_or_fail();
 
         FilterService::reprocess();
-        $result = FilterService::runIfNeeded(true);
+        $result = FilterService::runBackground(true);
         $moved = $result['moved'] ?? 0;
         $this->audit('reprocess_inbox', sprintf('Reprocessed inbox: %d moved', $moved));
         flash('success', sprintf('Inbox reprocessed. %d message(s) routed.', $moved));
@@ -724,7 +724,6 @@ class AdminController
         $data['authUser'] = Auth::user();
         $data['sessionUser'] = $data['authUser'];
         $data['user'] = $data['authUser'];
-        $data['filterPending'] = !empty($_SESSION['_filter_pending']);
         $folderData = FolderCache::load();
         $data['sidebarFolders'] = $folderData['folders'];
         $data['unreadCounts'] = $folderData['unread_counts'] ?? [];

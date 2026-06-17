@@ -37,8 +37,8 @@ if ($result['users'] !== []) {
 
 fwrite(STDOUT, "Routing existing inbox mail...\n");
 
-FilterService::clearSessionFlag();
-$filter = FilterService::runIfNeeded(true);
+FilterService::resetThrottle();
+$filter = FilterService::runBackground(true);
 
 fwrite(STDOUT, sprintf(
     "Filter pass: processed=%d, moved=%d, errors=%d, duration=%dms\n",

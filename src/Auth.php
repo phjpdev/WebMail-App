@@ -101,7 +101,7 @@ class Auth
             }
         }
 
-        unset($_SESSION['_filter_ran'], $_SESSION['_last_filter_stats'], $_SESSION['_filter_pending']);
+        unset($_SESSION['_last_filter_stats']);
 
         $_SESSION = [];
 

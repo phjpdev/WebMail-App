@@ -9,6 +9,8 @@ composer.phar
 phpmailer.zip
 vendor-src/
 /storage/logs/*.log
+/storage/filter.lock
+/storage/filter_state.json
 .idea/
 .vscode/
 *.log

@@ -16,7 +16,6 @@ class MailController
     public function home(): void
     {
         requireAuth();
-        $this->markFilterPending();
         redirect('folder/' . encode_folder_path('INBOX'));
     }
 
@@ -26,7 +25,6 @@ class MailController
     public function folder(array $params): void
     {
         requireAuth();
-        $this->markFilterPending();
 
         $folderPath = decode_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
@@ -34,9 +32,13 @@ class MailController
         }
         assert_folder_access($folderPath);
 
+        // Load sidebar cache first so filter moves can patch unread badges.
+        FolderCache::load(skipUnreadRefresh: true);
+        FilterService::runBackground();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
-        $folderData = FolderCache::load(skipUnreadRefresh: true);
         $folders = $folderData['folders'];
         $imapConnected = $folderData['connected'];
         $imapError = $folderData['error'];
@@ -77,7 +79,6 @@ class MailController
             'imapConnected' => $imapConnected,
             'imapError' => $imapError,
             'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
-            'filterPending' => !empty($_SESSION['_filter_pending']),
             'perPage' => $perPage,
         ]);
     }
@@ -102,6 +103,12 @@ class MailController
             echo json_encode(['error' => 'Access denied']);
             return;
         }
+
+        FolderCache::load(skipUnreadRefresh: true);
+
+        // Sort new INBOX mail during the existing list-sync poll (no extra HTTP
+        // request — this endpoint is already called every ~30s while mail is open).
+        FilterService::runBackground();
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
@@ -140,6 +147,7 @@ class MailController
             'page' => $list['page'],
             'total_pages' => $list['total_pages'],
             'messages' => $messages,
+            'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
         ]);
     }
 
@@ -461,20 +469,6 @@ class MailController
         $this->setSeenFlagBulk(false);
     }
 
-    public function runFilter(): void
-    {
-        requireAuth();
-        verify_csrf_or_fail();
-
-        header('Content-Type: application/json; charset=utf-8');
-
-        FilterService::clearSessionFlag();
-        $result = FilterService::runIfNeeded(true);
-        unset($_SESSION['_filter_pending']);
-
-        echo json_encode($result ?? ['processed' => 0, 'moved' => 0, 'errors' => [], 'duration_ms' => 0, 'done' => true]);
-    }
-
     /**
      * @param list<int> $uids
      */
@@ -704,13 +698,6 @@ class MailController
         }
 
         return $path === 'INBOX' ? 'Inbox' : $path;
-    }
-
-    private function markFilterPending(): void
-    {
-        if (!isset($_SESSION['_filter_ran'])) {
-            $_SESSION['_filter_pending'] = true;
-        }
     }
 
     private function renderMailView(string $viewName, array $data): void

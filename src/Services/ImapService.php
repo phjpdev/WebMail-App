@@ -721,10 +721,13 @@ class ImapService
             $this->joinAddresses($header->to ?? []) . ' ' . $this->joinAddresses($header->cc ?? [])
         );
 
+        $unseen = (($header->Unseen ?? '') === 'U') || (($header->Recent ?? '') === 'N');
+
         return [
             'from' => $from,
             'to' => $to,
             'subject' => isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '',
+            'seen' => !$unseen,
             'delivered_to' => $this->extractHeaderValue($rawHeader, 'Delivered-To'),
             'x_original_to' => $this->extractHeaderValue($rawHeader, 'X-Original-To'),
             'message_id' => $this->extractHeaderValue($rawHeader, 'Message-ID'),

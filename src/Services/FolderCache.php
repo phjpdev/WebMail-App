@@ -88,6 +88,30 @@ class FolderCache
     }
 
     /**
+     * Re-fetch unread counts from IMAP for specific folders and patch the
+     * session cache. Used after filter moves so sidebar badges stay accurate
+     * without a full folder re-list or status sweep of every mailbox.
+     *
+     * @param list<string> $paths
+     */
+    public static function refreshPaths(array $paths): void
+    {
+        $paths = array_values(array_unique(array_filter($paths)));
+        if ($paths === [] || !isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return;
+        }
+
+        foreach ($imap->getFolderUnreadCounts($paths) as $path => $count) {
+            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $count;
+        }
+    }
+
+    /**
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
     public static function load(bool $refresh = false, bool $skipUnreadRefresh = false): array

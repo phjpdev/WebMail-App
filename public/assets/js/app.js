@@ -505,7 +505,11 @@
                         }
                     });
 
-                    refreshUnreadBadges();
+                    if (data.unread_counts && Object.keys(data.unread_counts).length) {
+                        applyUnreadCounts(data.unread_counts);
+                    } else {
+                        refreshUnreadBadges();
+                    }
                     syncErrorShown = false;
                 })
                 .catch(function () {
@@ -553,27 +557,6 @@
         }
 
         window.setInterval(check, interval);
-    }
-
-    function initFilterProgress() {
-        if (body.getAttribute('data-filter-pending') !== '1') return;
-        var el = document.getElementById('filter-progress');
-        if (!el) return;
-        el.hidden = false;
-
-        var fd = new FormData();
-        fd.append('_csrf', csrf);
-
-        fetch(apiUrl('filter/run'), { method: 'POST', body: fd, credentials: 'same-origin', headers: { Accept: 'application/json' } })
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                el.hidden = true;
-                if (data && data.moved > 0) {
-                    showToast('success', 'Organized ' + data.processed + ' message(s), ' + data.moved + ' moved.');
-                }
-                refreshUnreadBadges();
-            })
-            .catch(function () { el.hidden = true; });
     }
 
     function initBulkSelect() {
@@ -1480,7 +1463,6 @@
         initToasts();
         initMailSync();
         initMessageSync();
-        initFilterProgress();
         initBulkSelect();
         initRichEditor();
         initRecipientFields();

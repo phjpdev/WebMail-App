@@ -9,39 +9,90 @@ use App\Database;
 
 class FilterService
 {
-    private const SESSION_RAN_KEY = '_filter_ran';
     private const SESSION_STATS_KEY = '_last_filter_stats';
 
     /**
+     * Run the inbox filter automatically — no browser AJAX required.
+     *
+     * Uses a file lock so only one pass runs at a time, and a minimum interval
+     * so opening mail repeatedly does not hammer IMAP. Set $force true for
+     * admin "Sync now" (skips the interval).
+     *
      * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int, done?: bool}|null
      */
-    public static function runIfNeeded(bool $force = false): ?array
+    public static function runBackground(bool $force = false, ?int $maxRuntimeSeconds = null): ?array
     {
-        if (!$force && isset($_SESSION[self::SESSION_RAN_KEY])) {
+        $app = config('app');
+        $minInterval = (int) ($app['filter_min_interval'] ?? 60);
+        $maxRuntime = $maxRuntimeSeconds ?? (int) ($app['filter_max_runtime'] ?? 20);
+        $batchLimit = (int) ($app['filter_batch_limit'] ?? 500);
+
+        $state = self::readState();
+        if (!$force && ($state['last_run'] ?? 0) + $minInterval > time()) {
             return null;
         }
 
-        $service = new self();
-        $result = $service->run();
-        $result['done'] = true;
-
-        $_SESSION[self::SESSION_RAN_KEY] = time();
-        $_SESSION[self::SESSION_STATS_KEY] = $result;
-        unset($_SESSION['_filter_pending']);
-
-        if (!$force && ($result['duration_ms'] > 2000 || $result['moved'] > 0)) {
-            flash(
-                'success',
-                sprintf('Organized %d message(s), %d moved to folders.', $result['processed'], $result['moved'])
-            );
+        $lock = @fopen(self::lockFile(), 'c');
+        if ($lock === false) {
+            return null;
         }
 
-        return $result;
-    }
+        if (!flock($lock, LOCK_EX | LOCK_NB)) {
+            fclose($lock);
 
-    public static function clearSessionFlag(): void
-    {
-        unset($_SESSION[self::SESSION_RAN_KEY], $_SESSION[self::SESSION_STATS_KEY], $_SESSION['_filter_pending']);
+            return null;
+        }
+
+        try {
+            $service = new self();
+            $totals = ['processed' => 0, 'moved' => 0, 'errors' => [], 'duration_ms' => 0];
+            $start = microtime(true);
+            $pathsToRefresh = [];
+
+            do {
+                $batch = $service->run();
+                $totals['processed'] += $batch['processed'];
+                $totals['moved'] += $batch['moved'];
+                $totals['errors'] = array_merge($totals['errors'], $batch['errors']);
+
+                foreach ($batch['refresh_unread_paths'] ?? [] as $path) {
+                    $pathsToRefresh[$path] = true;
+                }
+
+                if ($batch['processed'] < $batchLimit) {
+                    break;
+                }
+            } while ((microtime(true) - $start) < $maxRuntime);
+
+            if ($pathsToRefresh !== []) {
+                FolderCache::refreshPaths(array_keys($pathsToRefresh));
+            }
+
+            $totals['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
+            $totals['done'] = true;
+
+            self::writeState($totals);
+
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                $_SESSION[self::SESSION_STATS_KEY] = $totals;
+            }
+
+            if (
+                session_status() === PHP_SESSION_ACTIVE
+                && !$force
+                && ($totals['duration_ms'] > 2000 || $totals['moved'] > 0)
+            ) {
+                flash(
+                    'success',
+                    sprintf('Organized %d message(s), %d moved to folders.', $totals['processed'], $totals['moved'])
+                );
+            }
+
+            return $totals;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     /**
@@ -69,7 +120,14 @@ class FilterService
     public static function reprocess(): void
     {
         self::clearProcessed(config('app')['filter_source_folder']);
-        self::clearSessionFlag();
+        self::resetThrottle();
+    }
+
+    public static function resetThrottle(): void
+    {
+        $state = self::readState();
+        $state['last_run'] = 0;
+        @file_put_contents(self::stateFile(), json_encode($state));
     }
 
     /**
@@ -78,8 +136,60 @@ class FilterService
     public static function lastStats(): ?array
     {
         $stats = $_SESSION[self::SESSION_STATS_KEY] ?? null;
+        if (is_array($stats)) {
+            return $stats;
+        }
 
-        return is_array($stats) ? $stats : null;
+        $state = self::readState();
+
+        return is_array($state['last_stats'] ?? null) ? $state['last_stats'] : null;
+    }
+
+    /**
+     * @return array{last_run: int, last_stats: array<string, mixed>|null}
+     */
+    private static function readState(): array
+    {
+        $path = self::stateFile();
+        if (!is_readable($path)) {
+            return ['last_run' => 0, 'last_stats' => null];
+        }
+
+        $decoded = json_decode((string) file_get_contents($path), true);
+
+        return is_array($decoded) ? $decoded : ['last_run' => 0, 'last_stats' => null];
+    }
+
+    /**
+     * @param array{processed: int, moved: int, errors: list<string>, duration_ms: int} $stats
+     */
+    private static function writeState(array $stats): void
+    {
+        $payload = [
+            'last_run' => time(),
+            'last_stats' => $stats,
+        ];
+
+        @file_put_contents(
+            self::stateFile(),
+            json_encode($payload) ?: '{}',
+            LOCK_EX
+        );
+    }
+
+    private static function storageDir(): string
+    {
+        return dirname(dirname(config('app')['log_path']));
+    }
+
+    private static function lockFile(): string
+    {
+        return self::storageDir() . '/filter.lock';
+    }
+
+    private static function stateFile(): string
+    {
+        return self::storageDir() . '/filter_state.json';
     }
 
     /**
@@ -140,6 +250,7 @@ class FilterService
         }
 
         $userId = Auth::user()['id'] ?? null;
+        $refreshUnreadPaths = [];
 
         foreach ($candidates as $uid) {
             $headers = $imap->fetchFilterHeaders($sourceFolder, $uid);
@@ -165,6 +276,8 @@ class FilterService
                 $targetPath = $matchedRule['imap_path'];
                 if ($imap->moveMessage($sourceFolder, $uid, $targetPath)) {
                     $result['moved']++;
+                    $refreshUnreadPaths[$sourceFolder] = true;
+                    $refreshUnreadPaths[$targetPath] = true;
                     $this->logFilterMove($userId, $uid, $targetPath, $matchedRule['name']);
                     // Only record as processed once the move actually succeeded.
                     $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
@@ -181,6 +294,10 @@ class FilterService
             }
 
             $result['processed']++;
+        }
+
+        if ($refreshUnreadPaths !== []) {
+            $result['refresh_unread_paths'] = array_keys($refreshUnreadPaths);
         }
 
         $result['duration_ms'] = (int) round((microtime(true) - $start) * 1000);

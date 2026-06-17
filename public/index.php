@@ -105,8 +105,6 @@ $router->post('/message/bulk-mark-unread', fn () => $mailController->bulkMarkUnr
 $router->post('/message/flag', fn () => $mailController->flag());
 $router->post('/message/unflag', fn () => $mailController->unflag());
 $router->post('/message/spam', fn () => $mailController->spam());
-$router->post('/filter/run', fn () => $mailController->runFilter());
-
 $router->get('/compose', fn () => $composeController->compose());
 $router->get('/compose/reply', fn () => $composeController->reply());
 $router->get('/compose/reply-all', fn () => $composeController->replyAll());

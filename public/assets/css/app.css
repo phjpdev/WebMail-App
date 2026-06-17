@@ -1774,31 +1774,6 @@ a:hover {
     width: 2rem;
 }
 
-.filter-progress {
-    position: fixed;
-    inset: 0;
-    z-index: 10000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(15, 23, 42, 0.45);
-}
-
-.filter-progress[hidden] {
-    display: none !important;
-}
-
-.filter-progress-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1rem;
-    padding: 2rem;
-    background: var(--color-surface);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-md);
-}
-
 .rich-toolbar {
     display: flex;
     gap: 0.25rem;
@@ -2412,7 +2387,6 @@ kbd {
     top: -0.35rem;
     left: 100%;
     margin-left: 6px;
-    margin-top: 0.35rem;
     min-width: 212px;
     max-width: 260px;
     max-height: 280px;
