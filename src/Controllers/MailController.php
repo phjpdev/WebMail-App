@@ -36,7 +36,7 @@ class MailController
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
-        $folderData = FolderCache::load();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
         $folders = $folderData['folders'];
         $imapConnected = $folderData['connected'];
         $imapError = $folderData['error'];
@@ -148,10 +148,9 @@ class MailController
         requireAuth();
         header('Content-Type: application/json; charset=utf-8');
 
-        // Respect the cache TTL (folder list cached, unread refreshed at most
-        // once per minute) instead of forcing a full re-list + status sweep on
-        // every call. This keeps the background badge poll cheap.
-        $folderData = FolderCache::load();
+        // Serve cached counts (updated incrementally by read/actions) — no per-
+        // folder imap_status sweep on every background poll.
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
         echo json_encode(['unread_counts' => $folderData['unread_counts'] ?? []]);
     }
 
@@ -202,7 +201,7 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $folderData = FolderCache::load();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
         $folders = $folderData['folders'];
 
         $imap = new ImapService();
@@ -569,8 +568,10 @@ class MailController
         // Only adjust the badge if the flag actually changes, so repeated clicks
         // (or acting on an already-read message) can't drive the count negative
         // or inflate it.
-        $current = $imap->getMessageByUid($folderPath, $uid);
-        $alreadySeen = $current !== null ? !empty($current['seen']) : null;
+        // Lightweight overview fetch — getMessageByUid() would download the full
+        // MIME body just to learn whether the \\Seen flag is already set.
+        $overview = $imap->getMessageOverviewByUid($folderPath, $uid);
+        $alreadySeen = $overview !== null ? $overview['seen'] : null;
 
         if ($seen) {
             $imap->markSeen($folderPath, $uid);
@@ -644,19 +645,33 @@ class MailController
             $this->actionError($imap->getLastError(), $redirect);
         }
 
+        $unreadDelta = 0;
         foreach ($uids as $uid) {
+            $overview = $imap->getMessageOverviewByUid($folderPath, $uid);
+            $wasSeen = $overview !== null ? $overview['seen'] : true;
+
             if ($seen) {
+                if (!$wasSeen) {
+                    $unreadDelta++;
+                }
                 $imap->markSeen($folderPath, $uid);
             } else {
+                if ($wasSeen) {
+                    $unreadDelta++;
+                }
                 $imap->markUnseen($folderPath, $uid);
             }
         }
 
-        // Keep the folder list cached; only the unread counts need refreshing.
-        FolderCache::invalidateUnread();
+        $counts = [];
+        if ($unreadDelta > 0) {
+            $counts = FolderCache::bumpUnread($folderPath, $seen ? -$unreadDelta : $unreadDelta);
+        } else {
+            $counts = FolderCache::bumpUnread($folderPath, 0);
+        }
 
         if (wants_json()) {
-            json_response(['ok' => true, 'seen' => $seen, 'uids' => $uids, 'unread_counts' => []]);
+            json_response(['ok' => true, 'seen' => $seen, 'uids' => $uids, 'unread_counts' => $counts]);
         }
 
         flash('success', sprintf('%d message(s) marked as %s.', count($uids), $seen ? 'read' : 'unread'));

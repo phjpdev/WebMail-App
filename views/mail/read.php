@@ -9,6 +9,9 @@
 
 <section class="card mail-read-card print-area"
     data-message-sync="1"
+    data-folder-b64="<?= e($folderB64 ?? encode_folder_path($folderPath)) ?>"
+    data-uid="<?= (int) $message['uid'] ?>"
+    data-seen="<?= !empty($message['seen']) ? '1' : '0' ?>"
     data-sync-url="<?= e(url('folder/' . ($folderB64 ?? encode_folder_path($folderPath)) . '/message/' . (int) $message['uid'] . '/sync')) ?>"
     data-folder-url="<?= e(folder_url($folderPath)) ?>"
     data-poll-interval="<?= (int) ($pollInterval ?? 30) ?>">
@@ -22,58 +25,21 @@
         <?php endif; ?>
         <button type="button" class="btn btn-outline" onclick="window.print()">Print</button>
 
-        <form method="post" action="<?= e(url('message/mark-unread')) ?>" class="inline-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
-            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath)) ?>">
-            <button type="submit" class="btn btn-outline">Mark unread</button>
-        </form>
-
-        <form method="post" action="<?= e(url('message/flag')) ?>" class="inline-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
-            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath) . '/message/' . (int) $message['uid']) ?>">
-            <button type="submit" class="btn btn-outline">Mark important</button>
-        </form>
-
-        <form method="post" action="<?= e(url('message/unflag')) ?>" class="inline-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
-            <input type="hidden" name="redirect" value="<?= e('folder/' . encode_folder_path($folderPath) . '/message/' . (int) $message['uid']) ?>">
-            <button type="submit" class="btn btn-outline">Remove importance</button>
-        </form>
-
-        <form method="post" action="<?= e(url('message/spam')) ?>" class="inline-form"
-              onsubmit="return confirm('Move this message to Spam?');">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
-            <button type="submit" class="btn btn-outline">Spam</button>
-        </form>
-
-        <form method="post" action="<?= e(url('message/trash')) ?>" class="inline-form" id="delete-form"
-              onsubmit="return confirm('Move this message to Trash?');">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
-            <button type="submit" class="btn btn-danger">Delete</button>
-        </form>
+        <button type="button" class="btn btn-outline" data-mail-action="mark-unread">Mark unread</button>
+        <button type="button" class="btn btn-outline" data-mail-action="flag">Mark important</button>
+        <button type="button" class="btn btn-outline" data-mail-action="unflag">Remove importance</button>
+        <button type="button" class="btn btn-outline" data-mail-action="spam">Spam</button>
+        <button type="button" class="btn btn-danger" id="delete-form" data-mail-action="trash">Delete</button>
 
         <?php if (!empty($moveTargets)): ?>
-        <form method="post" action="<?= e(url('message/move')) ?>" class="inline-form move-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <input type="hidden" name="uid" value="<?= (int) $message['uid'] ?>">
+        <form class="inline-form move-form" onsubmit="return false;">
             <select name="target_folder" required>
                 <option value="">Move to…</option>
                 <?php foreach ($moveTargets as $target): ?>
                     <option value="<?= e($target['path']) ?>"><?= e($target['name']) ?></option>
                 <?php endforeach; ?>
             </select>
-            <button type="submit" class="btn btn-outline">Move</button>
+            <button type="button" class="btn btn-outline" data-mail-action="move">Move</button>
         </form>
         <?php endif; ?>
     </div>

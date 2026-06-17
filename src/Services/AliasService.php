@@ -8,33 +8,51 @@ use App\Database;
 
 class AliasService
 {
+    /** @var list<array{id: int, email: string, display_name: string}>|null */
+    private static ?array $activeCache = null;
+
     /**
      * @return list<array{id: int, email: string, display_name: string}>
      */
     public function listActive(): array
     {
+        if (self::$activeCache !== null) {
+            return self::$activeCache;
+        }
+
         $rows = Database::query(
             'SELECT id, email, display_name FROM aliases WHERE active = 1 ORDER BY display_name'
         )->fetchAll();
 
         if ($rows !== []) {
-            return array_map(fn ($row) => [
+            self::$activeCache = array_map(fn ($row) => [
                 'id' => (int) $row['id'],
                 'email' => $row['email'],
                 'display_name' => $row['display_name'],
             ], $rows);
+
+            return self::$activeCache;
         }
 
         $mailbox = config('mail')['mailbox_email'];
         if ($mailbox === '') {
-            return [];
+            self::$activeCache = [];
+
+            return self::$activeCache;
         }
 
-        return [[
+        self::$activeCache = [[
             'id' => 0,
             'email' => $mailbox,
             'display_name' => config('app')['name'],
         ]];
+
+        return self::$activeCache;
+    }
+
+    public static function clearCache(): void
+    {
+        self::$activeCache = null;
     }
 
     /**

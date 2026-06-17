@@ -90,7 +90,7 @@ class FolderCache
     /**
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
-    public static function load(bool $refresh = false): array
+    public static function load(bool $refresh = false, bool $skipUnreadRefresh = false): array
     {
         $cache = new self();
 
@@ -98,7 +98,7 @@ class FolderCache
             $cached = $cache->get();
             if ($cached !== null) {
                 $session = $_SESSION[self::SESSION_KEY] ?? [];
-                if (time() > (int) ($session['unread_expires'] ?? 0)) {
+                if (!$skipUnreadRefresh && time() > (int) ($session['unread_expires'] ?? 0)) {
                     $cached = $cache->refreshUnread($cached);
                 }
 
@@ -143,7 +143,15 @@ class FolderCache
         }
 
         $paths = array_column($data['folders'], 'path');
-        $data['unread_counts'] = $imap->getFolderUnreadCounts($paths);
+        $paths = $this->pathsToRefreshUnread($paths);
+        if ($paths === []) {
+            return $data;
+        }
+
+        $data['unread_counts'] = array_merge(
+            $data['unread_counts'] ?? [],
+            $imap->getFolderUnreadCounts($paths)
+        );
 
         if (isset($_SESSION[self::SESSION_KEY])) {
             $_SESSION[self::SESSION_KEY]['unread_counts'] = $data['unread_counts'];
@@ -151,6 +159,27 @@ class FolderCache
         }
 
         return $data;
+    }
+
+    /**
+     * Employees only need unread counts for folders they can open; admins need all.
+     *
+     * @param list<string> $allPaths
+     * @return list<string>
+     */
+    private function pathsToRefreshUnread(array $allPaths): array
+    {
+        $user = Auth::user();
+        if ($user === null || ($user['role'] ?? '') === 'admin') {
+            return $allPaths;
+        }
+
+        $allowed = $this->employeeAllowedPaths((int) $user['id']);
+
+        return array_values(array_filter(
+            $allPaths,
+            fn (string $path) => $this->isEmployeeFolderAllowed($path, $allowed)
+        ));
     }
 
     /**

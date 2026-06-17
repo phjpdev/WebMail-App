@@ -526,9 +526,11 @@
             if (document.visibilityState === 'visible') poll();
         });
         // When returning via Back/Forward (bfcache), the page is restored from a
-        // snapshot — re-sync so seen/flagged state and the list are up to date.
+        // snapshot — re-sync after a short delay so Back feels instant first.
         window.addEventListener('pageshow', function (e) {
-            if (e.persisted) poll();
+            if (e.persisted) {
+                window.setTimeout(poll, 400);
+            }
         });
     }
 
@@ -611,6 +613,153 @@
                 updateToolbar();
             });
         }
+
+        initBulkAjax(toolbar);
+    }
+
+    function bulkActionPath(formAction) {
+        var base = appBase + '/';
+        if (formAction.indexOf(base) === 0) {
+            return formAction.slice(base.length);
+        }
+        return formAction.replace(/^\//, '');
+    }
+
+    function selectedMailUids() {
+        return Array.prototype.slice.call(document.querySelectorAll('.mail-check:checked'))
+            .map(function (cb) { return cb.value; });
+    }
+
+    function countUnreadAmong(uids) {
+        var n = 0;
+        uids.forEach(function (uid) {
+            rowsForUid(uid).forEach(function (el) {
+                if (el.getAttribute('data-seen') === '0') n++;
+            });
+        });
+        return n;
+    }
+
+    function initBulkAjax(toolbar) {
+        var listCard = document.querySelector('.mail-list-card[data-folder-path]');
+        if (!listCard) return;
+
+        var folderEnc = listCard.getAttribute('data-folder-path');
+
+        toolbar.querySelectorAll('form').forEach(function (form) {
+            form.addEventListener('submit', function (e) {
+                e.preventDefault();
+
+                var uids = selectedMailUids();
+                if (!uids.length) return;
+
+                var actionPath = bulkActionPath(form.getAttribute('action') || '');
+                var fields = { folder: folderEnc };
+                uids.forEach(function (uid) {
+                    fields['uids[' + uid + ']'] = uid;
+                });
+
+                // URLSearchParams doesn't support uids[] cleanly with our helper — build manually.
+                var payload = new URLSearchParams();
+                payload.set('_csrf', csrf);
+                payload.set('folder', folderEnc);
+                uids.forEach(function (uid) { payload.append('uids[]', uid); });
+
+                if (actionPath.indexOf('bulk-mark-read') >= 0) {
+                    uids.forEach(function (uid) { setRowSeen(uid, true); });
+                } else if (actionPath.indexOf('bulk-mark-unread') >= 0) {
+                    uids.forEach(function (uid) { setRowSeen(uid, false); });
+                } else if (actionPath.indexOf('bulk-trash') >= 0) {
+                    if (!window.confirm('Move selected messages to Trash?')) return;
+                    uids.forEach(function (uid) { removeRowByUid(uid); });
+                    payload.set('unread_delta', String(countUnreadAmong(uids)));
+                } else if (actionPath.indexOf('bulk-move') >= 0) {
+                    var select = form.querySelector('[name="target_folder"]');
+                    if (!select || !select.value) return;
+                    payload.set('target_folder', select.value);
+                    payload.set('unread_delta', String(countUnreadAmong(uids)));
+                    uids.forEach(function (uid) { removeRowByUid(uid); });
+                }
+
+                beginTask();
+                fetch(apiUrl(actionPath), {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: payload.toString()
+                }).then(function (res) {
+                    return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                        if (!res.ok || (data && data.ok === false)) {
+                            throw new Error((data && data.error) || 'Action failed.');
+                        }
+                        return data;
+                    });
+                }).then(function (data) {
+                    if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                        applyUnreadCounts(data.unread_counts);
+                    } else {
+                        refreshUnreadBadges();
+                    }
+                    var selectAll = document.getElementById('select-all');
+                    if (selectAll) selectAll.checked = false;
+                    toolbar.hidden = true;
+                    if (actionPath.indexOf('bulk-mark-read') >= 0) {
+                        showToast('success', uids.length + ' message(s) marked as read.');
+                    } else if (actionPath.indexOf('bulk-mark-unread') >= 0) {
+                        showToast('success', uids.length + ' message(s) marked as unread.');
+                    } else if (actionPath.indexOf('bulk-trash') >= 0) {
+                        showToast('success', 'Selected messages moved to Trash.');
+                    } else if (actionPath.indexOf('bulk-move') >= 0) {
+                        showToast('success', 'Selected messages moved.');
+                    }
+                }).catch(function (err) {
+                    showToast('error', err.message || 'Action failed.');
+                    if (mailPoll) mailPoll();
+                }).finally(function () { endTask(); });
+            });
+        });
+    }
+
+    function initReadViewActions() {
+        var card = document.querySelector('.mail-read-card[data-uid]');
+        if (!card) return;
+
+        var folderEnc = card.getAttribute('data-folder-b64');
+        var uid = card.getAttribute('data-uid');
+
+        card.querySelectorAll('[data-mail-action]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var action = btn.getAttribute('data-mail-action');
+                if (!action) return;
+
+                if (action === 'trash' && !window.confirm('Move this message to Trash?')) return;
+                if (action === 'spam' && !window.confirm('Move this message to Spam?')) return;
+
+                var extra = {};
+                if (action === 'move') {
+                    var select = card.querySelector('[name="target_folder"]');
+                    if (!select || !select.value) {
+                        showToast('error', 'Choose a folder to move to.');
+                        return;
+                    }
+                    extra.target_folder = select.value;
+                }
+
+                dispatchMessageAction(action, folderEnc, uid, extra).then(function () {
+                    if (action === 'mark-unread') {
+                        showToast('success', 'Marked as unread.');
+                    } else if (action === 'flag') {
+                        showToast('success', 'Marked as important.');
+                    } else if (action === 'unflag') {
+                        showToast('success', 'Importance removed.');
+                    }
+                });
+            });
+        });
     }
 
     function initRichEditor() {
@@ -927,7 +1076,7 @@
                 window.location = row.getAttribute('data-reply-all-url') || row.getAttribute('data-href');
             } else if (e.key === 'e') {
                 var del = document.getElementById('delete-form');
-                if (del) del.requestSubmit();
+                if (del) del.click();
             }
         });
     }
@@ -1013,17 +1162,25 @@
         var fields = { folder: sourceFolderEnc, uid: uid };
         Object.keys(extra).forEach(function (k) { fields[k] = extra[k]; });
 
+        var readCard = document.querySelector('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]');
+        var folderUrl = readCard ? readCard.getAttribute('data-folder-url') : null;
+
         // Detect unread state before we mutate/remove the row, so the server can
         // adjust the folder badge without a slow per-folder status sweep.
         var wasUnread = false;
         rowsForUid(uid).forEach(function (el) {
             if (el.getAttribute('data-seen') === '0') wasUnread = true;
         });
+        if (!wasUnread && readCard && readCard.getAttribute('data-seen') === '0') {
+            wasUnread = true;
+        }
 
         if (kind === 'mark-read') {
             setRowSeen(uid, true);
+            if (readCard) readCard.setAttribute('data-seen', '1');
         } else if (kind === 'mark-unread') {
             setRowSeen(uid, false);
+            if (readCard) readCard.setAttribute('data-seen', '0');
         } else if (kind === 'flag') {
             setRowFlagged(uid, true);
         } else if (kind === 'unflag') {
@@ -1040,6 +1197,9 @@
                     applyUnreadCounts(data.unread_counts);
                 } else if (kind !== 'flag' && kind !== 'unflag') {
                     refreshUnreadBadges();
+                }
+                if ((kind === 'trash' || kind === 'spam' || kind === 'move') && folderUrl) {
+                    window.location = folderUrl;
                 }
             })
             .catch(function (err) {
@@ -1331,6 +1491,7 @@
         initFileUpload();
         initPerPageSelect();
         initContextMenu();
+        initReadViewActions();
         requestNotificationPermission();
     });
 })();

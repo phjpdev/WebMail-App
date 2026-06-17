@@ -245,7 +245,7 @@ class ImapService
         }
 
         $rawHeader = imap_fetchheader($this->connection, $msgno) ?: '';
-        $body = $this->fetchBody($path, $uid);
+        $body = $this->fetchBody($path, $uid, $msgno);
 
         $from = '';
         if (isset($header->from[0])) {
@@ -278,19 +278,43 @@ class ImapService
     }
 
     /**
+     * @return array{seen: bool, flagged: bool}|null
+     */
+    public function getMessageOverviewByUid(string $path, int $uid): ?array
+    {
+        if (!$this->openFolder($path)) {
+            return null;
+        }
+
+        $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
+        if ($overview === false || $overview === []) {
+            return null;
+        }
+
+        $row = $overview[0];
+
+        return [
+            'seen' => (bool) ($row->seen ?? false),
+            'flagged' => (bool) ($row->flagged ?? false),
+        ];
+    }
+
+    /**
      * @return array{html: string|null, plain: string|null, attachments: list<array{id: string, filename: string, size: int, mime: string}>}
      */
-    public function fetchBody(string $path, int $uid): array
+    public function fetchBody(string $path, int $uid, ?int $msgno = null): array
     {
         $result = ['html' => null, 'plain' => null, 'attachments' => [], 'inline' => []];
 
-        if (!$this->openFolder($path)) {
-            return $result;
-        }
+        if ($msgno === null) {
+            if (!$this->openFolder($path)) {
+                return $result;
+            }
 
-        $msgno = imap_msgno($this->connection, $uid);
-        if ($msgno === 0) {
-            return $result;
+            $msgno = imap_msgno($this->connection, $uid);
+            if ($msgno === 0) {
+                return $result;
+            }
         }
 
         $structure = imap_fetchstructure($this->connection, $msgno);
@@ -975,13 +999,6 @@ class ImapService
 
         $mime = $this->getPartMime($structure);
         $section = $partId === '' ? '1' : $partId;
-        $body = imap_fetchbody($this->connection, $msgno, $section);
-
-        if ($body === false) {
-            return;
-        }
-
-        $decoded = $this->decodePartBody($body, $structure->encoding ?? 0);
         $filename = $this->getPartFilename($structure);
         $disposition = strtolower($structure->disposition ?? '');
 
@@ -996,15 +1013,31 @@ class ImapService
 
         $isInlineImage = $contentId !== null && str_starts_with($mime, 'image/');
 
-        if (($filename !== null || $disposition === 'attachment') && !$isInlineImage) {
+        if ($isInlineImage) {
+            return;
+        }
+
+        if ($filename !== null || $disposition === 'attachment') {
+            $size = (int) ($structure->bytes ?? 0);
+            if ($size <= 0 && isset($structure->size)) {
+                $size = (int) $structure->size;
+            }
+
             $result['attachments'][] = [
                 'id' => $section,
                 'filename' => $filename ?? 'attachment',
-                'size' => strlen($decoded),
+                'size' => $size,
                 'mime' => $mime,
             ];
             return;
         }
+
+        $body = imap_fetchbody($this->connection, $msgno, $section, FT_PEEK);
+        if ($body === false) {
+            return;
+        }
+
+        $decoded = $this->decodePartBody($body, $structure->encoding ?? 0);
 
         if (str_starts_with($mime, 'text/html') && $result['html'] === null) {
             $result['html'] = $this->toUtf8($decoded, $this->getPartCharset($structure));
