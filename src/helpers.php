@@ -435,6 +435,31 @@ function folder_url(string $folderPath, string $suffix = ''): string
     return url($path);
 }
 
+/**
+ * Default folder after login: employees land on their linked folder, admins on INBOX.
+ */
+function default_mail_folder(): string
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return 'INBOX';
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            'SELECT imap_path FROM folders WHERE linked_user_id = ? AND active = 1 LIMIT 1',
+            [(int) $user['id']]
+        );
+        if ($row !== null && !empty($row['imap_path'])) {
+            return $row['imap_path'];
+        }
+    } catch (\Throwable $e) {
+        // ignore
+    }
+
+    return 'INBOX';
+}
+
 function message_url(string $folderPath, int $uid): string
 {
     return folder_url($folderPath, 'message/' . $uid);

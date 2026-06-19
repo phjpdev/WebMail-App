@@ -16,7 +16,7 @@ class MailController
     public function home(): void
     {
         requireAuth();
-        redirect('folder/' . encode_folder_path('INBOX'));
+        redirect('folder/' . encode_folder_path(default_mail_folder()));
     }
 
     /**
@@ -32,9 +32,9 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        // Load sidebar cache first so filter moves can patch unread badges.
+        // Load sidebar cache, move routed mail out of INBOX, then list (no throttle).
         FolderCache::load(skipUnreadRefresh: true);
-        FilterService::runBackground();
+        FilterService::runBeforeMailList();
         FolderCache::syncUnreadBadges($folderPath);
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
@@ -107,9 +107,8 @@ class MailController
 
         FolderCache::load(skipUnreadRefresh: true);
 
-        // Sort new INBOX mail during the existing list-sync poll (no extra HTTP
-        // request — this endpoint is already called every ~30s while mail is open).
-        FilterService::runBackground();
+        // Move routed mail before returning the list (same request, no extra XHR).
+        FilterService::runBeforeMailList();
         FolderCache::syncUnreadBadges($folderPath);
 
         $page = max(1, (int) ($_GET['page'] ?? 1));

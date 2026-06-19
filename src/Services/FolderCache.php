@@ -291,9 +291,7 @@ class FolderCache
      */
     private function employeeAllowedPaths(int $userId): array
     {
-        $paths = ['INBOX'];
-        $types = ['sent', 'draft', 'trash', 'spam', 'junk'];
-
+        $paths = [];
         try {
             $linked = Database::fetchOne(
                 'SELECT imap_path FROM folders WHERE linked_user_id = ? AND active = 1 LIMIT 1',

@@ -12,7 +12,17 @@ class FilterService
     private const SESSION_STATS_KEY = '_last_filter_stats';
 
     /**
-     * Run the inbox filter automatically — no browser AJAX required.
+     * Run filter immediately before listing mail (skips the 60s throttle) so
+     * routed messages are moved out of INBOX before the user sees them.
+     *
+     * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int, done?: bool}|null
+     */
+    public static function runBeforeMailList(): ?array
+    {
+        return self::runBackground(true);
+    }
+
+    /**
      *
      * Uses a file lock so only one pass runs at a time, and a minimum interval
      * so opening mail repeatedly does not hammer IMAP. Set $force true for
