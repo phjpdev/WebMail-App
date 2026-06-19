@@ -1109,12 +1109,57 @@
     }
 
     function initSidebarGroups() {
+        var storageKey = 'dj_sidebar_groups';
+
+        function readState() {
+            try {
+                var raw = localStorage.getItem(storageKey);
+                return raw ? JSON.parse(raw) : {};
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function writeState(state) {
+            try {
+                localStorage.setItem(storageKey, JSON.stringify(state));
+            } catch (e) { /* storage blocked */ }
+        }
+
+        var state = readState();
+
+        // Restore saved open/closed state (overrides server default on navigation).
+        document.querySelectorAll('.sidebar-group.is-collapsible[data-group]').forEach(function (group) {
+            var id = group.getAttribute('data-group');
+            if (!id || !Object.prototype.hasOwnProperty.call(state, id)) return;
+            var open = !!state[id];
+            group.classList.toggle('is-open', open);
+            var btn = group.querySelector('.sidebar-group-toggle');
+            if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+
+        // Remember server-opened groups (e.g. active subfolder) on first visit.
+        document.querySelectorAll('.sidebar-group.is-collapsible[data-group]').forEach(function (group) {
+            var id = group.getAttribute('data-group');
+            if (!id || Object.prototype.hasOwnProperty.call(state, id)) return;
+            if (group.classList.contains('is-open')) {
+                state[id] = true;
+                writeState(state);
+            }
+        });
+
         document.querySelectorAll('.sidebar-group-toggle').forEach(function (btn) {
             btn.addEventListener('click', function () {
                 var group = btn.closest('.sidebar-group');
                 if (!group) return;
+                var id = group.getAttribute('data-group');
                 var open = group.classList.toggle('is-open');
                 btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                if (id) {
+                    state = readState();
+                    state[id] = open;
+                    writeState(state);
+                }
             });
         });
     }
