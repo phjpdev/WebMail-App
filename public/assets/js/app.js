@@ -1,8 +1,6 @@
 (function () {
     'use strict';
 
-    var progressEl = document.getElementById('nav-progress');
-    var progressBar = progressEl ? progressEl.querySelector('.nav-progress-bar') : null;
     var sidebar = document.getElementById('sidebar');
     var menuToggle = document.getElementById('menu-toggle');
     var sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -29,68 +27,10 @@
         return appBase + '/' + path;
     }
 
-    // Slim top progress bar (à la Gmail/YouTube) instead of a full-screen overlay.
-    var progressTimer = null;
-    var progressValue = 0;
-    var navActive = false;
-    var pendingTasks = 0;
-
-    function setProgressWidth(pct) {
-        if (progressBar) progressBar.style.width = pct + '%';
-    }
-
-    function startProgress() {
-        if (!progressEl || !progressBar) return;
-        navActive = true;
-        progressEl.classList.remove('is-done');
-        progressEl.classList.add('is-active');
-        progressEl.setAttribute('aria-hidden', 'false');
-        progressValue = 10;
-        setProgressWidth(progressValue);
-        window.clearInterval(progressTimer);
-        progressTimer = window.setInterval(function () {
-            // Ease toward 90% so it always feels like it's making progress.
-            progressValue += Math.max(0.4, (90 - progressValue) * 0.06);
-            if (progressValue >= 90) progressValue = 90;
-            setProgressWidth(progressValue);
-        }, 180);
-    }
-
-    function finishProgress() {
-        if (!progressEl || !progressBar) return;
-        window.clearInterval(progressTimer);
-        if (!navActive && !progressEl.classList.contains('is-active')) {
-            return;
-        }
-        navActive = false;
-        progressValue = 100;
-        setProgressWidth(100);
-        progressEl.classList.add('is-done');
-        window.setTimeout(function () {
-            progressEl.classList.remove('is-active');
-            progressEl.setAttribute('aria-hidden', 'true');
-            window.setTimeout(function () {
-                progressEl.classList.remove('is-done');
-                setProgressWidth(0);
-            }, 220);
-        }, 220);
-    }
-
-    // For async (AJAX) work that shouldn't block the page: ref-count tasks so
-    // the bar stays until the last one finishes.
-    function beginTask() {
-        pendingTasks++;
-        startProgress();
-    }
-
-    function endTask() {
-        pendingTasks = Math.max(0, pendingTasks - 1);
-        if (pendingTasks === 0) finishProgress();
-    }
-
-    // Back-compat aliases used throughout for full-page navigations.
-    function showLoading() { startProgress(); }
-    function hideLoading() { finishProgress(); }
+    function showLoading() {}
+    function hideLoading() {}
+    function beginTask() {}
+    function endTask() {}
 
     function openSidebar() {
         if (sidebar) sidebar.classList.add('is-open');
@@ -110,26 +50,6 @@
         var tag = el.tagName;
         return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
     }
-
-    document.addEventListener('click', function (e) {
-        var link = e.target.closest('a');
-        if (link && link.href && link.origin === window.location.origin && !link.target && !link.hasAttribute('download')) {
-            if (link.getAttribute('href').charAt(0) === '#') return;
-            if (link.closest('[data-ajax-folder]') && document.getElementById('mail-workspace')) return;
-            showLoading();
-        }
-    });
-
-    document.addEventListener('submit', function (e) {
-        var form = e.target;
-        if (e.defaultPrevented) return;
-        if (form && form.method && form.method.toLowerCase() !== 'get') {
-            showLoading();
-        }
-    });
-
-    window.addEventListener('pageshow', hideLoading);
-    document.addEventListener('DOMContentLoaded', hideLoading);
 
     if (menuToggle) {
         menuToggle.addEventListener('click', function () {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=36">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=37">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -36,9 +36,6 @@
       data-csrf="<?= e(csrf_token()) ?>"
       data-base-url="<?= e(url('')) ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
-    <div id="nav-progress" class="nav-progress" role="status" aria-live="polite" aria-hidden="true">
-        <span class="nav-progress-bar"></span>
-    </div>
 
     <div id="shortcuts-modal" class="shortcuts-modal" hidden>
         <div class="shortcuts-modal-inner">
@@ -101,6 +98,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=36" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=37" defer></script>
 </body>
 </html>

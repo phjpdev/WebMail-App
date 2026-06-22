@@ -133,43 +133,6 @@ a:hover {
     to { transform: rotate(360deg); }
 }
 
-/* Slim top navigation progress bar (replaces the full-screen overlay) */
-.nav-progress {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    z-index: 10000;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.25s ease;
-}
-
-.nav-progress.is-active {
-    opacity: 1;
-}
-
-.nav-progress.is-done {
-    opacity: 0;
-}
-
-.nav-progress-bar {
-    display: block;
-    height: 100%;
-    width: 0;
-    background: var(--color-primary);
-    border-radius: 0 3px 3px 0;
-    box-shadow: none;
-    transition: width 0.18s ease;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .nav-progress-bar {
-        transition: none;
-    }
-}
-
 /* Header */
 .site-header {
     position: sticky;
