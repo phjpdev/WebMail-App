@@ -213,7 +213,7 @@ class ImapService
                 'seen' => (bool) ($row->seen ?? false),
                 'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
-                'has_attachment' => $uid > 0 && $this->uidHasAttachment($uid),
+                'has_attachment' => false,
             ];
         }
 
@@ -633,7 +633,7 @@ class ImapService
                 'seen' => (bool) ($row->seen ?? false),
                 'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
-                'has_attachment' => $this->uidHasAttachment((int) $uid),
+                'has_attachment' => false,
             ];
         }
 
@@ -652,6 +652,26 @@ class ImapService
         }
 
         return $this->structureHasAttachment($structure);
+    }
+
+    /**
+     * Check attachment presence for a page of UIDs (deferred from list load).
+     *
+     * @param list<int> $uids
+     * @return array<int, bool>
+     */
+    public function batchHasAttachments(array $uids): array
+    {
+        $result = [];
+        foreach ($uids as $uid) {
+            $uid = (int) $uid;
+            if ($uid <= 0) {
+                continue;
+            }
+            $result[$uid] = $this->uidHasAttachment($uid);
+        }
+
+        return $result;
     }
 
     private function structureHasAttachment(object $structure, string $partId = ''): bool

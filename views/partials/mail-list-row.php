@@ -9,6 +9,9 @@ $avatarColor = mail_avatar_color($msg['from'] ?? '');
 $uid = (int) $msg['uid'];
 ?>
 <div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
+    role="option"
+    tabindex="-1"
+    aria-selected="false"
     data-uid="<?= $uid ?>"
     data-seen="<?= !empty($msg['seen']) ? '1' : '0' ?>"
     data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
@@ -22,7 +25,7 @@ $uid = (int) $msg['uid'];
     <div class="mail-row-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
     <div class="mail-row-body">
         <div class="mail-row-line1">
-            <span class="mail-row-from"><?= e($fromDisplay) ?></span>
+            <span class="mail-row-from" title="<?= e($fromDisplay) ?>"><?= e($fromDisplay) ?></span>
             <span class="mail-row-meta">
                 <?php if (!empty($msg['has_attachment'])): ?>
                     <span class="mail-row-attach" title="Has attachment" aria-label="Has attachment">
@@ -35,7 +38,7 @@ $uid = (int) $msg['uid'];
                 <span class="mail-row-date"><?= e(format_mail_date($msg['date'] ?? '')) ?></span>
             </span>
         </div>
-        <div class="mail-row-subject"><?= e($msg['subject'] ?? '(no subject)') ?></div>
+        <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject'] ?? '(no subject)') ?></div>
     </div>
     <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
 </div>

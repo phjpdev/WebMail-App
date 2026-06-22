@@ -313,6 +313,17 @@ function requireAuth(): void
     App\Auth::enforcePasswordChange();
 }
 
+/**
+ * Release the session lock so parallel XHR (pane + sync) are not serialized.
+ * Call after requireAuth() on JSON/API handlers that do not write session data.
+ */
+function releaseSessionLock(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+}
+
 function requireAdmin(): void
 {
     requireAuth();

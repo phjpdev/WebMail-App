@@ -10,6 +10,7 @@ use App\Services\AliasService;
 use App\Services\FilterService;
 use App\Services\FolderCache;
 use App\Services\ImapService;
+use App\Services\MailCacheService;
 
 class MailController
 {
@@ -32,10 +33,66 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        // Load sidebar cache, move routed mail out of INBOX, then list (no throttle).
+        $context = $this->buildFolderListContext($folderPath, $params);
+        if ($context === null) {
+            flash('error', 'Folder not found on mail server.');
+            redirect('folder/' . encode_folder_path('INBOX'));
+        }
+
+        $this->renderMailView('mail/list', $context);
+    }
+
+    /**
+     * AJAX fragment for fast folder switches (list column only).
+     *
+     * @param array<string, string> $params
+     */
+    public function folderFragment(array $params): void
+    {
+        requireAuth();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        if ($folderPath === '') {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Folder not found']);
+            return;
+        }
+        if (!FolderCache::canAccess($folderPath)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'Access denied']);
+            return;
+        }
+
+        $context = $this->buildFolderListContext($folderPath, $params);
+        if ($context === null) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Folder not found']);
+            return;
+        }
+
+        echo json_encode([
+            'ok' => true,
+            'folder_path' => $folderPath,
+            'folder_b64' => $context['folderB64'],
+            'title' => $context['title'],
+            'url' => folder_url($folderPath),
+            'html' => view_string('mail/list-column', $context),
+            'unread_counts' => $context['unreadCounts'] ?? [],
+        ]);
+    }
+
+    /**
+     * @param array<string, string> $params
+     * @return array<string, mixed>|null
+     */
+    private function buildFolderListContext(string $folderPath, array $params): ?array
+    {
         FolderCache::load(skipUnreadRefresh: true);
-        FilterService::runBeforeMailList();
-        FolderCache::syncUnreadBadges($folderPath);
+        $filterResult = $this->maybeRunFilter($folderPath);
+        if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
+            FolderCache::syncUnreadBadges($folderPath);
+        }
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
@@ -45,8 +102,7 @@ class MailController
         $imapError = $folderData['error'];
 
         if ($imapConnected && !$this->folderExists($folders, $folderPath)) {
-            flash('error', 'Folder not found on mail server.');
-            redirect('folder/' . encode_folder_path('INBOX'));
+            return null;
         }
 
         $perPage = mail_per_page();
@@ -55,9 +111,7 @@ class MailController
         if ($imapConnected) {
             $imap = new ImapService();
             if ($imap->connect()) {
-                $list = $query !== ''
-                    ? $imap->searchMessages($folderPath, $query, $page, $perPage)
-                    : $imap->listMessages($folderPath, $page, $perPage);
+                $list = $this->fetchFolderList($folderPath, $page, $perPage, $query, $imap);
             } else {
                 $imapConnected = false;
                 $imapError = $imap->getLastError();
@@ -65,7 +119,8 @@ class MailController
         }
 
         $prefs = user_preferences();
-        $this->renderMailView('mail/list', [
+
+        return [
             'title' => $this->folderDisplayName($folders, $folderPath),
             'folderPath' => $folderPath,
             'folderB64' => encode_folder_path($folderPath),
@@ -81,7 +136,123 @@ class MailController
             'imapError' => $imapError,
             'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
             'perPage' => $perPage,
+        ];
+    }
+
+    private function filterSourceFolder(): string
+    {
+        return (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+    }
+
+    private function isFilterSource(string $folderPath): bool
+    {
+        $source = $this->filterSourceFolder();
+
+        return $folderPath === $source || strtoupper($folderPath) === 'INBOX';
+    }
+
+    /**
+     * Run filter on inbox visits; throttle on other folders and poll sync.
+     *
+     * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int, done?: bool}|null
+     */
+    private function maybeRunFilter(string $folderPath): ?array
+    {
+        if ($this->isFilterSource($folderPath)) {
+            return FilterService::runBeforeMailList();
+        }
+
+        return FilterService::runBackground(false);
+    }
+
+    /**
+     * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int, from_cache?: bool}
+     */
+    private function fetchFolderList(string $folderPath, int $page, int $perPage, string $query, ImapService $imap): array
+    {
+        if ($query === '') {
+            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+
+        $list = $query !== ''
+            ? $imap->searchMessages($folderPath, $query, $page, $perPage)
+            : $imap->listMessages($folderPath, $page, $perPage);
+
+        if ($query === '') {
+            MailCacheService::upsertIndexMessages($folderPath, $list['messages'], (int) $list['total']);
+        }
+
+        $list['from_cache'] = false;
+
+        return $list;
+    }
+
+    /**
+     * Warm header cache for common folders (XHR after login — no cron).
+     */
+    public function mailBootstrap(): void
+    {
+        requireAuth();
+        releaseSessionLock();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        if (!$folderData['connected']) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => $folderData['error'] ?: 'IMAP unavailable']);
+            return;
+        }
+
+        $paths = $this->bootstrapFolderPaths($folderData['folders'], $_GET['folder'] ?? '');
+        $paths = array_values(array_filter($paths, fn (string $p) => FolderCache::canAccess($p)));
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
+            return;
+        }
+
+        $this->maybeRunFilter($this->filterSourceFolder());
+
+        echo json_encode([
+            'ok' => true,
+            'synced' => MailCacheService::bootstrapSync($imap, $paths),
         ]);
+    }
+
+    /**
+     * @param list<array{path: string, name: string}> $folders
+     * @return list<string>
+     */
+    private function bootstrapFolderPaths(array $folders, string $activeFolderEncoded): array
+    {
+        $paths = [
+            $this->filterSourceFolder(),
+            'INBOX',
+        ];
+
+        if ($activeFolderEncoded !== '') {
+            $active = decode_folder_path($activeFolderEncoded);
+            if ($active !== '') {
+                $paths[] = $active;
+            }
+        }
+
+        foreach ($folders as $folder) {
+            $path = $folder['path'];
+            $lower = strtolower($path);
+            if (str_contains($lower, 'sent') || str_contains($lower, 'draft')) {
+                $paths[] = $path;
+            }
+        }
+
+        $paths = array_values(array_unique(array_filter($paths)));
+
+        return array_slice($paths, 0, 8);
     }
 
     /**
@@ -90,6 +261,7 @@ class MailController
     public function folderSync(array $params): void
     {
         requireAuth();
+        releaseSessionLock();
 
         header('Content-Type: application/json; charset=utf-8');
 
@@ -107,12 +279,26 @@ class MailController
 
         FolderCache::load(skipUnreadRefresh: true);
 
-        // Move routed mail before returning the list (same request, no extra XHR).
-        FilterService::runBeforeMailList();
-        FolderCache::syncUnreadBadges($folderPath);
-
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
+        $light = ($_GET['light'] ?? '') === '1';
+        $perPage = mail_per_page();
+
+        // Lightweight poll: serve from MySQL only — no IMAP (avoids blocking pane loads).
+        if ($light && $query === '') {
+            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            if ($cached !== null) {
+                $this->echoFolderSyncJson($folderPath, $cached);
+                return;
+            }
+        }
+
+        if (!$light) {
+            $filterResult = $this->maybeRunFilter($folderPath);
+            if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
+                FolderCache::syncUnreadBadges($folderPath);
+            }
+        }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -121,10 +307,31 @@ class MailController
             return;
         }
 
-        $perPage = mail_per_page();
-        $list = $query !== ''
-            ? $imap->searchMessages($folderPath, $query, $page, $perPage)
-            : $imap->listMessages($folderPath, $page, $perPage);
+        $list = null;
+
+        if ($query === '' && $page === 1 && !$light && MailCacheService::isStale($folderPath)) {
+            MailCacheService::syncFolderHeaders($imap, $folderPath);
+            $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
+        }
+
+        if ($list === null) {
+            $list = $query !== ''
+                ? $imap->searchMessages($folderPath, $query, $page, $perPage)
+                : $imap->listMessages($folderPath, $page, $perPage);
+
+            if ($query === '') {
+                MailCacheService::upsertIndexMessages($folderPath, $list['messages'], (int) $list['total']);
+            }
+        }
+
+        $this->echoFolderSyncJson($folderPath, $list);
+    }
+
+    /**
+     * @param array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int} $list
+     */
+    private function echoFolderSyncJson(string $folderPath, array $list): void
+    {
         $messages = [];
 
         foreach ($list['messages'] as $msg) {
@@ -156,6 +363,7 @@ class MailController
     public function foldersUnread(): void
     {
         requireAuth();
+        releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
         // Refresh expired counts so sidebar badges stay accurate between filter runs.
@@ -169,6 +377,7 @@ class MailController
     public function messageSync(array $params): void
     {
         requireAuth();
+        releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
         $folderPath = decode_folder_path($params['folderB64'] ?? '');
@@ -196,11 +405,52 @@ class MailController
     }
 
     /**
+     * Deferred attachment hints for list rows (after fast overview load).
+     *
+     * @param array<string, string> $params
+     */
+    public function messageAttachments(array $params): void
+    {
+        requireAuth();
+        releaseSessionLock();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        if ($folderPath === '' || !FolderCache::canAccess($folderPath)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'Access denied']);
+            return;
+        }
+
+        $raw = trim($_GET['uids'] ?? '');
+        if ($raw === '') {
+            echo json_encode(['ok' => true, 'has_attachment' => []]);
+            return;
+        }
+
+        $uids = array_values(array_unique(array_filter(array_map('intval', explode(',', $raw)), fn ($u) => $u > 0)));
+        $uids = array_slice($uids, 0, 50);
+
+        $imap = new ImapService();
+        if (!$imap->connect() || !$imap->openFolder($folderPath)) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
+            return;
+        }
+
+        echo json_encode([
+            'ok' => true,
+            'has_attachment' => $imap->batchHasAttachments($uids),
+        ]);
+    }
+
+    /**
      * @param array<string, string> $params
      */
     public function messagePane(array $params): void
     {
         requireAuth();
+        releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
         $folderPath = decode_folder_path($params['folderB64'] ?? '');
@@ -293,8 +543,6 @@ class MailController
         assert_folder_access($folderPath);
 
         $folderData = FolderCache::load(skipUnreadRefresh: true);
-        FolderCache::syncUnreadBadges($folderPath);
-        $folderData['unread_counts'] = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? $folderData['unread_counts'];
         $folders = $folderData['folders'];
 
         $imap = new ImapService();
@@ -302,14 +550,22 @@ class MailController
             return null;
         }
 
-        $message = $imap->getMessageByUid($folderPath, $uid);
+        $message = MailCacheService::getBody($folderPath, $uid);
+
         if ($message === null) {
-            return null;
+            $message = $imap->getMessageByUid($folderPath, $uid);
+            if ($message === null) {
+                return null;
+            }
+            MailCacheService::saveBody($folderPath, $message);
         }
 
         $wasUnread = empty($message['seen']);
-        $imap->markSeen($folderPath, $uid);
-        $message['seen'] = true;
+        if ($wasUnread) {
+            $imap->markSeen($folderPath, $uid);
+            $message['seen'] = true;
+            MailCacheService::updateIndexSeen($folderPath, $uid, true);
+        }
 
         if ($wasUnread) {
             $updatedCounts = FolderCache::bumpUnread($folderPath, -1);
@@ -326,13 +582,18 @@ class MailController
 
         $prefs = user_preferences();
 
+        $html = (string) ($message['html'] ?? '');
+        if ($html === '' && !empty($message['plain'])) {
+            $html = '<pre class="mail-plain">' . e((string) $message['plain']) . '</pre>';
+        }
+
         return [
             'folderPath' => $folderPath,
             'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
             'unreadCounts' => $folderData['unread_counts'] ?? [],
             'message' => $message,
-            'sanitizedHtml' => HtmlSanitizer::sanitize($message['html']),
+            'sanitizedHtml' => HtmlSanitizer::sanitize($html),
             'replyFrom' => $replyFrom,
             'moveTargets' => array_values(array_filter(
                 $folders,
@@ -585,6 +846,7 @@ class MailController
         foreach ($uids as $uid) {
             if ($imap->moveMessage($folderPath, $uid, $targetPath)) {
                 $moved++;
+                MailCacheService::removeMessage($folderPath, $uid);
             } else {
                 $errors++;
             }
@@ -664,6 +926,8 @@ class MailController
             $imap->markUnseen($folderPath, $uid);
         }
 
+        MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
+
         $delta = 0;
         if ($alreadySeen === null) {
             $delta = $seen ? -1 : 1;
@@ -704,6 +968,8 @@ class MailController
         } else {
             $imap->markUnflagged($folderPath, $uid);
         }
+
+        MailCacheService::updateIndexFlagged($folderPath, $uid, $flagged);
 
         if (wants_json()) {
             json_response(['ok' => true, 'flagged' => $flagged, 'uid' => $uid, 'unread_counts' => FolderCache::bumpUnread($folderPath, 0)]);
@@ -746,6 +1012,7 @@ class MailController
                 }
                 $imap->markUnseen($folderPath, $uid);
             }
+            MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
         }
 
         $counts = [];
@@ -786,6 +1053,7 @@ class MailController
             } else {
                 $imap->markUnflagged($folderPath, $uid);
             }
+            MailCacheService::updateIndexFlagged($folderPath, $uid, $flagged);
         }
 
         if (wants_json()) {

@@ -115,6 +115,7 @@
         var link = e.target.closest('a');
         if (link && link.href && link.origin === window.location.origin && !link.target && !link.hasAttribute('download')) {
             if (link.getAttribute('href').charAt(0) === '#') return;
+            if (link.closest('[data-ajax-folder]') && document.getElementById('mail-workspace')) return;
             showLoading();
         }
     });
@@ -145,8 +146,20 @@
 
     var PANE_MEDIA = window.matchMedia('(min-width: 1024px)');
     var paneLoadSeq = 0;
+    var folderLoadSeq = 0;
     var composePanelSeq = 0;
     var composePanelRestoreUid = null;
+    var paneNavTimer = null;
+    var paneNavPendingUid = null;
+    var paneNavPendingHistory = false;
+    var paneCache = {};
+    var mailPollIntervalId = null;
+    var mailSyncPaused = false;
+    var lastMailPollAt = 0;
+    var mailPollMinGapMs = 25000;
+    var mailSyncHooksBound = false;
+    var PANE_CACHE_MAX = 12;
+    var PANE_NAV_DEBOUNCE_MS = 120;
 
     function useReadingPane() {
         return PANE_MEDIA.matches && !!document.getElementById('reading-pane');
@@ -169,9 +182,44 @@
         return apiUrl('folder/' + b64 + '/message/' + uid + '/pane');
     }
 
+    function announceLive(message) {
+        var region = document.getElementById('mail-live-region');
+        if (!region || !message) return;
+        region.textContent = '';
+        window.setTimeout(function () {
+            region.textContent = message;
+        }, 30);
+    }
+
+    function parseFolderPath(pathname) {
+        var m = pathname.match(/\/folder\/([^/]+)\/?$/);
+        if (!m) return null;
+        return { folderB64: m[1] };
+    }
+
+    function updateSidebarActive(folderPath) {
+        document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
+            var active = link.getAttribute('data-folder-path') === folderPath;
+            link.classList.toggle('active', active);
+            if (active && link.closest('.sidebar-group.is-collapsible')) {
+                link.closest('.sidebar-group').classList.add('is-open');
+                var toggle = link.closest('.sidebar-group').querySelector('.sidebar-group-toggle');
+                if (toggle) toggle.setAttribute('aria-expanded', 'true');
+            }
+        });
+    }
+
+    function setRowAriaSelected(uid) {
+        document.querySelectorAll('.mail-row[role="option"], .mail-card[role="option"]').forEach(function (el) {
+            var selected = parseInt(el.getAttribute('data-uid'), 10) === uid;
+            el.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+    }
+
     function clearMailRowSelection() {
         document.querySelectorAll('.mail-row.is-selected, .mail-card.is-selected, .mail-row.is-focused, .mail-card.is-focused').forEach(function (el) {
             el.classList.remove('is-selected', 'is-focused');
+            el.setAttribute('aria-selected', 'false');
         });
     }
 
@@ -180,28 +228,38 @@
         rowsForUid(uid).forEach(function (el) {
             el.classList.add('is-selected');
             el.classList.add('is-focused');
+            el.setAttribute('aria-selected', 'true');
         });
+        setRowAriaSelected(uid);
     }
 
     function setPaneView(state) {
-        var loading = document.getElementById('reading-pane-loading');
         var empty = document.getElementById('reading-pane-empty');
         var bodyEl = document.getElementById('reading-pane-body');
-        var isLoading = state === 'loading';
-        var isEmpty = state === 'empty';
-        var isContent = state === 'content';
+        var skeleton = document.getElementById('reading-pane-skeleton');
+        var viewport = document.getElementById('reading-pane-viewport');
+        var hasContent = !!(bodyEl && bodyEl.innerHTML.trim());
 
-        if (loading) {
-            loading.hidden = !isLoading;
-            loading.classList.toggle('is-active', isLoading);
+        if (viewport) viewport.classList.toggle('is-pane-loading', state === 'loading');
+
+        if (state === 'empty') {
+            if (empty) empty.hidden = false;
+            if (bodyEl) bodyEl.hidden = true;
+            if (skeleton) skeleton.hidden = true;
+            return;
         }
-        if (empty) {
-            empty.hidden = !isEmpty;
-            empty.classList.toggle('is-active', isEmpty);
+
+        if (state === 'loading') {
+            if (empty) empty.hidden = true;
+            if (bodyEl) bodyEl.hidden = !hasContent;
+            if (skeleton) skeleton.hidden = false;
+            return;
         }
-        if (bodyEl) {
-            bodyEl.hidden = !isContent;
-            bodyEl.classList.toggle('is-active', isContent);
+
+        if (state === 'content') {
+            if (empty) empty.hidden = true;
+            if (bodyEl) bodyEl.hidden = false;
+            if (skeleton) skeleton.hidden = true;
         }
     }
 
@@ -224,7 +282,39 @@
         clearMailRowSelection();
     }
 
-    function openMessageInPane(uid, pushHistory) {
+    function rememberPaneCache(uid, data) {
+        paneCache[uid] = data;
+        var keys = Object.keys(paneCache);
+        while (keys.length > PANE_CACHE_MAX) {
+            delete paneCache[keys[0]];
+            keys = Object.keys(paneCache);
+        }
+    }
+
+    function applyPaneHtml(uid, data, pushHistory) {
+        var bodyEl = document.getElementById('reading-pane-body');
+        if (!bodyEl) return;
+
+        bodyEl.innerHTML = data.html;
+        setPaneView('content');
+
+        if (data.was_unread || data.seen) {
+            setRowSeen(uid, true);
+        }
+        if (data.unread_counts) {
+            applyUnreadCounts(data.unread_counts);
+        }
+
+        var card = bodyEl.querySelector('.mail-read-card[data-uid]');
+        bindReadViewCard(card);
+        bindComposeLinks(card);
+        bindMessageSyncCard(card);
+
+        var subject = data.subject || 'Message';
+        announceLive('Loaded: ' + subject);
+    }
+
+    function openMessageInPaneNow(uid, pushHistory) {
         if (!uid) return;
         if (!useReadingPane()) {
             var row = rowsForUid(uid)[0];
@@ -235,10 +325,23 @@
             return;
         }
 
+        var cached = paneCache[uid];
+        if (cached && cached.html) {
+            var rowCached = rowsForUid(uid)[0];
+            var hrefCached = rowCached ? rowCached.getAttribute('data-href') : null;
+            if (pushHistory && hrefCached && window.history && window.history.pushState) {
+                window.history.pushState({ paneUid: uid }, '', hrefCached);
+            }
+            setSelectedRow(uid);
+            applyPaneHtml(uid, cached, pushHistory);
+            return;
+        }
+
         var url = paneFetchUrl(uid);
         if (!url) return;
 
         var seq = ++paneLoadSeq;
+        mailSyncPaused = true;
         setPaneView('loading');
         setSelectedRow(uid);
 
@@ -259,29 +362,43 @@
                 if (seq !== paneLoadSeq) return;
                 if (!data || !data.ok || !data.html) throw new Error('Could not load message.');
 
-                var bodyEl = document.getElementById('reading-pane-body');
-                if (!bodyEl) return;
-
-                bodyEl.innerHTML = data.html;
-                setPaneView('content');
-
-                if (data.was_unread || data.seen) {
-                    setRowSeen(uid, true);
-                }
-                if (data.unread_counts) {
-                    applyUnreadCounts(data.unread_counts);
-                }
-
-                var card = bodyEl.querySelector('.mail-read-card[data-uid]');
-                bindReadViewCard(card);
-                bindComposeLinks(card);
-                bindMessageSyncCard(card);
+                rememberPaneCache(uid, data);
+                applyPaneHtml(uid, data, pushHistory);
             })
             .catch(function (err) {
                 if (seq !== paneLoadSeq) return;
                 setPaneView('empty');
+                announceLive('Could not load message.');
                 showToast('error', err.message || 'Could not load message.');
+            })
+            .finally(function () {
+                if (seq === paneLoadSeq) {
+                    mailSyncPaused = false;
+                }
             });
+    }
+
+    function openMessageInPane(uid, pushHistory) {
+        if (!uid) return;
+        setSelectedRow(uid);
+        if (paneNavTimer) window.clearTimeout(paneNavTimer);
+        paneNavPendingUid = uid;
+        paneNavPendingHistory = !!pushHistory;
+        paneNavTimer = window.setTimeout(function () {
+            openMessageInPaneNow(paneNavPendingUid, paneNavPendingHistory);
+        }, PANE_NAV_DEBOUNCE_MS);
+    }
+
+    function prefetchPane(uid) {
+        if (!uid || paneCache[uid] || !useReadingPane()) return;
+        var url = paneFetchUrl(uid);
+        if (!url) return;
+        fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+            .then(function (res) {
+                return res.json().then(function (data) {
+                    if (res.ok && data && data.ok && data.html) rememberPaneCache(uid, data);
+                });
+            }).catch(function () {});
     }
 
     function initReadingPane() {
@@ -289,12 +406,17 @@
 
         window.addEventListener('popstate', function () {
             if (!useReadingPane()) return;
-            var parsed = parseMessagePath(window.location.pathname);
-            if (parsed && parsed.uid) {
-                openMessageInPane(parsed.uid, false);
-            } else {
-                clearReadingPane();
+            var parsedMsg = parseMessagePath(window.location.pathname);
+            if (parsedMsg && parsedMsg.uid) {
+                openMessageInPaneNow(parsedMsg.uid, false);
+                return;
             }
+            var parsedFolder = parseFolderPath(window.location.pathname);
+            if (parsedFolder && parsedFolder.folderB64) {
+                loadFolderAjax(parsedFolder.folderB64, false);
+                return;
+            }
+            clearReadingPane();
         });
 
         if (PANE_MEDIA.addEventListener) {
@@ -305,6 +427,144 @@
                 }
             });
         }
+
+        var parsed = parseMessagePath(window.location.pathname);
+        if (parsed && parsed.uid) {
+            openMessageInPaneNow(parsed.uid, false);
+        }
+    }
+
+    function stopMailSync() {
+        if (mailPollIntervalId) {
+            window.clearInterval(mailPollIntervalId);
+            mailPollIntervalId = null;
+        }
+    }
+
+    function bindAllMailRows(root) {
+        (root || document).querySelectorAll('.mail-row[data-href], .mail-card[data-href]').forEach(bindMailRow);
+    }
+
+    function applyAttachmentIcon(row, hasAttachment) {
+        if (!hasAttachment || !row) return;
+        var meta = row.querySelector('.mail-row-meta') || row.querySelector('.mail-card-meta');
+        if (!meta || meta.querySelector('.mail-row-attach')) return;
+        var span = document.createElement('span');
+        span.className = 'mail-row-attach';
+        span.title = 'Has attachment';
+        span.setAttribute('aria-label', 'Has attachment');
+        span.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+        var dateEl = meta.querySelector('.mail-row-date, .mail-card-date');
+        if (dateEl) meta.insertBefore(span, dateEl);
+        else meta.appendChild(span);
+    }
+
+    function loadAttachmentHints(root) {
+        root = root || document;
+        var card = root.querySelector ? root.querySelector('.mail-list-card[data-folder-b64]') : null;
+        if (!card) return;
+        var b64 = card.getAttribute('data-folder-b64');
+        var uids = [];
+        (root.querySelectorAll ? root.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]') : []).forEach(function (el) {
+            if (el.querySelector('.mail-row-attach')) return;
+            var uid = parseInt(el.getAttribute('data-uid'), 10);
+            if (uid) uids.push(uid);
+        });
+        if (!uids.length) return;
+
+        fetch(apiUrl('folder/' + b64 + '/attachments?uids=' + uids.join(',')), {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        }).then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data || !data.ok || !data.has_attachment) return;
+                Object.keys(data.has_attachment).forEach(function (uidKey) {
+                    if (!data.has_attachment[uidKey]) return;
+                    rowsForUid(parseInt(uidKey, 10)).forEach(function (row) {
+                        applyAttachmentIcon(row, true);
+                    });
+                });
+            }).catch(function () {});
+    }
+
+    function reinitMailListColumn() {
+        bindAllMailRows(document);
+        initMailCommandBar();
+        initMailSync();
+        initPerPageSelect();
+        loadAttachmentHints(document);
+    }
+
+    function loadFolderAjax(folderB64, pushHistory) {
+        if (!folderB64 || !document.getElementById('mail-workspace')) return;
+
+        var seq = ++folderLoadSeq;
+        beginTask();
+        clearReadingPane();
+        closeComposePanel(false);
+        paneCache = {};
+
+        var column = document.querySelector('.mail-list-column');
+        if (column) column.classList.add('is-loading');
+
+        fetch(apiUrl('folder/' + folderB64 + '/fragment'), {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        }).then(function (res) {
+            return res.json().then(function (data) {
+                if (!res.ok) throw new Error((data && data.error) || 'Could not load folder.');
+                return data;
+            });
+        }).then(function (data) {
+            if (seq !== folderLoadSeq) return;
+            if (!data || !data.ok || !data.html) throw new Error('Could not load folder.');
+
+            var workspace = document.getElementById('mail-workspace');
+            var pane = document.getElementById('reading-pane');
+            if (!workspace || !pane) return;
+
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = data.html;
+            var newColumn = wrapper.firstElementChild;
+            var oldColumn = workspace.querySelector('.mail-list-column');
+            if (oldColumn && newColumn) {
+                workspace.replaceChild(newColumn, oldColumn);
+            }
+
+            if (data.folder_path) updateSidebarActive(data.folder_path);
+            if (data.unread_counts) applyUnreadCounts(data.unread_counts);
+            if (data.title) {
+                var parts = document.title.split(' — ');
+                document.title = data.title + (parts.length > 1 ? ' — ' + parts.slice(1).join(' — ') : '');
+            }
+            if (pushHistory && data.url && window.history && window.history.pushState) {
+                window.history.pushState({ folderB64: folderB64 }, '', data.url);
+            }
+
+            reinitMailListColumn();
+            announceLive('Folder loaded: ' + (data.title || 'Mail'));
+        }).catch(function (err) {
+            if (seq !== folderLoadSeq) return;
+            showToast('error', err.message || 'Could not load folder.');
+        }).finally(function () {
+            if (seq !== folderLoadSeq) return;
+            var col = document.querySelector('.mail-list-column');
+            if (col) col.classList.remove('is-loading');
+            endTask();
+        });
+    }
+
+    function initAjaxFolderNav() {
+        document.addEventListener('click', function (e) {
+            var link = e.target.closest('[data-ajax-folder][data-folder-b64]');
+            if (!link || !document.getElementById('mail-workspace')) return;
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+
+            e.preventDefault();
+            var b64 = link.getAttribute('data-folder-b64');
+            loadFolderAjax(b64, true);
+            if (window.innerWidth < 900) closeSidebar();
+        });
     }
 
     function currentMailFolderEnc() {
@@ -419,7 +679,7 @@
         }
 
         if (composePanelRestoreUid) {
-            openMessageInPane(composePanelRestoreUid, false);
+            openMessageInPaneNow(composePanelRestoreUid, false);
         } else {
             setPaneView('empty');
         }
@@ -511,7 +771,7 @@
                 if (data && data.draft_uid) removeRowByUid(data.draft_uid);
                 closeComposePanel(false);
                 setPaneView('empty');
-                if (mailPoll) mailPoll();
+                if (mailPoll) scheduleMailPoll(true);
             }).catch(function (err) {
                 showToast('error', err.message || 'Action failed.');
             }).finally(function () { endTask(); });
@@ -544,6 +804,16 @@
     function bindMailRow(row) {
         if (!row || row.dataset.bound) return;
         row.dataset.bound = '1';
+        var prefetchTimer = null;
+        row.addEventListener('mouseenter', function () {
+            if (!useReadingPane()) return;
+            var uid = parseInt(row.getAttribute('data-uid'), 10);
+            if (!uid) return;
+            prefetchTimer = window.setTimeout(function () { prefetchPane(uid); }, 180);
+        });
+        row.addEventListener('mouseleave', function () {
+            if (prefetchTimer) window.clearTimeout(prefetchTimer);
+        });
         row.addEventListener('click', function (e) {
             if (e.target.closest('.mail-row-check') || e.target.closest('.col-check') || e.target.closest('.mail-kebab')) return;
             var uid = parseInt(row.getAttribute('data-uid'), 10);
@@ -555,7 +825,7 @@
             window.location = row.getAttribute('data-href');
         });
         // Keyboard activation for role="link" cards (mobile list a11y).
-        if (row.getAttribute('role') === 'link') {
+        if (row.getAttribute('role') === 'link' || row.getAttribute('role') === 'option') {
             row.addEventListener('keydown', function (e) {
                 if (e.key === 'Enter' || e.key === ' ') {
                     if (e.target.closest('.mail-kebab')) return;
@@ -568,6 +838,28 @@
     }
 
     document.querySelectorAll('.mail-row[data-href], .mail-card[data-href]').forEach(bindMailRow);
+
+    function initMobileReadSwipe() {
+        var card = document.querySelector('.mail-read-card:not(.mail-read-card--pane)');
+        if (!card || card._swipeBound) return;
+        card._swipeBound = true;
+        var startX = 0;
+        var startY = 0;
+        card.addEventListener('touchstart', function (e) {
+            if (!e.touches || !e.touches[0]) return;
+            startX = e.touches[0].clientX;
+            startY = e.touches[0].clientY;
+        }, { passive: true });
+        card.addEventListener('touchend', function (e) {
+            if (!e.changedTouches || !e.changedTouches[0]) return;
+            var dx = e.changedTouches[0].clientX - startX;
+            var dy = e.changedTouches[0].clientY - startY;
+            if (dx > 70 && Math.abs(dy) < 50 && startX < 40) {
+                var folderUrl = card.getAttribute('data-folder-url');
+                if (folderUrl) window.location = folderUrl;
+            }
+        }, { passive: true });
+    }
 
     function escapeHtml(text) {
         var div = document.createElement('div');
@@ -590,6 +882,14 @@
     }
 
     var mailPoll = null;
+
+    function scheduleMailPoll(force) {
+        if (!mailPoll) return;
+        if (mailSyncPaused && !force) return;
+        var now = Date.now();
+        if (!force && (now - lastMailPollAt) < mailPollMinGapMs) return;
+        mailPoll(force);
+    }
 
     function ajaxAction(action, fields) {
         var payload = new URLSearchParams();
@@ -792,6 +1092,9 @@
     function buildDesktopRow(msg, isNew) {
         var row = document.createElement('div');
         row.className = 'mail-row mail-row--outlook' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (isNew ? ' mail-row-new' : '');
+        row.setAttribute('role', 'option');
+        row.setAttribute('tabindex', '-1');
+        row.setAttribute('aria-selected', 'false');
         row.setAttribute('data-uid', String(msg.uid));
         row.setAttribute('data-seen', msg.seen ? '1' : '0');
         row.setAttribute('data-flagged', msg.flagged ? '1' : '0');
@@ -834,8 +1137,9 @@
     function buildMobileCard(msg, isNew) {
         var a = document.createElement('div');
         a.className = 'mail-card' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (isNew ? ' mail-row-new' : '');
-        a.setAttribute('role', 'link');
+        a.setAttribute('role', 'option');
         a.setAttribute('tabindex', '0');
+        a.setAttribute('aria-selected', 'false');
         a.setAttribute('data-uid', String(msg.uid));
         a.setAttribute('data-seen', msg.seen ? '1' : '0');
         a.setAttribute('data-flagged', msg.flagged ? '1' : '0');
@@ -914,6 +1218,7 @@
     }
 
     function initMailSync() {
+        stopMailSync();
         var card = document.querySelector('[data-mail-sync="1"]');
         if (!card) return;
 
@@ -923,12 +1228,17 @@
         var polling = false;
         var syncErrorShown = false;
 
-        function poll() {
+        function poll(force) {
             if (polling) return;
+            if (mailSyncPaused && !force) return;
 
             polling = true;
+            lastMailPollAt = Date.now();
             card.classList.add('is-syncing');
             var url = pollUrl + (pollUrl.indexOf('?') >= 0 ? '&' : '?') + 'page=' + page;
+            if (!force) {
+                url += '&light=1';
+            }
 
             fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
                 .then(function (res) {
@@ -1002,17 +1312,19 @@
         }
 
         mailPoll = poll;
-        window.setInterval(poll, interval);
-        document.addEventListener('visibilitychange', function () {
-            if (document.visibilityState === 'visible') poll();
-        });
-        // When returning via Back/Forward (bfcache), the page is restored from a
-        // snapshot — re-sync after a short delay so Back feels instant first.
-        window.addEventListener('pageshow', function (e) {
-            if (e.persisted) {
-                window.setTimeout(poll, 400);
-            }
-        });
+        mailPollIntervalId = window.setInterval(function () { scheduleMailPoll(false); }, interval);
+
+        if (!mailSyncHooksBound) {
+            mailSyncHooksBound = true;
+            document.addEventListener('visibilitychange', function () {
+                if (document.visibilityState === 'visible') scheduleMailPoll(false);
+            });
+            window.addEventListener('pageshow', function (e) {
+                if (e.persisted) {
+                    window.setTimeout(function () { scheduleMailPoll(false); }, 400);
+                }
+            });
+        }
     }
 
     var commandBarInitialized = false;
@@ -1121,7 +1433,7 @@
     function runBulkCommand(action) {
         if (action === 'refresh') {
             if (mailPoll) {
-                mailPoll();
+                scheduleMailPoll(true);
             } else {
                 window.location.reload();
             }
@@ -1215,7 +1527,7 @@
             if (successMsg) showToast('success', successMsg);
         }).catch(function (err) {
             showToast('error', err.message || 'Action failed.');
-            if (mailPoll) mailPoll();
+            if (mailPoll) scheduleMailPoll(true);
         }).finally(function () { endTask(); });
     }
 
@@ -1662,6 +1974,7 @@
                 clearMailRowSelection();
                 var next = rows[idx + 1];
                 next.classList.add('is-focused');
+                next.setAttribute('aria-selected', 'true');
                 next.scrollIntoView({ block: 'nearest' });
                 if (useReadingPane()) {
                     var nextUid = parseInt(next.getAttribute('data-uid'), 10);
@@ -1671,6 +1984,7 @@
                 clearMailRowSelection();
                 var prev = rows[idx - 1];
                 prev.classList.add('is-focused');
+                prev.setAttribute('aria-selected', 'true');
                 prev.scrollIntoView({ block: 'nearest' });
                 if (useReadingPane()) {
                     var prevUid = parseInt(prev.getAttribute('data-uid'), 10);
@@ -1679,7 +1993,7 @@
             } else if (e.key === 'Enter' && row && useReadingPane() && document.getElementById('mail-workspace')) {
                 e.preventDefault();
                 var enterUid = parseInt(row.getAttribute('data-uid'), 10);
-                if (enterUid) openMessageInPane(enterUid, true);
+                if (enterUid) openMessageInPaneNow(enterUid, true);
             } else if (e.key === 'r' && row) {
                 e.preventDefault();
                 var replyHref = row.getAttribute('data-reply-url');
@@ -1892,7 +2206,7 @@
             })
             .catch(function (err) {
                 showToast('error', err.message || 'Action failed.');
-                if (mailPoll) mailPoll();
+                if (mailPoll) scheduleMailPoll(true);
             })
             .finally(function () { endTask(); });
     }
@@ -2180,6 +2494,19 @@
         }, true);
     }
 
+    function initMailBootstrap() {
+        if (!document.getElementById('mail-workspace')) return;
+        var card = getListCard();
+        var folderEnc = card ? card.getAttribute('data-folder-path') : '';
+        var url = apiUrl('mail/bootstrap');
+        if (folderEnc) {
+            url += (url.indexOf('?') >= 0 ? '&' : '?') + 'folder=' + encodeURIComponent(folderEnc);
+        }
+        fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .catch(function () {});
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         initToasts();
         initMailSync();
@@ -2195,8 +2522,12 @@
         initPerPageSelect();
         initContextMenu();
         initReadingPane();
+        initAjaxFolderNav();
+        initMailBootstrap();
         initComposePanel();
         initReadViewActions();
+        initMobileReadSwipe();
+        loadAttachmentHints(document);
         requestNotificationPermission();
     });
 })();

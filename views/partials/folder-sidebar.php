@@ -97,7 +97,9 @@ $labels = [
                         ?>
                         <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
                            href="<?= e(folder_url($folder['path'])) ?>"
-                           data-folder-path="<?= e($folder['path']) ?>">
+                           data-folder-path="<?= e($folder['path']) ?>"
+                           data-folder-b64="<?= e(encode_folder_path($folder['path'])) ?>"
+                           data-ajax-folder="1">
                             <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
                             <span class="sidebar-link-text"><?= e($displayName) ?></span>
                             <?php if ($unread > 0): ?>

@@ -16,4 +16,8 @@ return [
     'filter_max_runtime' => (int) env('FILTER_MAX_RUNTIME', 20),
     'mail_poll_interval' => (int) env('MAIL_POLL_INTERVAL', 30),
     'mail_per_page' => (int) env('MAIL_PER_PAGE', 15),
+    // Local MySQL cache (no cron — synced on login, folder open, poll).
+    'mail_cache_header_limit' => (int) env('MAIL_CACHE_HEADER_LIMIT', 200),
+    'mail_cache_ttl' => (int) env('MAIL_CACHE_TTL', 120),
+    'mail_cache_bootstrap_limit' => (int) env('MAIL_CACHE_BOOTSTRAP_LIMIT', 150),
 ];
