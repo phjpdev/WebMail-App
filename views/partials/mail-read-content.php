@@ -16,15 +16,19 @@ $uid = (int) ($message['uid'] ?? 0);
 ?>
 
 <div class="mail-actions no-print">
-    <a class="btn btn-primary" id="reply-btn" href="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>">Reply</a>
-    <a class="btn btn-outline" id="reply-all-btn" href="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>">Reply all</a>
-    <a class="btn btn-outline" href="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>">Forward</a>
+    <a class="btn btn-primary compose-panel-link" id="reply-btn" href="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>" data-compose-title="Reply">Reply</a>
+    <a class="btn btn-outline compose-panel-link" id="reply-all-btn" href="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>" data-compose-title="Reply all">Reply all</a>
+    <a class="btn btn-outline compose-panel-link" href="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>" data-compose-title="Forward">Forward</a>
     <?php if (folder_icon_type($folderPath) === 'draft'): ?>
-        <a class="btn btn-outline" href="<?= e(url('compose/edit-draft?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>">Edit draft</a>
+        <a class="btn btn-outline compose-panel-link" href="<?= e(url('compose/edit-draft?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>" data-compose-title="Edit draft">Edit draft</a>
     <?php endif; ?>
     <button type="button" class="btn btn-outline" onclick="window.print()">Print</button>
 
-    <button type="button" class="btn btn-outline" data-mail-action="mark-unread">Mark unread</button>
+    <?php if (!empty($message['seen'])): ?>
+        <button type="button" class="btn btn-outline" data-mail-action="mark-unread">Mark unread</button>
+    <?php else: ?>
+        <button type="button" class="btn btn-outline" data-mail-action="mark-read">Mark read</button>
+    <?php endif; ?>
     <button type="button" class="btn btn-outline" data-mail-action="flag">Mark important</button>
     <button type="button" class="btn btn-outline" data-mail-action="unflag">Remove importance</button>
     <button type="button" class="btn btn-outline" data-mail-action="spam">Spam</button>

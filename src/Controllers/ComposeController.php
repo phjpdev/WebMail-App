@@ -58,15 +58,22 @@ class ComposeController
 
         $imap = new ImapService();
         if (!$imap->connect()) {
-            flash('error', 'Could not save draft: ' . $imap->getLastError());
-            redirect('compose');
+            $this->composeFail('Could not save draft: ' . $imap->getLastError());
         }
 
         $draftFolder = $this->resolveDraftsFolder();
         if ($imap->appendMessage($draftFolder, $raw)) {
+            (new FolderCache())->clear();
+            if (wants_json()) {
+                json_response([
+                    'ok' => true,
+                    'message' => 'Draft saved.',
+                    'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
+                ]);
+            }
             flash('success', 'Draft saved.');
         } else {
-            flash('error', 'Could not save draft: ' . $imap->getLastError());
+            $this->composeFail('Could not save draft: ' . $imap->getLastError());
         }
 
         redirect('compose');
@@ -87,6 +94,8 @@ class ComposeController
         $fromEmail = trim($_POST['from_email'] ?? config('mail')['mailbox_email']);
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
+        $returnFolder = decode_folder_path($_POST['return_folder'] ?? '');
+        $draftUid = (int) ($_POST['draft_uid'] ?? 0);
 
         if ($folderPath !== '') {
             assert_folder_access($folderPath);
@@ -101,28 +110,24 @@ class ComposeController
         $draft['body_html'] = $bodyHtml;
 
         if ($subject === '' || ($body === '' && $bodyHtml === '')) {
-            flash('error', 'Subject and body are required.');
-            $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+            $this->composeFail('Subject and body are required.', $draft, $mode, $folderPath, $uid);
         }
 
         $toParsed = parse_email_list($to);
         if ($toParsed['valid'] === []) {
-            flash('error', 'At least one valid To address is required.');
-            $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+            $this->composeFail('At least one valid To address is required.', $draft, $mode, $folderPath, $uid);
         }
 
         foreach ([['Cc', $cc], ['Bcc', $bcc]] as [$label, $value]) {
             $parsed = parse_email_list($value);
             if ($parsed['invalid'] !== []) {
-                flash('error', "Invalid {$label} address: " . implode(', ', $parsed['invalid']));
-                $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+                $this->composeFail("Invalid {$label} address: " . implode(', ', $parsed['invalid']), $draft, $mode, $folderPath, $uid);
             }
         }
 
         $aliasService = new AliasService();
         if (!$this->isValidFrom($aliasService, $fromEmail)) {
-            flash('error', 'Invalid send-as address.');
-            $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+            $this->composeFail('Invalid send-as address.', $draft, $mode, $folderPath, $uid);
         }
 
         $plainBody = $body !== '' ? $body : strip_tags($bodyHtml);
@@ -154,8 +159,7 @@ class ComposeController
 
         $attachments = $this->collectAttachments();
         if ($attachments['error'] !== null) {
-            flash('error', $attachments['error']);
-            $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+            $this->composeFail($attachments['error'], $draft, $mode, $folderPath, $uid);
         }
         if ($attachments['files'] !== []) {
             $options['attachments'] = $attachments['files'];
@@ -175,12 +179,23 @@ class ComposeController
             $this->deleteSourceDraftIfRequested();
             $sentFolder = $this->resolveSentFolder();
             $this->saveToSent($sentFolder, $smtp->getLastMime());
+            (new FolderCache())->clear();
+
+            if (wants_json()) {
+                json_response([
+                    'ok' => true,
+                    'message' => 'Email sent successfully.',
+                    'return_folder' => $returnFolder !== '' ? encode_folder_path($returnFolder) : '',
+                    'draft_uid' => $draftUid > 0 ? $draftUid : null,
+                    'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
+                ]);
+            }
+
             flash('success', 'Email sent successfully.');
-            redirect('folder/' . encode_folder_path($sentFolder));
+            redirect($returnFolder !== '' ? 'folder/' . encode_folder_path($returnFolder) : 'folder/' . encode_folder_path($sentFolder));
         }
 
-        flash('error', $this->friendlySendError($smtp->getLastError()));
-        $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+        $this->composeFail($this->friendlySendError($smtp->getLastError()), $draft, $mode, $folderPath, $uid);
     }
 
     /**
@@ -485,8 +500,9 @@ class ComposeController
 
         $aliasService = new AliasService();
         $folderData = FolderCache::load();
+        $returnFolder = decode_folder_path($_GET['return_folder'] ?? '');
 
-        view('mail/compose', array_merge([
+        $viewData = array_merge([
             'title' => ucfirst(str_replace('-', ' ', $mode)),
             'mode' => $mode,
             'user' => Auth::user(),
@@ -502,6 +518,7 @@ class ComposeController
             'uid' => $defaults['uid'] ?? 0,
             'draftFolder' => $defaults['draftFolder'] ?? '',
             'draftUid' => $defaults['draftUid'] ?? 0,
+            'returnFolder' => $returnFolder !== '' ? encode_folder_path($returnFolder) : '',
             'forwardedAttachments' => ($mode === 'forward' && isset($_SESSION[self::FORWARD_KEY]['parts']))
                 ? $_SESSION[self::FORWARD_KEY]['parts']
                 : [],
@@ -510,10 +527,40 @@ class ComposeController
             'activeFolder' => null,
             'success' => flash('success'),
             'error' => flash('error'),
+            'embed' => $this->isEmbedRequest(),
         ], [
             'authUser' => Auth::user(),
             'prefs' => user_preferences(),
-        ]));
+        ]);
+
+        if ($this->isEmbedRequest()) {
+            view('mail/compose-embed', $viewData);
+            return;
+        }
+
+        view('mail/compose', $viewData);
+    }
+
+    private function isEmbedRequest(): bool
+    {
+        return ($_GET['embed'] ?? '') === '1';
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function composeFail(string $message, ?array $draft = null, string $mode = 'compose', string $folderPath = '', int $uid = 0): never
+    {
+        if (wants_json()) {
+            json_response(['ok' => false, 'error' => $message], 422);
+        }
+
+        flash('error', $message);
+        if ($draft !== null) {
+            $this->saveDraftSession($draft, $mode, $folderPath, $uid);
+        }
+
+        redirect('compose');
     }
 
     /**
@@ -778,18 +825,22 @@ class ComposeController
 
     private function redirectBack(string $mode, string $folderPath, int $uid): never
     {
+        $embed = $this->isEmbedRequest() ? '&embed=1' : '';
+        $return = $_GET['return_folder'] ?? '';
+        $returnQuery = $return !== '' ? '&return_folder=' . urlencode($return) : '';
+
         if ($mode === 'reply') {
-            redirect('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid);
+            redirect('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid . $embed . $returnQuery);
         }
 
         if ($mode === 'reply-all') {
-            redirect('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid);
+            redirect('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid . $embed . $returnQuery);
         }
 
         if ($mode === 'forward') {
-            redirect('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid);
+            redirect('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid . $embed . $returnQuery);
         }
 
-        redirect('compose');
+        redirect('compose' . ($embed !== '' ? '?embed=1' . $returnQuery : ''));
     }
 }

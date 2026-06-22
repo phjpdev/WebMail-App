@@ -3234,6 +3234,106 @@ body:has(.mail-workspace) {
     overflow: hidden;
     background: var(--color-surface);
     border-left: 1px solid var(--color-border);
+    position: relative;
+}
+
+.reading-pane.is-compose-open .reading-pane-viewport {
+    display: none;
+}
+
+.compose-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--color-surface);
+}
+
+.compose-panel[hidden] {
+    display: none !important;
+}
+
+.compose-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
+    flex-shrink: 0;
+}
+
+.compose-panel-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}
+
+.compose-panel-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+
+.compose-panel-close:hover,
+.compose-panel-close:focus-visible {
+    background: var(--color-surface-alt, #f3f2f1);
+    color: var(--color-text);
+}
+
+.compose-panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    padding: 0.75rem 1rem 1rem;
+}
+
+.compose-panel-inner .compose-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.compose-panel-inner .rich-editor {
+    min-height: 10rem;
+    max-height: 28vh;
+}
+
+.compose-panel-inner .compose-form-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin: 0 -1rem -1rem;
+    padding: 0.75rem 1rem;
+    background: linear-gradient(to top, var(--color-surface) 70%, transparent);
+    border-top: 1px solid var(--color-border-subtle);
+}
+
+.compose-panel-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    min-height: 12rem;
+    color: var(--color-text-muted);
+}
+
+.compose-panel-flash {
+    margin: 0 0 0.75rem;
 }
 
 /* Single viewport — only one pane state visible at a time (overlays). */

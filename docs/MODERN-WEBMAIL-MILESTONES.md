@@ -265,10 +265,11 @@ gantt
 
 ---
 
-## Milestone U4 — Compose Slide-Over & Organize Workflow
+## Milestone U4 — Compose Slide-Over & Organize Workflow ✅
 
 **Duration:** 4–5 days  
-**Purpose:** Compose without leaving the inbox; smooth reply/move/delete from pane.
+**Purpose:** Compose without leaving the inbox; smooth reply/move/delete from pane.  
+**Status:** Complete (2026-06-17)
 
 ### Plan
 
@@ -279,42 +280,43 @@ gantt
 ### Build tasks
 
 **Compose panel**
-- [ ] Load compose form via GET `compose?embed=1` or dedicated partial route
-- [ ] Fields: To, CC, BCC (toggle), Subject, body, send-as, attachments
-- [ ] Send success: close panel, flash toast, refresh list / open Sent optional
-- [ ] Save draft: existing draft endpoint; list refreshes Drafts count
-- [ ] Mobile: full-page compose (current behavior OK)
+- [x] Load compose form via GET `compose?embed=1` (and reply/forward/draft variants)
+- [x] Fields: To, CC, BCC (toggle), Subject, body, send-as, attachments
+- [x] Send success: close panel, toast, refresh list; stay on current folder
+- [x] Save draft: existing draft endpoint via AJAX; sidebar badge refresh
+- [x] Mobile: full-page compose (unchanged)
 
 **Reading pane actions**
-- [ ] Reply, Reply all, Forward open compose panel with context
-- [ ] Delete removes message from list + clears pane
-- [ ] Move updates list (message disappears from current folder)
-- [ ] Mark unread/read updates row styling without reload
+- [x] Reply, Reply all, Forward open compose panel with context
+- [x] Delete removes message from list + clears pane
+- [x] Move updates list (message disappears from current folder)
+- [x] Mark unread/read updates row styling without reload
 
 **Organize**
-- [ ] Right-click context menu on list rows (move, delete, flag, mark read)
-- [ ] Drag-and-drop move (optional — defer if complex; use Move to dropdown first)
+- [x] Right-click context menu on list rows (move, delete, flag, mark read) — from U3
+- [x] Drag-and-drop move deferred; Move to dropdown used
 
 **Custom flows (verify)**
-- [ ] Reply-as-alias still defaults correctly from pane compose
-- [ ] Send-as restricted to user aliases
-- [ ] CC/BCC included on send
+- [x] Reply-as-alias still defaults correctly from pane compose
+- [x] Send-as restricted to user aliases
+- [x] CC/BCC included on send
 
 ### Exit criteria
 
-- [ ] Compose → send → return to same folder list without losing pane layout
-- [ ] Reply from pane uses correct alias
-- [ ] Delete/move from pane reflects in list within 1 second (AJAX)
-- [ ] Drafts folder: open draft → edit → send
+- [x] Compose → send → return to same folder list without losing pane layout
+- [x] Reply from pane uses correct alias
+- [x] Delete/move from pane reflects in list within 1 second (AJAX)
+- [x] Drafts folder: open draft → edit → send
 
 ### Client demo (internal)
 
 > “Read mail on the right, hit Reply — compose opens beside it. Send — back to inbox list immediately.”
 
-### Files likely involved
+### Files involved
 
-- `views/mail/compose.php`, `views/partials/compose-panel.php` (new)
+- `views/partials/compose-form.php`, `views/mail/compose-embed.php`, `views/mail/list.php`
 - `src/Controllers/ComposeController.php`
+- `views/partials/mail-read-content.php`
 - `public/assets/js/app.js`, `public/assets/css/app.css`
 
 ---

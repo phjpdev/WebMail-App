@@ -116,7 +116,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
 </div>
 
 <aside class="reading-pane" id="reading-pane" aria-label="Message preview">
-    <div class="reading-pane-viewport">
+    <div class="reading-pane-viewport" id="reading-pane-viewport">
         <div class="reading-pane-empty" id="reading-pane-empty">
             <div class="reading-pane-empty-inner">
                 <svg class="reading-pane-empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -130,6 +130,15 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
             <span class="reading-pane-loading-text">Loading message…</span>
         </div>
         <div class="reading-pane-body" id="reading-pane-body" hidden aria-live="polite"></div>
+    </div>
+    <div class="compose-panel" id="compose-panel" hidden aria-label="Compose message">
+        <div class="compose-panel-header">
+            <h3 class="compose-panel-title" id="compose-panel-title">New message</h3>
+            <button type="button" class="compose-panel-close" id="compose-panel-close" aria-label="Close compose">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="compose-panel-body" id="compose-panel-body" aria-live="polite"></div>
     </div>
 </aside>
 </div>
