@@ -505,6 +505,27 @@ Gather before or during Milestone 1 (does not block local setup):
 
 ---
 
+## 15. Phase 2 — Modern Webmail UX (U1–U7) ✅
+
+**Status:** Complete (2026-06-17)  
+**Plan:** [`docs/MODERN-WEBMAIL-MILESTONES.md`](docs/MODERN-WEBMAIL-MILESTONES.md)
+
+| Milestone | Delivered |
+|-----------|-----------|
+| U1 | UX spec + gap analysis |
+| U2 | Three-pane shell + AJAX reading pane |
+| U3 | Command bar + Outlook-style list |
+| U4 | Compose slide-over + organize workflow |
+| U5 | Visual design system |
+| U6 | Performance, accessibility, mobile |
+| U7 | QA docs + client readiness packet |
+
+**Client handoff:** Send [`docs/CLIENT-READINESS-PACKET.md`](docs/CLIENT-READINESS-PACKET.md) and run structured UAT via [`docs/CLIENT-UAT-SCRIPT.md`](docs/CLIENT-UAT-SCRIPT.md).
+
+**Before production UAT:** Run [`docs/QA-SIGNOFF.md`](docs/QA-SIGNOFF.md) on production; apply `database/migrations-mail-cache.sql` if not done; record demo per [`docs/DEMO-SCRIPT.md`](docs/DEMO-SCRIPT.md).
+
+---
+
 ## 14. One-Page Summary for the Client
 
 > We are building a PHP + MySQL webmail app on WAMP. When anyone opens the mailbox, the app automatically sorts email for everyone — spam to Spam, employee aliases to employee folders, client mail to client folders — including folders you never open. You can move mail manually and use Trash. Replies automatically use the alias the email was received on. Admin can add employees, folders, and rules without code changes. Moving servers only requires copying the PHP project and database. No cPanel filters, cron jobs, or background services are needed.

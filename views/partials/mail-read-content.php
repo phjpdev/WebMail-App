@@ -87,6 +87,7 @@ $uid = (int) ($message['uid'] ?? 0);
 </div>
 
 <dl class="detail-list mail-headers">
+    <dt>Subject</dt><dd><?= e($message['subject'] ?: '(no subject)') ?></dd>
     <dt>From</dt><dd><?= e($message['from'] ?? '—') ?></dd>
     <dt>To</dt><dd><?= e($message['to'] ?? '—') ?></dd>
     <?php if (!empty($message['cc'])): ?>

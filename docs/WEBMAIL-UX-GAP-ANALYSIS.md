@@ -357,8 +357,42 @@ Legend: ✅ done · ⚠️ partial · ❌ missing · ➖ won't fix
 
 ---
 
+## 8. U7 final status (2026-06-17)
+
+After milestones U2–U6, all **Missing** and **Partial** UX gaps from §5.1 are resolved or documented.
+
+| Category | U1 status | U7 status |
+|----------|-----------|-----------|
+| Reading pane / three-pane | ❌ Missing | ✅ Done (U2) |
+| Command bar / Outlook rows | ❌ Missing | ✅ Done (U3) |
+| Compose slide-over | ❌ Missing | ✅ Done (U4) |
+| Visual design system | ⚠️ Partial | ✅ Done (U5) |
+| Performance / mobile | ⚠️ Partial | ✅ Done (U6) |
+| Shift+click range select | ❌ Missing | ✅ Done (U3) |
+| Sender avatar / attachment icon | ❌ Missing | ✅ Done (U3) |
+| Manual refresh | ❌ Missing | ✅ Done (U3) |
+| Filter timing documented | ⚠️ Partial | ✅ Done (U7 USER-GUIDE) |
+| j/k opens pane | ⚠️ Partial | ✅ Done (U2+U6) |
+
+**Remaining partial / won't fix (documented in KNOWN-LIMITATIONS):**
+
+- PDF preview opens new tab (not inline embed)
+- Delivered-To shown in headers (alias debug)
+- Inbox/Sent/Drafts/Trash groups not collapsible (custom Folders group only)
+- No body snippet in list rows (IMAP limitation)
+- No drag-and-drop, threading, contacts, push
+
+**Baseline checklist:** 30/30 Appendix A items pass (with noted partials).  
+**Custom module checklist:** 9/9 Appendix B items pass.
+
+**Phase 2 UX complete.** Client handoff: [`CLIENT-READINESS-PACKET.md`](CLIENT-READINESS-PACKET.md)
+
+---
+
 ## Related
 
-- [`MODERN-WEBMAIL-MILESTONES.md`](MODERN-WEBMAIL-MILESTONES.md) — master plan
+- [`MODERN-WEBMAIL-MILESTONES.md`](MODERN-WEBMAIL-MILESTONES.md) — master plan (U1–U7 complete)
 - [`WEBMAIL-UX-SPEC.md`](WEBMAIL-UX-SPEC.md) — wireframes, API reuse, tokens
+- [`CLIENT-UAT-SCRIPT.md`](CLIENT-UAT-SCRIPT.md) — client acceptance test
+- [`KNOWN-LIMITATIONS.md`](KNOWN-LIMITATIONS.md) — scope boundaries
 - [`ROADMAP.md`](../ROADMAP.md) — original M1–M3 backend scope

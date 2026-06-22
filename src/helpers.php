@@ -479,7 +479,8 @@ function default_mail_folder(): string
         // ignore
     }
 
-    return 'INBOX';
+    // Employee without a linked folder cannot access INBOX — land on Sent instead.
+    return resolve_system_folder(['sent'], 'INBOX.Sent');
 }
 
 function message_url(string $folderPath, int $uid): string
