@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=37">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=38">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -48,6 +48,25 @@
                 <li><kbd>e</kbd> Delete · <kbd>?</kbd> This help</li>
             </ul>
             <button type="button" class="btn btn-secondary" id="shortcuts-close">Close</button>
+        </div>
+    </div>
+
+    <div id="confirm-modal" class="app-modal" hidden aria-hidden="true">
+        <div class="app-modal-backdrop" data-confirm-dismiss tabindex="-1"></div>
+        <div class="app-modal-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message">
+            <div class="app-modal-body">
+                <div class="app-modal-icon" id="confirm-modal-icon" aria-hidden="true">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                </div>
+                <div class="app-modal-content">
+                    <h2 id="confirm-modal-title" class="app-modal-title"></h2>
+                    <p id="confirm-modal-message" class="app-modal-message"></p>
+                </div>
+            </div>
+            <div class="app-modal-actions">
+                <button type="button" class="btn btn-outline" id="confirm-modal-cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirm-modal-ok">OK</button>
+            </div>
         </div>
     </div>
 
@@ -98,6 +117,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=37" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=38" defer></script>
 </body>
 </html>

@@ -961,6 +961,75 @@
 
     window.showToast = showToast;
 
+    var confirmKeyHandler = null;
+
+    function isConfirmOpen() {
+        var modal = document.getElementById('confirm-modal');
+        return modal && !modal.hidden;
+    }
+
+    /**
+     * @param {{ title?: string, message?: string, confirmLabel?: string, cancelLabel?: string, danger?: boolean }} opts
+     * @returns {Promise<boolean>}
+     */
+    function showConfirm(opts) {
+        opts = opts || {};
+        var modal = document.getElementById('confirm-modal');
+        if (!modal) {
+            return Promise.resolve(window.confirm(opts.message || opts.title || 'Are you sure?'));
+        }
+
+        var titleEl = document.getElementById('confirm-modal-title');
+        var msgEl = document.getElementById('confirm-modal-message');
+        var okBtn = document.getElementById('confirm-modal-ok');
+        var cancelBtn = document.getElementById('confirm-modal-cancel');
+        var iconEl = document.getElementById('confirm-modal-icon');
+        var backdrop = modal.querySelector('[data-confirm-dismiss]');
+
+        return new Promise(function (resolve) {
+            if (titleEl) titleEl.textContent = opts.title || 'Confirm';
+            if (msgEl) msgEl.textContent = opts.message || '';
+            if (okBtn) {
+                okBtn.textContent = opts.confirmLabel || 'OK';
+                okBtn.className = opts.danger ? 'btn btn-danger' : 'btn btn-primary';
+            }
+            if (cancelBtn) cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+            if (iconEl) iconEl.hidden = !opts.danger;
+
+            function finish(result) {
+                modal.hidden = true;
+                modal.setAttribute('aria-hidden', 'true');
+                body.classList.remove('modal-open');
+                if (confirmKeyHandler) {
+                    document.removeEventListener('keydown', confirmKeyHandler, true);
+                    confirmKeyHandler = null;
+                }
+                resolve(!!result);
+            }
+
+            confirmKeyHandler = function (e) {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    finish(false);
+                }
+            };
+
+            if (okBtn) okBtn.onclick = function () { finish(true); };
+            if (cancelBtn) cancelBtn.onclick = function () { finish(false); };
+            if (backdrop) backdrop.onclick = function () { finish(false); };
+            document.addEventListener('keydown', confirmKeyHandler, true);
+
+            modal.hidden = false;
+            modal.setAttribute('aria-hidden', 'false');
+            body.classList.add('modal-open');
+            if (opts.danger && cancelBtn) cancelBtn.focus();
+            else if (okBtn) okBtn.focus();
+        });
+    }
+
+    window.showConfirm = showConfirm;
+
     function initToasts() {
         document.querySelectorAll('.toast-payload').forEach(function (el) {
             showToast(el.getAttribute('data-toast-type') || 'success', el.getAttribute('data-toast-message') || '');
@@ -1367,6 +1436,25 @@
         if (!listCard) return;
         var folderEnc = listCard.getAttribute('data-folder-path');
 
+        if (action === 'delete') {
+            var n = uids.length;
+            showConfirm({
+                title: n === 1 ? 'Move to Trash?' : 'Move ' + n + ' messages to Trash?',
+                message: n === 1
+                    ? 'This message will be moved to Trash. You can recover it from the Trash folder.'
+                    : 'These messages will be moved to Trash. You can recover them from the Trash folder.',
+                confirmLabel: 'Move to Trash',
+                danger: true
+            }).then(function (ok) {
+                if (ok) runBulkCommandExecute(action, uids, folderEnc);
+            });
+            return;
+        }
+
+        runBulkCommandExecute(action, uids, folderEnc);
+    }
+
+    function runBulkCommandExecute(action, uids, folderEnc) {
         var actionPath = '';
         var payload = new URLSearchParams();
         payload.set('_csrf', csrf);
@@ -1376,7 +1464,6 @@
         var successMsg = '';
 
         if (action === 'delete') {
-            if (!window.confirm('Move selected messages to Trash?')) return;
             actionPath = 'message/bulk-trash';
             payload.set('unread_delta', String(countUnreadAmong(uids)));
             uids.forEach(function (uid) { removeRowByUid(uid); });
@@ -1522,9 +1609,6 @@
                 var action = btn.getAttribute('data-mail-action');
                 if (!action) return;
 
-                if (action === 'trash' && !window.confirm('Move this message to Trash?')) return;
-                if (action === 'spam' && !window.confirm('Move this message to Spam?')) return;
-
                 var extra = {};
                 if (action === 'move') {
                     var select = card.querySelector('[name="target_folder"]');
@@ -1535,7 +1619,8 @@
                     extra.target_folder = select.value;
                 }
 
-                dispatchMessageAction(action, folderEnc, uid, extra).then(function () {
+                dispatchMessageAction(action, folderEnc, uid, extra).then(function (completed) {
+                    if (completed === false) return;
                     if (action === 'mark-read') {
                         showToast('success', 'Marked as read.');
                     } else if (action === 'mark-unread') {
@@ -1867,6 +1952,7 @@
 
         document.addEventListener('keydown', function (e) {
             if (isTyping()) return;
+            if (isConfirmOpen()) return;
 
             if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
                 if (modal) modal.hidden = !modal.hidden;
@@ -2069,6 +2155,33 @@
     }
 
     function dispatchMessageAction(kind, sourceFolderEnc, uid, extra) {
+        extra = extra || {};
+        var confirmCfg = null;
+        if (kind === 'trash') {
+            confirmCfg = {
+                title: 'Move to Trash?',
+                message: 'This message will be moved to Trash. You can recover it from the Trash folder.',
+                confirmLabel: 'Move to Trash',
+                danger: true
+            };
+        } else if (kind === 'spam') {
+            confirmCfg = {
+                title: 'Move to Spam?',
+                message: 'This message will be moved to the Spam folder.',
+                confirmLabel: 'Move to Spam',
+                danger: false
+            };
+        }
+        if (confirmCfg) {
+            return showConfirm(confirmCfg).then(function (ok) {
+                if (!ok) return false;
+                return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra).then(function () { return true; });
+            });
+        }
+        return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra).then(function () { return true; });
+    }
+
+    function dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra) {
         extra = extra || {};
         var fields = { folder: sourceFolderEnc, uid: uid };
         Object.keys(extra).forEach(function (k) { fields[k] = extra[k]; });

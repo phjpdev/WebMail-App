@@ -2202,6 +2202,127 @@ kbd {
     background: var(--color-bg);
 }
 
+/* Confirm / alert dialog */
+body.modal-open {
+    overflow: hidden;
+}
+
+.app-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+}
+
+.app-modal[hidden] {
+    display: none !important;
+}
+
+.app-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.32);
+    backdrop-filter: blur(1px);
+}
+
+.app-modal-dialog {
+    position: relative;
+    width: 100%;
+    max-width: 400px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius, 6px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    animation: app-modal-in 0.18s ease-out;
+}
+
+@keyframes app-modal-in {
+    from {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-modal-dialog {
+        animation: none;
+    }
+}
+
+.app-modal-body {
+    display: flex;
+    gap: 0.875rem;
+    padding: 1.25rem 1.25rem 0.75rem;
+}
+
+.app-modal-icon {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
+    background: rgba(198, 40, 40, 0.1);
+    color: var(--color-danger, #c62828);
+}
+
+.app-modal-icon.is-info {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+}
+
+.app-modal-icon[hidden] {
+    display: none;
+}
+
+.app-modal-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.app-modal-title {
+    margin: 0 0 0.35rem;
+    font-size: 1.0625rem;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--color-text);
+    letter-spacing: -0.01em;
+}
+
+.app-modal-message {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--color-text-muted);
+}
+
+.app-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem 1.25rem;
+}
+
+.app-modal-actions .btn {
+    min-width: 5.5rem;
+}
+
+[data-theme="dark"] .app-modal-backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="dark"] .app-modal-dialog {
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
 .mail-row.is-focused {
     outline: 2px solid var(--color-primary);
     outline-offset: -2px;
