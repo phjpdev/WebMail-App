@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=23">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=26">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -103,6 +103,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=25" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=28" defer></script>
 </body>
 </html>

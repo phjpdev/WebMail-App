@@ -1,6 +1,8 @@
 <?php ob_start(); ?>
 
-<section class="page-header">
+<div class="mail-workspace" id="mail-workspace">
+<div class="mail-list-column">
+<section class="page-header page-header--compact">
     <div class="page-header-row">
         <div class="page-header-left">
             <div class="page-title-row">
@@ -49,7 +51,8 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     data-page="<?= (int) $page ?>"
     data-poll-url="<?= e(url('folder/' . ($folderB64 ?? encode_folder_path($folderPath)) . '/sync' . $syncQuery)) ?>"
     data-poll-interval="<?= (int) ($pollInterval ?? 30) ?>"
-    data-folder-path="<?= e(encode_folder_path($folderPath)) ?>">
+    data-folder-path="<?= e(encode_folder_path($folderPath)) ?>"
+    data-folder-url="<?= e(folder_url($folderPath)) ?>">
 
     <?php if (!empty($messages)): ?>
     <div class="bulk-toolbar" id="bulk-toolbar" hidden>
@@ -99,20 +102,21 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     </div>
     <?php endif; ?>
 
-    <div class="mail-list-desktop table-wrap"<?= empty($messages) ? ' hidden' : '' ?>>
-        <table class="data-table mail-table">
-            <thead>
-                <tr>
-                    <th class="col-check"><input type="checkbox" id="select-all" aria-label="Select all"></th>
-                    <th class="col-status"></th>
-                    <th>From</th>
-                    <th>Subject</th>
-                    <th class="col-date">Date</th>
-                </tr>
-            </thead>
-            <tbody id="mail-list-body">
+    <div class="mail-list-scroller"<?= empty($messages) ? ' hidden' : '' ?> id="mail-list-scroller">
+    <div class="mail-list-header">
+        <label class="mail-list-select-all">
+            <input type="checkbox" id="select-all" aria-label="Select all messages on this page">
+            <span>Select all</span>
+        </label>
+    </div>
+    <div class="mail-list-desktop mail-list-rows" id="mail-list-body">
                 <?php foreach ($messages as $msg): ?>
-                    <tr class="mail-row<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
+                    <?php
+                    $fromDisplay = format_mail_from($msg['from'] ?? '');
+                    $avatarInitial = mail_avatar_initial($msg['from'] ?? '');
+                    $avatarColor = mail_avatar_color($msg['from'] ?? '');
+                    ?>
+                    <div class="mail-row mail-row--outlook<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
                         data-uid="<?= (int) $msg['uid'] ?>"
                         data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
                         data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
@@ -120,20 +124,26 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                         data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                         data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                         data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
-                        <td class="col-check" onclick="event.stopPropagation()">
+                        <div class="mail-row-check" onclick="event.stopPropagation()">
                             <input type="checkbox" class="mail-check" value="<?= (int) $msg['uid'] ?>" aria-label="Select message">
-                        </td>
-                        <td class="col-status"><?= !$msg['seen'] ? '<span class="unread-dot"></span>' : '' ?><?= !empty($msg['flagged']) ? '<span class="flag-dot" title="Important">&#9733;</span>' : '' ?></td>
-                        <td class="col-from"><?= e(format_mail_from($msg['from'])) ?></td>
-                        <td class="col-subject"><?= e($msg['subject']) ?></td>
-                        <td class="col-date">
-                            <span class="col-date-text"><?= e(format_mail_date($msg['date'])) ?></span>
-                            <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
-                        </td>
-                    </tr>
+                        </div>
+                        <div class="mail-row-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
+                        <div class="mail-row-body">
+                            <div class="mail-row-line1">
+                                <span class="mail-row-from"><?= e($fromDisplay) ?></span>
+                                <span class="mail-row-meta">
+                                    <?php if (!empty($msg['flagged'])): ?>
+                                        <span class="flag-dot mail-row-flag" title="Important">&#9733;</span>
+                                    <?php endif; ?>
+                                    <span class="mail-row-date"><?= e(format_mail_date($msg['date'])) ?></span>
+                                </span>
+                            </div>
+                            <div class="mail-row-subject"><?= e($msg['subject']) ?></div>
+                        </div>
+                        <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
+                    </div>
                 <?php endforeach; ?>
-            </tbody>
-        </table>
+    </div>
     </div>
 
     <div class="mail-list-mobile" id="mail-list-mobile"<?= empty($messages) ? ' hidden' : '' ?>>
@@ -173,6 +183,26 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     <?php endif; ?>
 </section>
 <?php endif; ?>
+</div>
+
+<aside class="reading-pane" id="reading-pane" aria-label="Message preview">
+    <div class="reading-pane-viewport">
+        <div class="reading-pane-empty" id="reading-pane-empty">
+            <div class="reading-pane-empty-inner">
+                <svg class="reading-pane-empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                    <path d="M3 8.5l9 5.5 9-5.5"/><path d="M5 6h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/>
+                </svg>
+                <p>Select a message to read</p>
+            </div>
+        </div>
+        <div class="reading-pane-loading" id="reading-pane-loading" hidden role="status" aria-live="polite">
+            <span class="reading-pane-spinner" aria-hidden="true"></span>
+            <span class="reading-pane-loading-text">Loading message…</span>
+        </div>
+        <div class="reading-pane-body" id="reading-pane-body" hidden aria-live="polite"></div>
+    </div>
+</aside>
+</div>
 
 <?php
 $content = ob_get_clean();

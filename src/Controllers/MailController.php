@@ -197,6 +197,43 @@ class MailController
     /**
      * @param array<string, string> $params
      */
+    public function messagePane(array $params): void
+    {
+        requireAuth();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $uid = (int) ($params['uid'] ?? 0);
+
+        if ($folderPath === '' || $uid <= 0) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Message not found']);
+            return;
+        }
+
+        $context = $this->loadMessageContext($folderPath, $uid);
+        if ($context === null) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Message not found']);
+            return;
+        }
+
+        $html = view_string('mail/pane-read', $context);
+
+        echo json_encode([
+            'ok' => true,
+            'uid' => $uid,
+            'subject' => $context['message']['subject'] ?: '(no subject)',
+            'seen' => !empty($context['message']['seen']),
+            'was_unread' => $context['wasUnread'],
+            'html' => $html,
+            'unread_counts' => $context['unreadCounts'],
+        ]);
+    }
+
+    /**
+     * @param array<string, string> $params
+     */
     public function read(array $params): void
     {
         requireAuth();
@@ -207,6 +244,51 @@ class MailController
         if ($folderPath === '' || $uid <= 0) {
             error_page(404);
         }
+
+        $context = $this->loadMessageContext($folderPath, $uid);
+        if ($context === null) {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                flash('error', $imap->getLastError());
+            } else {
+                flash('error', 'Message not found.');
+            }
+            redirect('folder/' . encode_folder_path($folderPath));
+        }
+
+        $this->renderMailView('mail/read', [
+            'title' => $context['message']['subject'] ?: '(no subject)',
+            'folderPath' => $context['folderPath'],
+            'folderB64' => $context['folderB64'],
+            'folders' => $context['folders'],
+            'unreadCounts' => $context['unreadCounts'],
+            'activeFolder' => $context['folderPath'],
+            'message' => $context['message'],
+            'sanitizedHtml' => $context['sanitizedHtml'],
+            'replyFrom' => $context['replyFrom'],
+            'moveTargets' => $context['moveTargets'],
+            'imapConnected' => true,
+            'imapError' => '',
+            'pollInterval' => $context['pollInterval'],
+        ]);
+    }
+
+    /**
+     * @return array{
+     *     folderPath: string,
+     *     folderB64: string,
+     *     folders: list<array{path: string, name: string, delimiter?: string}>,
+     *     unreadCounts: array<string, int>,
+     *     message: array<string, mixed>,
+     *     sanitizedHtml: string,
+     *     replyFrom: string|null,
+     *     moveTargets: list<array{path: string, name: string}>,
+     *     pollInterval: int,
+     *     wasUnread: bool
+     * }|null
+     */
+    private function loadMessageContext(string $folderPath, int $uid): ?array
+    {
         assert_folder_access($folderPath);
 
         $folderData = FolderCache::load(skipUnreadRefresh: true);
@@ -216,24 +298,18 @@ class MailController
 
         $imap = new ImapService();
         if (!$imap->connect()) {
-            flash('error', $imap->getLastError());
-            redirect('folder/' . encode_folder_path($folderPath));
+            return null;
         }
 
         $message = $imap->getMessageByUid($folderPath, $uid);
-
         if ($message === null) {
-            flash('error', 'Message not found.');
-            redirect('folder/' . encode_folder_path($folderPath));
+            return null;
         }
 
         $wasUnread = empty($message['seen']);
         $imap->markSeen($folderPath, $uid);
+        $message['seen'] = true;
 
-        // Reflect the just-read message in the cached counts instead of clearing
-        // and re-listing every folder over IMAP (which made opening slow). Only
-        // decrement when the message was actually unread, and persist it to the
-        // session cache so the sidebar badge stays correct after navigating Back.
         if ($wasUnread) {
             $updatedCounts = FolderCache::bumpUnread($folderPath, -1);
             if ($updatedCounts !== []) {
@@ -248,13 +324,12 @@ class MailController
             ?? $aliasService->userAlias(Auth::user()['id'] ?? null);
 
         $prefs = user_preferences();
-        $this->renderMailView('mail/read', [
-            'title' => $message['subject'] ?: '(no subject)',
+
+        return [
             'folderPath' => $folderPath,
             'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
             'unreadCounts' => $folderData['unread_counts'] ?? [],
-            'activeFolder' => $folderPath,
             'message' => $message,
             'sanitizedHtml' => HtmlSanitizer::sanitize($message['html']),
             'replyFrom' => $replyFrom,
@@ -262,10 +337,9 @@ class MailController
                 $folders,
                 fn ($f) => $f['path'] !== $folderPath
             )),
-            'imapConnected' => true,
-            'imapError' => '',
-            'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
-        ]);
+            'pollInterval' => (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']),
+            'wasUnread' => $wasUnread,
+        ];
     }
 
     public function attachment(): void

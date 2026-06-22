@@ -89,6 +89,7 @@ $router->post('/settings', fn () => $settingsController->update());
 
 $router->get('/', fn () => $mailController->home());
 $router->get('/folder/{folderB64}/message/{uid}/sync', fn ($p) => $mailController->messageSync($p));
+$router->get('/folder/{folderB64}/message/{uid}/pane', fn ($p) => $mailController->messagePane($p));
 $router->get('/folder/{folderB64}/message/{uid}', fn ($p) => $mailController->read($p));
 $router->get('/folder/{folderB64}/sync', fn ($p) => $mailController->folderSync($p));
 $router->get('/folder/{folderB64}', fn ($p) => $mailController->folder($p));

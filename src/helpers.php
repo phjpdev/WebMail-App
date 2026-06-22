@@ -194,6 +194,17 @@ function view(string $name, array $data = []): void
     require $viewPath;
 }
 
+/**
+ * Render a view template and return the HTML string (for AJAX fragments).
+ */
+function view_string(string $name, array $data = []): string
+{
+    ob_start();
+    view($name, $data);
+
+    return ob_get_clean() ?: '';
+}
+
 function e(?string $value): string
 {
     return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8');
@@ -668,4 +679,27 @@ function format_mail_from(?string $from): string
     }
 
     return $from;
+}
+
+function mail_avatar_initial(?string $from): string
+{
+    $display = format_mail_from($from);
+    if ($display === '' || $display === 'Unknown') {
+        return '?';
+    }
+
+    return mb_strtoupper(mb_substr($display, 0, 1));
+}
+
+function mail_avatar_color(?string $from): string
+{
+    $colors = ['#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1', '#14b8a6'];
+    $email = $from ?? '';
+    $h = 0;
+    $len = strlen($email);
+    for ($i = 0; $i < $len; $i++) {
+        $h = (($h << 5) - $h + ord($email[$i])) & 0x7FFFFFFF;
+    }
+
+    return $colors[$h % count($colors)];
 }
