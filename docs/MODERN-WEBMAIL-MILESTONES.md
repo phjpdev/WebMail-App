@@ -209,10 +209,11 @@ gantt
 
 ---
 
-## Milestone U3 — Command Bar & Message List
+## Milestone U3 — Command Bar & Message List ✅
 
 **Duration:** 4–5 days  
-**Purpose:** Outlook-style toolbar and scannable message rows.
+**Purpose:** Outlook-style toolbar and scannable message rows.  
+**Status:** Complete (2026-06-17)
 
 ### Plan
 
@@ -224,42 +225,43 @@ gantt
 ### Build tasks
 
 **Command bar**
-- [ ] **New mail** — primary button (opens compose; U4 may slide-over)
-- [ ] **Delete**, **Move to**, **Mark read/unread**, **Flag** — wired to existing POST endpoints
-- [ ] Disable buttons when nothing selected; enable on row checkboxes
-- [ ] Optional: **Refresh** triggers manual `folderSync`
+- [x] **New mail** — primary button (opens compose; U4 may slide-over)
+- [x] **Delete**, **Move to**, **Mark read/unread**, **Flag** — wired to existing POST endpoints (+ bulk flag/unflag)
+- [x] Disable buttons when nothing selected; enable on row checkboxes
+- [x] Optional: **Refresh** triggers manual `folderSync`
 
 **Message rows**
-- [ ] Avatar circle with sender initial
-- [ ] Two-line row: line 1 From + date; line 2 subject + snippet (if available from overview)
-- [ ] Icons: attachment paperclip, flagged star, unread dot
-- [ ] Hover: show checkbox; keyboard focus ring
+- [x] Avatar circle with sender initial
+- [x] Two-line row: line 1 From + date; line 2 subject (snippet deferred — not in IMAP overview)
+- [x] Icons: attachment paperclip, flagged star; unread via blue accent bar
+- [x] Hover: show checkbox; keyboard focus ring
 
 **Search**
-- [ ] Move search to app bar (Outlook placement) or keep above list — pick one and stay consistent
-- [ ] Search scope label: “Search in [Folder name]”
+- [x] Keep search above list (consistent with U2 shell)
+- [x] Search scope label: “Search in [Folder name]”
 
 **List behavior**
-- [ ] Click checkbox does not open message
-- [ ] Shift+click range select (optional v1)
-- [ ] Pagination controls compact at bottom of list column
+- [x] Click checkbox does not open message
+- [x] Shift+click range select
+- [x] Pagination controls compact at bottom of list column
 
 ### Exit criteria
 
-- [ ] All toolbar actions work from list without opening read pane
-- [ ] Unread vs read visually distinct at a glance
-- [ ] Bulk select + delete/move matches current bulk toolbar behavior
-- [ ] List usable at 1280×720 without horizontal scroll
+- [x] All toolbar actions work from list without opening read pane
+- [x] Unread vs read visually distinct at a glance
+- [x] Bulk select + delete/move matches previous bulk toolbar behavior
+- [x] List usable at 1280×720 without horizontal scroll
 
 ### Client demo (internal)
 
 > “Select three messages from the list, click Delete — never opened them. Unread rows look like Outlook.”
 
-### Files likely involved
+### Files involved
 
-- `views/mail/list.php`, `views/partials/mail-toolbar.php` (new)
+- `views/mail/list.php`, `views/partials/mail-toolbar.php`, `views/partials/mail-list-row.php`
 - `public/assets/css/app.css`, `public/assets/js/app.js`
-- `src/Services/ImapService.php` (snippet in overview if missing)
+- `src/Services/ImapService.php` (`has_attachment` via structure walk)
+- `src/Controllers/MailController.php` (`bulk-flag`, `bulk-unflag`)
 
 ---
 

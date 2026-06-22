@@ -15,16 +15,44 @@ $totalMessages = (int) ($totalMessages ?? 0);
 $baseUrl = $baseUrl ?? '?';
 $currentPerPage = (int) ($currentPerPage ?? mail_per_page());
 $sep = str_contains($baseUrl, '?') ? (str_ends_with($baseUrl, '?') || str_ends_with($baseUrl, '&') ? '' : '&') : '?';
+$rangeStart = $totalMessages === 0 ? 0 : (($page - 1) * $currentPerPage) + 1;
+$rangeEnd = min($page * $currentPerPage, $totalMessages);
+$prevUrl = $baseUrl . $sep . 'page=' . ($page - 1);
+$nextUrl = $baseUrl . $sep . 'page=' . ($page + 1);
 ?>
 
 <nav class="pagination" aria-label="Pagination">
-    <?php if ($page > 1): ?>
-        <a class="btn btn-secondary btn-sm pagination-btn" href="<?= e($baseUrl . $sep . 'page=' . ($page - 1)) ?>">← Prev</a>
-    <?php else: ?>
-        <span class="btn btn-secondary btn-sm pagination-btn is-disabled" aria-disabled="true">← Prev</span>
-    <?php endif; ?>
+    <div class="pagination-nav">
+        <?php if ($page > 1): ?>
+            <a class="pagination-nav-btn" href="<?= e($prevUrl) ?>" aria-label="Previous page">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            </a>
+        <?php else: ?>
+            <span class="pagination-nav-btn is-disabled" aria-disabled="true" aria-label="Previous page">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            </span>
+        <?php endif; ?>
 
-    <div class="pagination-pages">
+        <?php if ($page < $totalPages): ?>
+            <a class="pagination-nav-btn" href="<?= e($nextUrl) ?>" aria-label="Next page">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </a>
+        <?php else: ?>
+            <span class="pagination-nav-btn is-disabled" aria-disabled="true" aria-label="Next page">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </span>
+        <?php endif; ?>
+    </div>
+
+    <div class="pagination-summary">
+        <span class="pagination-range"><?= $rangeStart ?>–<?= $rangeEnd ?> of <?= $totalMessages ?></span>
+        <?php if ($totalPages > 1): ?>
+            <span class="pagination-page-label">· Page <?= $page ?> of <?= $totalPages ?></span>
+        <?php endif; ?>
+    </div>
+
+    <?php if ($totalPages > 1): ?>
+    <div class="pagination-pages" aria-hidden="true">
         <?php
         $start = max(1, $page - 2);
         $end = min($totalPages, $page + 2);
@@ -46,26 +74,17 @@ $sep = str_contains($baseUrl, '?') ? (str_ends_with($baseUrl, '?') || str_ends_w
             <a class="pagination-page" href="<?= e($baseUrl . $sep . 'page=' . $totalPages) ?>"><?= $totalPages ?></a>
         <?php endif; ?>
     </div>
-
-    <span class="pagination-info"><?= $totalMessages ?> message<?= $totalMessages === 1 ? '' : 's' ?> · Page <?= $page ?> of <?= $totalPages ?></span>
+    <?php endif; ?>
 
     <div class="pagination-per-page">
-        <label for="per-page-select" class="pagination-per-page-label">Per page</label>
+        <label for="per-page-select" class="pagination-per-page-label">Show</label>
         <div class="select-field select-field-inline select-field-compact">
-            <select id="per-page-select" class="per-page-select" data-base-url="<?= e($baseUrl) ?>">
+            <select id="per-page-select" class="per-page-select" data-base-url="<?= e($baseUrl) ?>" aria-label="Messages per page">
                 <?php foreach (mail_per_page_options() as $option): ?>
-                    <?php
-                    $perPageUrl = $baseUrl . $sep . 'per_page=' . $option . '&page=1';
-                    ?>
+                    <?php $perPageUrl = $baseUrl . $sep . 'per_page=' . $option . '&page=1'; ?>
                     <option value="<?= e($perPageUrl) ?>"<?= $option === $currentPerPage ? ' selected' : '' ?>><?= $option ?></option>
                 <?php endforeach; ?>
             </select>
         </div>
     </div>
-
-    <?php if ($page < $totalPages): ?>
-        <a class="btn btn-secondary btn-sm pagination-btn" href="<?= e($baseUrl . $sep . 'page=' . ($page + 1)) ?>">Next →</a>
-    <?php else: ?>
-        <span class="btn btn-secondary btn-sm pagination-btn is-disabled" aria-disabled="true">Next →</span>
-    <?php endif; ?>
 </nav>

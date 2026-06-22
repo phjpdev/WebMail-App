@@ -546,6 +546,11 @@
         var fromText = msg.from || 'Unknown';
         var initial = fromText.trim().charAt(0).toUpperCase() || '?';
         var color = avatarColor(fromText);
+        var attachHtml = msg.has_attachment
+            ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment">' +
+                '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">' +
+                '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>'
+            : '';
         var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
 
         row.innerHTML =
@@ -556,7 +561,7 @@
             '<div class="mail-row-body">' +
                 '<div class="mail-row-line1">' +
                     '<span class="mail-row-from">' + escapeHtml(fromText) + '</span>' +
-                    '<span class="mail-row-meta">' + flagHtml +
+                    '<span class="mail-row-meta">' + attachHtml + flagHtml +
                         '<span class="mail-row-date">' + escapeHtml(msg.date) + '</span>' +
                     '</span>' +
                 '</div>' +
@@ -564,7 +569,7 @@
             '</div>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button>';
         bindMailRow(row);
-        initBulkSelect();
+        initMailCommandBar();
         if (isNew) window.setTimeout(function () { row.classList.remove('mail-row-new'); }, 3000);
         return row;
     }
@@ -583,7 +588,8 @@
         if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
         a.innerHTML =
             '<div class="mail-card-top"><span class="mail-card-from">' + (msg.flagged ? '<span class="flag-dot" title="Important">\u2605</span> ' : '') + escapeHtml(msg.from) +
-            '</span><span class="mail-card-date">' + escapeHtml(msg.date) + '</span>' +
+            '</span><span class="mail-card-meta">' + (msg.has_attachment ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>' : '') +
+            '<span class="mail-card-date">' + escapeHtml(msg.date) + '</span></span>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button></div>' +
             '<div class="mail-card-subject">' + escapeHtml(msg.subject) + '</div>';
         bindMailRow(a);
@@ -752,53 +758,208 @@
         });
     }
 
-    function initBulkSelect() {
-        var toolbar = document.getElementById('bulk-toolbar');
-        var selectAll = document.getElementById('select-all');
+    var commandBarInitialized = false;
+    var lastCheckedRowIndex = -1;
+
+    function initMailCommandBar() {
+        var toolbar = document.getElementById('mail-command-bar');
         if (!toolbar) return;
 
-        function updateToolbar() {
-            var checked = document.querySelectorAll('.mail-check:checked');
-            toolbar.hidden = checked.length === 0;
-            var count = document.getElementById('bulk-count');
-            if (count) count.textContent = checked.length + ' selected';
-
-            ['bulk-trash-uids', 'bulk-move-uids', 'bulk-read-uids', 'bulk-unread-uids'].forEach(function (id) {
-                var container = document.getElementById(id);
-                if (!container) return;
-                container.innerHTML = '';
-                checked.forEach(function (cb) {
-                    var input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = 'uids[]';
-                    input.value = cb.value;
-                    container.appendChild(input);
-                });
-            });
-        }
-
-        document.querySelectorAll('.mail-check').forEach(function (cb) {
-            cb.addEventListener('change', updateToolbar);
+        document.querySelectorAll('.mail-check:not([data-cmd-bound])').forEach(function (cb) {
+            cb.setAttribute('data-cmd-bound', '1');
+            cb.addEventListener('change', onMailCheckChange);
+            cb.addEventListener('click', onMailCheckClick);
         });
 
-        if (selectAll) {
-            selectAll.addEventListener('change', function () {
-                document.querySelectorAll('.mail-check').forEach(function (cb) {
-                    cb.checked = selectAll.checked;
+        if (!commandBarInitialized) {
+            commandBarInitialized = true;
+
+            var selectAll = document.getElementById('select-all');
+            if (selectAll) {
+                selectAll.addEventListener('change', function () {
+                    document.querySelectorAll('.mail-check').forEach(function (cb) {
+                        cb.checked = selectAll.checked;
+                    });
+                    updateCommandBar();
                 });
-                updateToolbar();
+            }
+
+            toolbar.querySelectorAll('[data-cmd]').forEach(function (btn) {
+                var cmd = btn.getAttribute('data-cmd');
+                if (cmd === 'compose') return;
+                btn.addEventListener('click', function () {
+                    runBulkCommand(cmd);
+                });
             });
         }
 
-        initBulkAjax(toolbar);
+        updateCommandBar();
     }
 
-    function bulkActionPath(formAction) {
-        var base = appBase + '/';
-        if (formAction.indexOf(base) === 0) {
-            return formAction.slice(base.length);
+    function outlookRows() {
+        return Array.prototype.slice.call(document.querySelectorAll('.mail-row--outlook'));
+    }
+
+    function onMailCheckClick(e) {
+        if (!e.shiftKey || lastCheckedRowIndex < 0) return;
+        var row = e.target.closest('.mail-row--outlook');
+        if (!row) return;
+        var rows = outlookRows();
+        var idx = rows.indexOf(row);
+        if (idx < 0) return;
+        var start = Math.min(lastCheckedRowIndex, idx);
+        var end = Math.max(lastCheckedRowIndex, idx);
+        var checked = e.target.checked;
+        for (var i = start; i <= end; i++) {
+            var cb = rows[i].querySelector('.mail-check');
+            if (cb) cb.checked = checked;
         }
-        return formAction.replace(/^\//, '');
+        updateCommandBar();
+    }
+
+    function onMailCheckChange(e) {
+        var row = e.target.closest('.mail-row--outlook');
+        if (row) {
+            lastCheckedRowIndex = outlookRows().indexOf(row);
+        }
+        updateCommandBar();
+    }
+
+    function updateCommandBar() {
+        var toolbar = document.getElementById('mail-command-bar');
+        if (!toolbar) return;
+
+        var uids = selectedMailUids();
+        var hasSelection = uids.length > 0;
+        var needsSelection = ['delete', 'move', 'mark-read', 'mark-unread', 'flag', 'unflag'];
+
+        needsSelection.forEach(function (cmd) {
+            var btn = toolbar.querySelector('[data-cmd="' + cmd + '"]');
+            if (btn) btn.disabled = !hasSelection;
+        });
+
+        var moveSelect = document.getElementById('cmd-move-target');
+        if (moveSelect) moveSelect.disabled = !hasSelection;
+
+        var countEl = document.getElementById('cmd-selection-count');
+        if (countEl) {
+            countEl.textContent = hasSelection ? uids.length + ' selected' : '';
+            countEl.hidden = !hasSelection;
+        }
+
+        var selectAll = document.getElementById('select-all');
+        var checks = document.querySelectorAll('.mail-check');
+        if (selectAll && checks.length) {
+            var checkedCount = document.querySelectorAll('.mail-check:checked').length;
+            selectAll.checked = checkedCount > 0 && checkedCount === checks.length;
+            selectAll.indeterminate = checkedCount > 0 && checkedCount < checks.length;
+        }
+
+        outlookRows().forEach(function (row) {
+            var cb = row.querySelector('.mail-check');
+            row.classList.toggle('is-checked', !!(cb && cb.checked));
+        });
+    }
+
+    function runBulkCommand(action) {
+        if (action === 'refresh') {
+            if (mailPoll) {
+                mailPoll();
+            } else {
+                window.location.reload();
+            }
+            return;
+        }
+
+        var uids = selectedMailUids();
+        if (!uids.length) return;
+
+        var listCard = document.querySelector('.mail-list-card[data-folder-path]');
+        if (!listCard) return;
+        var folderEnc = listCard.getAttribute('data-folder-path');
+
+        var actionPath = '';
+        var payload = new URLSearchParams();
+        payload.set('_csrf', csrf);
+        payload.set('folder', folderEnc);
+        uids.forEach(function (uid) { payload.append('uids[]', uid); });
+
+        var successMsg = '';
+
+        if (action === 'delete') {
+            if (!window.confirm('Move selected messages to Trash?')) return;
+            actionPath = 'message/bulk-trash';
+            payload.set('unread_delta', String(countUnreadAmong(uids)));
+            uids.forEach(function (uid) { removeRowByUid(uid); });
+            successMsg = 'Selected messages moved to Trash.';
+        } else if (action === 'move') {
+            var target = document.getElementById('cmd-move-target');
+            if (!target || !target.value) {
+                showToast('error', 'Choose a folder to move to.');
+                return;
+            }
+            actionPath = 'message/bulk-move';
+            payload.set('target_folder', target.value);
+            payload.set('unread_delta', String(countUnreadAmong(uids)));
+            uids.forEach(function (uid) { removeRowByUid(uid); });
+            successMsg = 'Selected messages moved.';
+        } else if (action === 'mark-read') {
+            actionPath = 'message/bulk-mark-read';
+            uids.forEach(function (uid) { setRowSeen(uid, true); });
+            successMsg = uids.length + ' message(s) marked as read.';
+        } else if (action === 'mark-unread') {
+            actionPath = 'message/bulk-mark-unread';
+            uids.forEach(function (uid) { setRowSeen(uid, false); });
+            successMsg = uids.length + ' message(s) marked as unread.';
+        } else if (action === 'flag') {
+            actionPath = 'message/bulk-flag';
+            uids.forEach(function (uid) { setRowFlagged(uid, true); });
+            successMsg = uids.length + ' message(s) marked as important.';
+        } else if (action === 'unflag') {
+            actionPath = 'message/bulk-unflag';
+            uids.forEach(function (uid) { setRowFlagged(uid, false); });
+            successMsg = uids.length + ' message(s) unflagged.';
+        } else {
+            return;
+        }
+
+        beginTask();
+        fetch(apiUrl(actionPath), {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: payload.toString()
+        }).then(function (res) {
+            return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                if (!res.ok || (data && data.ok === false)) {
+                    throw new Error((data && data.error) || 'Action failed.');
+                }
+                return data;
+            });
+        }).then(function (data) {
+            if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                applyUnreadCounts(data.unread_counts);
+            } else {
+                refreshUnreadBadges();
+            }
+            var selectAll = document.getElementById('select-all');
+            if (selectAll) {
+                selectAll.checked = false;
+                selectAll.indeterminate = false;
+            }
+            document.querySelectorAll('.mail-check:checked').forEach(function (cb) { cb.checked = false; });
+            var moveSelect = document.getElementById('cmd-move-target');
+            if (moveSelect && action === 'move') moveSelect.value = '';
+            updateCommandBar();
+            if (successMsg) showToast('success', successMsg);
+        }).catch(function (err) {
+            showToast('error', err.message || 'Action failed.');
+            if (mailPoll) mailPoll();
+        }).finally(function () { endTask(); });
     }
 
     function selectedMailUids() {
@@ -814,90 +975,6 @@
             });
         });
         return n;
-    }
-
-    function initBulkAjax(toolbar) {
-        var listCard = document.querySelector('.mail-list-card[data-folder-path]');
-        if (!listCard) return;
-
-        var folderEnc = listCard.getAttribute('data-folder-path');
-
-        toolbar.querySelectorAll('form').forEach(function (form) {
-            form.addEventListener('submit', function (e) {
-                e.preventDefault();
-
-                var uids = selectedMailUids();
-                if (!uids.length) return;
-
-                var actionPath = bulkActionPath(form.getAttribute('action') || '');
-                var fields = { folder: folderEnc };
-                uids.forEach(function (uid) {
-                    fields['uids[' + uid + ']'] = uid;
-                });
-
-                // URLSearchParams doesn't support uids[] cleanly with our helper — build manually.
-                var payload = new URLSearchParams();
-                payload.set('_csrf', csrf);
-                payload.set('folder', folderEnc);
-                uids.forEach(function (uid) { payload.append('uids[]', uid); });
-
-                if (actionPath.indexOf('bulk-mark-read') >= 0) {
-                    uids.forEach(function (uid) { setRowSeen(uid, true); });
-                } else if (actionPath.indexOf('bulk-mark-unread') >= 0) {
-                    uids.forEach(function (uid) { setRowSeen(uid, false); });
-                } else if (actionPath.indexOf('bulk-trash') >= 0) {
-                    if (!window.confirm('Move selected messages to Trash?')) return;
-                    uids.forEach(function (uid) { removeRowByUid(uid); });
-                    payload.set('unread_delta', String(countUnreadAmong(uids)));
-                } else if (actionPath.indexOf('bulk-move') >= 0) {
-                    var select = form.querySelector('[name="target_folder"]');
-                    if (!select || !select.value) return;
-                    payload.set('target_folder', select.value);
-                    payload.set('unread_delta', String(countUnreadAmong(uids)));
-                    uids.forEach(function (uid) { removeRowByUid(uid); });
-                }
-
-                beginTask();
-                fetch(apiUrl(actionPath), {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: {
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    },
-                    body: payload.toString()
-                }).then(function (res) {
-                    return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
-                        if (!res.ok || (data && data.ok === false)) {
-                            throw new Error((data && data.error) || 'Action failed.');
-                        }
-                        return data;
-                    });
-                }).then(function (data) {
-                    if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                        applyUnreadCounts(data.unread_counts);
-                    } else {
-                        refreshUnreadBadges();
-                    }
-                    var selectAll = document.getElementById('select-all');
-                    if (selectAll) selectAll.checked = false;
-                    toolbar.hidden = true;
-                    if (actionPath.indexOf('bulk-mark-read') >= 0) {
-                        showToast('success', uids.length + ' message(s) marked as read.');
-                    } else if (actionPath.indexOf('bulk-mark-unread') >= 0) {
-                        showToast('success', uids.length + ' message(s) marked as unread.');
-                    } else if (actionPath.indexOf('bulk-trash') >= 0) {
-                        showToast('success', 'Selected messages moved to Trash.');
-                    } else if (actionPath.indexOf('bulk-move') >= 0) {
-                        showToast('success', 'Selected messages moved.');
-                    }
-                }).catch(function (err) {
-                    showToast('error', err.message || 'Action failed.');
-                    if (mailPoll) mailPoll();
-                }).finally(function () { endTask(); });
-            });
-        });
     }
 
     function bindMessageSyncCard(card) {
@@ -1796,7 +1873,7 @@
         initToasts();
         initMailSync();
         initMessageSync();
-        initBulkSelect();
+        initMailCommandBar();
         initRichEditor();
         initRecipientFields();
         initRulesDragDrop();

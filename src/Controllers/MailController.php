@@ -136,6 +136,7 @@ class MailController
                 'date' => format_mail_date($msg['date'] ?? ''),
                 'seen' => (bool) ($msg['seen'] ?? false),
                 'flagged' => (bool) ($msg['flagged'] ?? false),
+                'has_attachment' => (bool) ($msg['has_attachment'] ?? false),
                 'url' => message_url($folderPath, $uid),
                 'reply_url' => url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
                 'reply_all_url' => url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
@@ -545,6 +546,20 @@ class MailController
         $this->setSeenFlagBulk(false);
     }
 
+    public function bulkFlag(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setFlaggedFlagBulk(true);
+    }
+
+    public function bulkUnflag(): void
+    {
+        requireAuth();
+        verify_csrf_or_fail();
+        $this->setFlaggedFlagBulk(false);
+    }
+
     /**
      * @param list<int> $uids
      */
@@ -745,6 +760,39 @@ class MailController
         }
 
         flash('success', sprintf('%d message(s) marked as %s.', count($uids), $seen ? 'read' : 'unread'));
+        redirect($redirect);
+    }
+
+    private function setFlaggedFlagBulk(bool $flagged): void
+    {
+        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $uids = array_map('intval', $_POST['uids'] ?? []);
+        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+        $redirect = 'folder/' . encode_folder_path($folderPath ?: 'INBOX');
+
+        if ($folderPath === '' || $uids === []) {
+            $this->actionError('No messages selected.', $redirect);
+        }
+        assert_folder_access($folderPath);
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            $this->actionError($imap->getLastError(), $redirect);
+        }
+
+        foreach ($uids as $uid) {
+            if ($flagged) {
+                $imap->markFlagged($folderPath, $uid);
+            } else {
+                $imap->markUnflagged($folderPath, $uid);
+            }
+        }
+
+        if (wants_json()) {
+            json_response(['ok' => true, 'flagged' => $flagged, 'uids' => $uids, 'unread_counts' => FolderCache::bumpUnread($folderPath, 0)]);
+        }
+
+        flash('success', sprintf('%d message(s) %s.', count($uids), $flagged ? 'marked as important' : 'unflagged'));
         redirect($redirect);
     }
 

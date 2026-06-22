@@ -2,29 +2,27 @@
 
 <div class="mail-workspace" id="mail-workspace">
 <div class="mail-list-column">
-<section class="page-header page-header--compact">
-    <div class="page-header-row">
-        <div class="page-header-left">
-            <div class="page-title-row">
-                <h2><?= e($title ?? 'Mail') ?></h2>
-                <span class="page-header-count" id="mail-count-label" title="<?= (int) $totalMessages ?> message<?= $totalMessages === 1 ? '' : 's' ?>"><?= (int) $totalMessages ?></span>
-            </div>
-        </div>
-        <form method="get" action="<?= e(folder_url($folderPath)) ?>" class="search-field mail-search-form" id="mail-search-form">
-            <?php if (!empty($perPage)): ?>
-                <input type="hidden" name="per_page" value="<?= (int) $perPage ?>">
-            <?php endif; ?>
-            <span class="search-field-icon" aria-hidden="true">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            </span>
-            <input type="search" name="q" id="mail-search" class="search-field-input" placeholder="Search subject or from…"
-                   value="<?= e($searchQuery ?? '') ?>" autocomplete="off">
-            <button type="submit" class="btn btn-primary btn-sm search-field-btn">Search</button>
-            <?php if (!empty($searchQuery)): ?>
-                <a class="btn btn-outline btn-sm" href="<?= e(folder_url($folderPath) . (!empty($perPage) ? '?per_page=' . (int) $perPage : '')) ?>">Clear</a>
-            <?php endif; ?>
-        </form>
+<section class="page-header page-header--compact page-header--mail">
+    <div class="page-title-row">
+        <h2><?= e($title ?? 'Mail') ?></h2>
+        <span class="page-header-count" id="mail-count-label" title="<?= (int) $totalMessages ?> message<?= $totalMessages === 1 ? '' : 's' ?>"><?= (int) $totalMessages ?></span>
     </div>
+    <form method="get" action="<?= e(folder_url($folderPath)) ?>" class="search-field search-field--mail mail-search-form" id="mail-search-form">
+        <?php if (!empty($perPage)): ?>
+            <input type="hidden" name="per_page" value="<?= (int) $perPage ?>">
+        <?php endif; ?>
+        <span class="search-field-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        </span>
+        <input type="search" name="q" id="mail-search" class="search-field-input"
+               placeholder="Search in <?= e($title ?? 'folder') ?>…"
+               value="<?= e($searchQuery ?? '') ?>" autocomplete="off" enterkeyhint="search">
+        <?php if (!empty($searchQuery)): ?>
+            <a class="search-field-clear" href="<?= e(folder_url($folderPath) . (!empty($perPage) ? '?per_page=' . (int) $perPage : '')) ?>" aria-label="Clear search" title="Clear search">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </a>
+        <?php endif; ?>
+    </form>
 </section>
 
 <?php if (!$imapConnected): ?>
@@ -54,46 +52,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     data-folder-path="<?= e(encode_folder_path($folderPath)) ?>"
     data-folder-url="<?= e(folder_url($folderPath)) ?>">
 
-    <?php if (!empty($messages)): ?>
-    <div class="bulk-toolbar" id="bulk-toolbar" hidden>
-        <span id="bulk-count">0 selected</span>
-        <form method="post" action="<?= e(url('message/bulk-mark-read')) ?>" class="inline-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <div id="bulk-read-uids"></div>
-            <button type="submit" class="btn btn-outline btn-sm">Mark read</button>
-        </form>
-        <form method="post" action="<?= e(url('message/bulk-mark-unread')) ?>" class="inline-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <div id="bulk-unread-uids"></div>
-            <button type="submit" class="btn btn-outline btn-sm">Mark unread</button>
-        </form>
-        <form method="post" action="<?= e(url('message/bulk-trash')) ?>" class="inline-form"
-              onsubmit="return confirm('Move selected messages to Trash?');">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <div id="bulk-trash-uids"></div>
-            <button type="submit" class="btn btn-danger btn-sm">Delete</button>
-        </form>
-        <form method="post" action="<?= e(url('message/bulk-move')) ?>" class="inline-form move-form">
-            <?= csrf_field() ?>
-            <input type="hidden" name="folder" value="<?= e(encode_folder_path($folderPath)) ?>">
-            <div id="bulk-move-uids"></div>
-            <div class="select-field select-field-inline">
-            <select name="target_folder" required>
-                <option value="">Move to…</option>
-                <?php foreach ($folders as $f): ?>
-                    <?php if ($f['path'] !== $folderPath): ?>
-                    <option value="<?= e($f['path']) ?>"><?= e($f['name']) ?></option>
-                    <?php endif; ?>
-                <?php endforeach; ?>
-            </select>
-            </div>
-            <button type="submit" class="btn btn-outline btn-sm">Move</button>
-        </form>
-    </div>
-    <?php endif; ?>
+    <?php require base_path('views/partials/mail-toolbar.php'); ?>
 
     <?php if (empty($messages)): ?>
     <div id="mail-list-empty" class="empty-state">
@@ -103,45 +62,9 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     <?php endif; ?>
 
     <div class="mail-list-scroller"<?= empty($messages) ? ' hidden' : '' ?> id="mail-list-scroller">
-    <div class="mail-list-header">
-        <label class="mail-list-select-all">
-            <input type="checkbox" id="select-all" aria-label="Select all messages on this page">
-            <span>Select all</span>
-        </label>
-    </div>
     <div class="mail-list-desktop mail-list-rows" id="mail-list-body">
                 <?php foreach ($messages as $msg): ?>
-                    <?php
-                    $fromDisplay = format_mail_from($msg['from'] ?? '');
-                    $avatarInitial = mail_avatar_initial($msg['from'] ?? '');
-                    $avatarColor = mail_avatar_color($msg['from'] ?? '');
-                    ?>
-                    <div class="mail-row mail-row--outlook<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
-                        data-uid="<?= (int) $msg['uid'] ?>"
-                        data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
-                        data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
-                        data-href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>"
-                        data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
-                        data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
-                        data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
-                        <div class="mail-row-check" onclick="event.stopPropagation()">
-                            <input type="checkbox" class="mail-check" value="<?= (int) $msg['uid'] ?>" aria-label="Select message">
-                        </div>
-                        <div class="mail-row-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
-                        <div class="mail-row-body">
-                            <div class="mail-row-line1">
-                                <span class="mail-row-from"><?= e($fromDisplay) ?></span>
-                                <span class="mail-row-meta">
-                                    <?php if (!empty($msg['flagged'])): ?>
-                                        <span class="flag-dot mail-row-flag" title="Important">&#9733;</span>
-                                    <?php endif; ?>
-                                    <span class="mail-row-date"><?= e(format_mail_date($msg['date'])) ?></span>
-                                </span>
-                            </div>
-                            <div class="mail-row-subject"><?= e($msg['subject']) ?></div>
-                        </div>
-                        <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
-                    </div>
+                    <?php require base_path('views/partials/mail-list-row.php'); ?>
                 <?php endforeach; ?>
     </div>
     </div>
@@ -159,7 +82,14 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
                 <div class="mail-card-top">
                     <span class="mail-card-from"><?= !empty($msg['flagged']) ? '<span class="flag-dot" title="Important">&#9733;</span> ' : '' ?><?= e(format_mail_from($msg['from'])) ?></span>
-                    <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
+                    <span class="mail-card-meta">
+                        <?php if (!empty($msg['has_attachment'])): ?>
+                            <span class="mail-row-attach" title="Has attachment" aria-label="Has attachment">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                            </span>
+                        <?php endif; ?>
+                        <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
+                    </span>
                     <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
                 </div>
                 <div class="mail-card-subject"><?= e($msg['subject']) ?></div>

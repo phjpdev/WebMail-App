@@ -204,14 +204,16 @@ class ImapService
         $messages = [];
 
         foreach ($overview as $row) {
+            $uid = (int) ($row->uid ?? 0);
             $messages[] = [
-                'uid' => (int) ($row->uid ?? 0),
+                'uid' => $uid,
                 'from' => isset($row->from) ? $this->decodeMimeHeader($row->from) : '',
                 'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
                 'date' => $row->date ?? '',
                 'seen' => (bool) ($row->seen ?? false),
                 'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
+                'has_attachment' => $uid > 0 && $this->uidHasAttachment($uid),
             ];
         }
 
@@ -631,10 +633,52 @@ class ImapService
                 'seen' => (bool) ($row->seen ?? false),
                 'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
+                'has_attachment' => $this->uidHasAttachment((int) $uid),
             ];
         }
 
         return $messages;
+    }
+
+    public function uidHasAttachment(int $uid): bool
+    {
+        if ($uid <= 0 || $this->connection === null) {
+            return false;
+        }
+
+        $structure = @imap_fetchstructure($this->connection, $uid, FT_UID);
+        if ($structure === false) {
+            return false;
+        }
+
+        return $this->structureHasAttachment($structure);
+    }
+
+    private function structureHasAttachment(object $structure, string $partId = ''): bool
+    {
+        if (isset($structure->parts) && is_array($structure->parts)) {
+            if (($structure->type ?? -1) === TYPEMESSAGE && $partId !== '') {
+                return true;
+            }
+
+            foreach ($structure->parts as $index => $subPart) {
+                $id = $partId === '' ? (string) ($index + 1) : $partId . '.' . ($index + 1);
+                if ($this->structureHasAttachment($subPart, $id)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $filename = $this->getPartFilename($structure);
+        $disposition = strtolower($structure->disposition ?? '');
+
+        if ($disposition === 'attachment') {
+            return true;
+        }
+
+        return $filename !== null && $disposition !== 'inline';
     }
 
     public function appendMessage(string $folderPath, string $rawMessage, ?string $flags = null): bool
