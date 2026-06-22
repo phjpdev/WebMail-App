@@ -1,30 +1,55 @@
-/* D&J Webmail — professional UI */
+/* D&J Webmail — Outlook-inspired design system (U5) */
 :root {
-    --color-bg: #f6f7f9;
+    /* Surfaces & text (Fluent / Outlook Web light) */
+    --color-bg: #faf9f8;
     --color-surface: #ffffff;
-    --color-border: #e4e7ec;
-    --color-border-subtle: #eef0f3;
-    --color-text: #111827;
-    --color-text-secondary: #4b5563;
-    --color-text-muted: #9ca3af;
-    --color-primary: #2563eb;
-    --color-primary-hover: #1d4ed8;
-    --color-primary-light: #eff6ff;
-    --color-primary-subtle: #dbeafe;
-    --color-danger: #dc2626;
-    --color-danger-hover: #b91c1c;
+    --color-surface-alt: #f3f2f1;
+    --color-border: #edebe9;
+    --color-border-subtle: #f3f2f1;
+    --color-text: #242424;
+    --color-text-secondary: #605e5c;
+    --color-text-muted: #8a8886;
+
+    /* Brand & actions */
+    --color-primary: #0078d4;
+    --color-primary-hover: #106ebe;
+    --color-primary-pressed: #005a9e;
+    --color-primary-light: #deecf9;
+    --color-primary-subtle: #c7e0f4;
+    --color-focus-ring: rgba(0, 120, 212, 0.45);
+    --color-danger: #d13438;
+    --color-danger-hover: #a4262c;
+    --color-unread-accent: #0078d4;
+
+    /* Chrome */
     --color-header: #ffffff;
-    --color-header-text: #111827;
-    --shadow-xs: 0 1px 2px rgba(17, 24, 39, 0.04);
-    --shadow-sm: 0 1px 3px rgba(17, 24, 39, 0.06), 0 1px 2px rgba(17, 24, 39, 0.04);
-    --shadow-md: 0 4px 12px rgba(17, 24, 39, 0.08);
-    --shadow-lg: 0 12px 24px rgba(17, 24, 39, 0.1);
-    --radius: 10px;
-    --radius-sm: 6px;
-    --radius-lg: 14px;
-    --sidebar-width: 248px;
-    --header-height: 56px;
-    --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --color-header-text: #242424;
+
+    /* Elevation (minimal — Outlook uses dividers) */
+    --shadow-xs: 0 0.3px 0.9px rgba(0, 0, 0, 0.07);
+    --shadow-sm: 0 1.6px 3.6px rgba(0, 0, 0, 0.08);
+    --shadow-md: 0 3.2px 7.2px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 6.4px 14.4px rgba(0, 0, 0, 0.12);
+
+    /* Shape */
+    --radius: 4px;
+    --radius-sm: 2px;
+    --radius-lg: 6px;
+
+    /* Layout */
+    --sidebar-width: 220px;
+    --header-height: 48px;
+
+    /* Typography — Segoe UI first (Outlook native) */
+    --font: "Segoe UI", "Segoe UI Web (West European)", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+    /* 8px spacing grid */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
 }
 
 *,
@@ -40,8 +65,8 @@ html {
 body {
     margin: 0;
     font-family: var(--font);
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: 0.875rem;
+    line-height: 1.4286;
     color: var(--color-text);
     background: var(--color-bg);
     min-height: 100vh;
@@ -133,9 +158,9 @@ a:hover {
     display: block;
     height: 100%;
     width: 0;
-    background: linear-gradient(90deg, var(--color-primary), #6366f1 60%, #818cf8);
+    background: var(--color-primary);
     border-radius: 0 3px 3px 0;
-    box-shadow: 0 0 10px rgba(99, 102, 241, 0.7), 0 0 4px rgba(99, 102, 241, 0.5);
+    box-shadow: none;
     transition: width 0.18s ease;
 }
 
@@ -153,16 +178,17 @@ a:hover {
     background: var(--color-header);
     color: var(--color-header-text);
     border-bottom: 1px solid var(--color-border);
+    box-shadow: none;
 }
 
 .header-inner {
     margin: 0 auto;
     min-height: var(--header-height);
-    padding: 0 1.5rem;
+    padding: 0 var(--space-4);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
+    gap: var(--space-3);
 }
 
 .header-left {
@@ -174,9 +200,9 @@ a:hover {
 
 .site-title {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 700;
-    letter-spacing: -0.025em;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
 }
 
 .site-title-link {
@@ -229,12 +255,12 @@ a:hover {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     background: var(--color-primary-light);
     color: var(--color-primary);
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     font-weight: 600;
     flex-shrink: 0;
 }
@@ -259,13 +285,17 @@ a:hover {
 }
 
 .header-nav-link {
-    padding: 0.4rem 0.75rem;
+    padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-sm);
     font-size: 0.8125rem;
-    font-weight: 500;
+    font-weight: 400;
     color: var(--color-text-secondary);
     text-decoration: none;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.12s, color 0.12s;
+}
+
+.header-user .role-badge {
+    display: none;
 }
 
 .header-nav-link:hover {
@@ -316,7 +346,7 @@ a:hover {
 .sidebar {
     background: var(--color-surface);
     border-right: 1px solid var(--color-border);
-    padding: 1.25rem 0.875rem;
+    padding: var(--space-3) var(--space-2);
     position: sticky;
     top: var(--header-height);
     height: calc(100vh - var(--header-height));
@@ -336,18 +366,18 @@ a:hover {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    margin: 0 0.25rem 1rem;
-    padding: 0.7rem 1rem;
+    gap: var(--space-2);
+    margin: 0 var(--space-1) var(--space-3);
+    padding: var(--space-2) var(--space-3);
     font-weight: 600;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     border-radius: var(--radius);
-    box-shadow: var(--shadow-xs);
+    box-shadow: none;
     letter-spacing: -0.01em;
 }
 
 .btn-compose:hover {
-    box-shadow: var(--shadow-sm);
+    box-shadow: none;
 }
 
 .sidebar-scroll,
@@ -396,30 +426,32 @@ a:hover {
 .sidebar-link {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.55rem 0.75rem;
-    margin: 0.1rem 0;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    margin: 1px 0;
     border-radius: var(--radius-sm);
+    border-left: 3px solid transparent;
     color: var(--color-text-secondary);
-    font-size: 0.875rem;
-    font-weight: 500;
-    transition: background 0.15s ease, color 0.15s ease;
+    font-size: 0.8125rem;
+    font-weight: 400;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .sidebar-link:hover {
-    background: var(--color-bg);
+    background: var(--color-surface-alt);
     color: var(--color-text);
     text-decoration: none;
 }
 
 .sidebar-link.active {
-    background: var(--color-border-subtle);
+    background: var(--color-primary-light);
     color: var(--color-text);
     font-weight: 600;
+    border-left-color: var(--color-primary);
 }
 
 .sidebar-link.active:hover {
-    background: var(--color-border);
+    background: var(--color-primary-subtle);
 }
 
 .sidebar-link-text {
@@ -457,7 +489,7 @@ a:hover {
 
 .main-content {
     min-width: 0;
-    padding: 1.75rem 2rem;
+    padding: var(--space-5) var(--space-6);
 }
 
 /* Page header */
@@ -467,10 +499,10 @@ a:hover {
 
 .page-header h2 {
     margin: 0;
-    font-size: 1.375rem;
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    line-height: 1.2;
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
 }
 
 .page-header-row {
@@ -519,14 +551,14 @@ a:hover {
 .card {
     background: var(--color-surface);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: 1.25rem;
-    margin-bottom: 1rem;
-    box-shadow: var(--shadow-xs);
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    margin-bottom: var(--space-3);
+    box-shadow: none;
 }
 
 .card-muted {
-    background: #f8fafc;
+    background: var(--color-surface-alt);
 }
 
 .card h3 {
@@ -586,15 +618,15 @@ a:hover {
 }
 
 .toast-success {
-    background: #ecfdf5;
-    color: #065f46;
-    border: 1px solid #a7f3d0;
+    background: #dff6dd;
+    color: #0b6a0b;
+    border: 1px solid #9fd89f;
 }
 
 .toast-error {
-    background: #fef2f2;
-    color: #991b1b;
-    border: 1px solid #fecaca;
+    background: #fde7e9;
+    color: #a4262c;
+    border: 1px solid #f1bbbc;
 }
 
 .toast-close {
@@ -626,15 +658,15 @@ a:hover {
 }
 
 [data-theme="dark"] .toast-success {
-    background: #064e3b;
-    color: #a7f3d0;
-    border-color: #047857;
+    background: #0b3a0b;
+    color: #9fd89f;
+    border-color: #0b6a0b;
 }
 
 [data-theme="dark"] .toast-error {
-    background: #7f1d1d;
-    color: #fecaca;
-    border-color: #b91c1c;
+    background: #442726;
+    color: #f1bbbc;
+    border-color: #a4262c;
 }
 
 /* Buttons */
@@ -642,84 +674,95 @@ a:hover {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.35rem;
-    padding: 0.5rem 0.95rem;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-3);
+    min-height: 2rem;
     border-radius: var(--radius-sm);
-    border: none;
+    border: 1px solid transparent;
     font-size: 0.8125rem;
-    font-weight: 500;
+    font-weight: 600;
     font-family: inherit;
     cursor: pointer;
     text-decoration: none;
-    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
     white-space: nowrap;
-    letter-spacing: -0.01em;
 }
 
 .btn:active {
-    transform: scale(0.98);
+    transform: none;
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 1px;
 }
 
 .btn-primary {
     background: var(--color-primary);
     color: #fff;
-    box-shadow: var(--shadow-xs);
+    border-color: var(--color-primary);
+    box-shadow: none;
 }
 
 .btn-primary:hover {
     background: var(--color-primary-hover);
-    box-shadow: var(--shadow-sm);
+    border-color: var(--color-primary-hover);
     text-decoration: none;
     color: #fff;
 }
 
+.btn-primary:active {
+    background: var(--color-primary-pressed);
+    border-color: var(--color-primary-pressed);
+}
+
 .btn-secondary {
     background: var(--color-surface);
-    color: var(--color-text-secondary);
-    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-color: var(--color-border);
 }
 
 .btn-secondary:hover {
-    background: var(--color-bg);
-    border-color: #d1d5db;
+    background: var(--color-surface-alt);
+    border-color: #c8c6c4;
     color: var(--color-text);
     text-decoration: none;
 }
 
 .btn-outline {
     background: var(--color-surface);
-    color: var(--color-text-secondary);
-    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-color: #8a8886;
 }
 
 .btn-outline:hover {
-    background: var(--color-bg);
-    border-color: #d1d5db;
+    background: var(--color-surface-alt);
+    border-color: #605e5c;
     color: var(--color-text);
     text-decoration: none;
 }
 
 [data-theme="dark"] .btn-secondary {
-    background: #334155;
-    color: #f1f5f9;
-    border-color: #475569;
+    background: var(--color-surface-alt);
+    color: var(--color-text);
+    border-color: var(--color-border);
 }
 
 [data-theme="dark"] .btn-secondary:hover {
-    background: #475569;
+    background: #3b3a39;
     color: #fff;
 }
 
 [data-theme="dark"] .btn-outline {
     background: transparent;
-    color: #e2e8f0;
-    border-color: #475569;
+    color: var(--color-text-secondary);
+    border-color: #8a8886;
 }
 
 [data-theme="dark"] .btn-outline:hover {
-    background: rgba(129, 140, 248, 0.15);
-    border-color: var(--color-primary);
-    color: var(--color-primary);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: #c8c6c4;
+    color: var(--color-text);
 }
 
 .btn-danger {
@@ -1191,10 +1234,11 @@ a:hover {
 .compose-form textarea:focus,
 .compose-form select:focus,
 .form-group input:not([type="checkbox"]):not([type="radio"]):focus,
-.login-form input:focus {
+.login-form input:focus,
+.select-field select:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    box-shadow: 0 0 0 1px var(--color-primary), 0 0 0 3px var(--color-focus-ring);
 }
 
 .compose-form textarea {
@@ -1476,35 +1520,61 @@ a:hover {
     color: #374151;
 }
 
-/* Login */
+/* Login — matches app chrome */
 .login-body {
     min-height: 100vh;
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
     background: var(--color-bg);
-    background-image: radial-gradient(ellipse 80% 60% at 50% -10%, #dbeafe 0%, transparent 55%);
+}
+
+.login-header {
+    flex-shrink: 0;
+    background: var(--color-header);
+    border-bottom: 1px solid var(--color-border);
+    min-height: var(--header-height);
+    display: flex;
+    align-items: center;
+    padding: 0 var(--space-4);
+}
+
+.login-brand {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--color-header-text);
+    text-decoration: none;
+}
+
+.login-brand:hover {
+    color: var(--color-primary);
+    text-decoration: none;
 }
 
 .login-page {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 100%;
-    max-width: 400px;
-    padding: 1.5rem;
+    max-width: none;
+    padding: var(--space-6) var(--space-4);
 }
 
 .login-card {
+    width: 100%;
+    max-width: 400px;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: 2rem 2rem 1.75rem;
-    box-shadow: var(--shadow-md);
+    border-radius: var(--radius);
+    padding: var(--space-6) var(--space-5);
+    box-shadow: var(--shadow-sm);
 }
 
 .login-card h2 {
-    margin: 0 0 0.25rem;
-    font-weight: 700;
-    font-size: 1.375rem;
-    letter-spacing: -0.03em;
+    margin: 0 0 var(--space-1);
+    font-weight: 600;
+    font-size: 1.25rem;
+    letter-spacing: -0.02em;
 }
 
 .login-form .form-group {
@@ -1520,6 +1590,26 @@ a:hover {
 
 .login-form .btn {
     margin-top: 0.5rem;
+}
+
+.login-form .btn-block + .btn-block {
+    margin-top: var(--space-2);
+}
+
+.error-card {
+    text-align: center;
+}
+
+.error-card .error-code {
+    font-size: 2.5rem;
+    font-weight: 600;
+    color: var(--color-primary);
+    line-height: 1;
+    margin-bottom: var(--space-2);
+}
+
+.error-card h2 {
+    margin: 0 0 var(--space-2);
 }
 
 /* Admin */
@@ -1572,7 +1662,7 @@ a:hover {
     border-radius: var(--radius);
     padding: 1.25rem;
     text-align: center;
-    box-shadow: var(--shadow-sm);
+    box-shadow: none;
 }
 
 .admin-stat-value {
@@ -1780,33 +1870,40 @@ a:hover {
     }
 }
 
-/* Dark theme */
+/* Dark theme — Outlook dark grays */
 [data-theme="dark"] {
-    --color-bg: #0c0f14;
-    --color-surface: #151a23;
-    --color-border: #2a3140;
-    --color-border-subtle: #1f2530;
-    --color-text: #f3f4f6;
-    --color-text-secondary: #d1d5db;
-    --color-text-muted: #9ca3af;
-    --color-primary: #3b82f6;
-    --color-primary-hover: #60a5fa;
-    --color-primary-light: rgba(59, 130, 246, 0.12);
-    --color-primary-subtle: rgba(59, 130, 246, 0.25);
-    --color-header: #151a23;
-    --color-header-text: #f3f4f6;
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --color-bg: #1b1a19;
+    --color-surface: #252423;
+    --color-surface-alt: #2d2c2b;
+    --color-border: #3b3a39;
+    --color-border-subtle: #323130;
+    --color-text: #ffffff;
+    --color-text-secondary: #d2d0ce;
+    --color-text-muted: #a19f9d;
+    --color-primary: #479ef5;
+    --color-primary-hover: #62aef7;
+    --color-primary-pressed: #2886de;
+    --color-primary-light: rgba(71, 158, 245, 0.16);
+    --color-primary-subtle: rgba(71, 158, 245, 0.28);
+    --color-focus-ring: rgba(71, 158, 245, 0.45);
+    --color-danger: #f1707b;
+    --color-danger-hover: #ff99a4;
+    --color-unread-accent: #479ef5;
+    --color-header: #252423;
+    --color-header-text: #ffffff;
+    --shadow-xs: none;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .folder-badge {
     margin-left: auto;
-    min-width: 1.25rem;
-    padding: 0.1rem 0.4rem;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding: 0 0.35rem;
     font-size: 0.6875rem;
     font-weight: 600;
-    line-height: 1.2;
+    line-height: 1.125rem;
     text-align: center;
     color: var(--color-primary);
     background: var(--color-primary-light);
@@ -2094,7 +2191,7 @@ kbd {
 .search-field--mail:focus-within {
     background: var(--color-surface);
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+    box-shadow: 0 0 0 1px var(--color-primary), 0 0 0 3px var(--color-focus-ring);
 }
 
 .search-field--mail .search-field-input {
@@ -2123,8 +2220,8 @@ kbd {
 }
 
 .search-field:focus-within {
-    border-color: var(--color-primary-subtle);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px var(--color-focus-ring);
 }
 
 .search-field-icon {
@@ -2244,8 +2341,8 @@ kbd {
     width: 100%;
     padding: 0.55rem 0.65rem;
     margin: 0.4rem 0 0.25rem;
-    border: 1px solid var(--color-border);
-    background: var(--color-bg);
+    border: none;
+    background: transparent;
     color: var(--color-text-secondary);
     font-size: 0.8125rem;
     font-weight: 600;
@@ -2253,14 +2350,13 @@ kbd {
     cursor: pointer;
     border-radius: var(--radius-sm);
     font-family: inherit;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    transition: background 0.12s ease, color 0.12s ease;
 }
 
 .sidebar-group-toggle:hover {
-    background: var(--color-surface);
-    border-color: var(--color-primary-subtle);
+    background: var(--color-surface-alt);
     color: var(--color-text);
-    box-shadow: var(--shadow-xs);
+    box-shadow: none;
 }
 
 .sidebar-group-toggle:focus-visible {
@@ -2332,56 +2428,87 @@ kbd {
     padding: 0 0.3rem;
 }
 
-/* Standalone settings layout */
+/* Standalone pages (settings, change password) — same header chrome */
 .standalone-body {
     background: var(--color-bg);
     min-height: 100vh;
+    display: flex;
+    flex-direction: column;
 }
 
 .standalone-header {
+    flex-shrink: 0;
+    min-height: var(--header-height);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem 1.5rem;
-    background: var(--color-surface);
+    padding: 0 var(--space-4);
+    background: var(--color-header);
     border-bottom: 1px solid var(--color-border);
 }
 
-.standalone-back {
-    font-weight: 500;
+.standalone-header-brand {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--color-header-text);
+    text-decoration: none;
+}
+
+.standalone-header-brand:hover {
     color: var(--color-primary);
+    text-decoration: none;
+}
+
+.standalone-back {
+    font-weight: 400;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
     text-decoration: none;
 }
 
 .standalone-back:hover {
-    text-decoration: underline;
+    color: var(--color-primary);
+    text-decoration: none;
+}
+
+.standalone-header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
 }
 
 .btn-ghost-standalone {
-    padding: 0.4rem 0.75rem;
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    color: var(--color-text-muted);
+    background: transparent;
+    color: var(--color-text-secondary);
     text-decoration: none;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
+    font-family: inherit;
+    cursor: pointer;
 }
 
 .btn-ghost-standalone:hover {
-    background: var(--color-primary-light);
-    color: var(--color-primary);
+    background: var(--color-surface-alt);
+    color: var(--color-text);
 }
 
 .standalone-main {
+    flex: 1;
     max-width: 640px;
+    width: 100%;
     margin: 0 auto;
-    padding: 1.5rem;
-}
-
-.standalone-page-header h2 {
-    margin: 0 0 0.25rem;
+    padding: var(--space-5) var(--space-4);
 }
 
 .standalone-card {
-    margin-bottom: 1rem;
+    box-shadow: none;
+    margin-bottom: var(--space-3);
+}
+
+.standalone-page-header h2 {
+    margin: 0 0 var(--space-1);
 }
 
 [data-theme="dark"] .pagination {
@@ -3086,7 +3213,7 @@ body:has(.mail-workspace) {
 }
 
 .mail-row--outlook.mail-unread {
-    border-left-color: var(--color-primary);
+    border-left-color: var(--color-unread-accent);
 }
 
 .mail-row--outlook.mail-unread .mail-row-from,
@@ -3481,4 +3608,36 @@ body:has(.mail-workspace) {
     .reading-pane {
         display: none !important;
     }
+}
+
+/* U5 — admin & utility pages (lighter pass, inherits tokens) */
+.admin-shell .card,
+.standalone-page .card {
+    border-radius: var(--radius);
+    box-shadow: none;
+}
+
+.admin-shell .page-header h2,
+.standalone-page-header h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.admin-shell table th {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.mail-read-card--pane .mail-actions {
+    gap: var(--space-1);
+}
+
+.mail-read-card--pane .mail-actions .btn {
+    min-height: 1.75rem;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 600;
 }

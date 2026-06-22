@@ -4,10 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'Login') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=19">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=32">
 </head>
 <body class="login-body">
     <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
@@ -16,6 +13,11 @@
             <span class="loading-text">Signing in…</span>
         </div>
     </div>
+
+    <header class="login-header">
+        <span class="login-brand"><?= e(config('app')['name']) ?></span>
+    </header>
+
     <div class="login-page">
         <div class="login-card">
             <h2>Sign in</h2>
@@ -35,11 +37,11 @@
                     <input type="password" id="password" name="password" required autocomplete="current-password">
                 </div>
 
-                <button type="submit" class="btn btn-primary btn-block">Login</button>
+                <button type="submit" class="btn btn-primary btn-block">Sign in</button>
             </form>
         </div>
     </div>
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=19" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=33" defer></script>
     <script>
         document.querySelector('.login-form')?.addEventListener('submit', function () {
             var o = document.getElementById('loading-overlay');
@@ -48,4 +50,3 @@
     </script>
 </body>
 </html>
-

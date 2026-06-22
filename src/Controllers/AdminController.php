@@ -730,6 +730,7 @@ class AdminController
         // Do not overwrite $data['folders'] — admin views use it for the DB folder
         // registry (display_name, imap_path, …). The sidebar uses $sidebarFolders.
         $data['activeFolder'] = '__admin__';
+        $data['bodyClass'] = 'admin-shell';
         $data['success'] = flash('success');
         $data['error'] = flash('error');
         $data['prefs'] = user_preferences();

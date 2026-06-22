@@ -4,10 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=29">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=32">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -32,7 +29,8 @@
         })();
     </script>
 </head>
-    <body data-poll-interval="<?= (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']) ?>"
+    <body class="<?= e(trim($bodyClass ?? '')) ?>"
+      data-poll-interval="<?= (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']) ?>"
       data-sound-enabled="<?= !empty($prefs['sound_enabled']) ? '1' : '0' ?>"
       data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
       data-csrf="<?= e(csrf_token()) ?>"
@@ -103,6 +101,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=31" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=33" defer></script>
 </body>
 </html>

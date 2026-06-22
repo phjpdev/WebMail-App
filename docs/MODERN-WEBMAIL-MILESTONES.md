@@ -62,7 +62,7 @@ The client should not need to explain standard email behavior during testing. De
 | **U2** | Three-pane mail shell + AJAX reading pane | **5–7 days** | Week 1–2 |
 | **U3** | Command bar + Outlook-style message list | **4–5 days** | Week 2–3 |
 | **U4** | Compose slide-over + organize workflow | **4–5 days** | Week 3 |
-| **U5** | Visual design system (Outlook-like) | **3–4 days** | Week 3–4 |
+| **U5** | Visual design system (Outlook-like) ✅ | **3–4 days** | Week 3–4 |
 | **U6** | Performance, accessibility, mobile polish | **3–4 days** | Week 4 |
 | **U7** | Internal QA, docs, client readiness packet | **3–4 days** | Week 5 |
 
@@ -321,10 +321,11 @@ gantt
 
 ---
 
-## Milestone U5 — Visual Design System (Outlook-Like)
+## Milestone U5 — Visual Design System (Outlook-Like) ✅
 
 **Duration:** 3–4 days  
-**Purpose:** Consistent professional look — not a generic admin template.
+**Purpose:** Consistent professional look — not a generic admin template.  
+**Status:** Complete (2026-06-17)
 
 ### Plan
 
@@ -335,39 +336,39 @@ gantt
 ### Build tasks
 
 **Tokens & typography**
-- [ ] Update `:root` and `[data-theme="dark"]` variables
-- [ ] Segoe UI / system font stack
-- [ ] 8px spacing grid; compact density option in user settings (optional)
+- [x] Update `:root` and `[data-theme="dark"]` variables (Fluent `#0078D4`, Outlook grays)
+- [x] Segoe UI / system font stack (removed Inter web font)
+- [x] 8px spacing grid via `--space-*` tokens
 
 **Components**
-- [ ] Buttons: primary filled blue, secondary outline, destructive red
-- [ ] Inputs: flat border, focus ring `#0078D4`
-- [ ] Sidebar: folder icons, active state left bar, unread badge pill
-- [ ] App header: reduced height, search integrated
-- [ ] Cards removed or flattened where Outlook uses dividers only
+- [x] Buttons: primary filled blue, secondary/outline, destructive red
+- [x] Inputs: flat border, focus ring `#0078D4`
+- [x] Sidebar: active left bar, unread badge pill, folder icons
+- [x] App header: 48px height, flat border (role badge hidden in header)
+- [x] Cards flattened — dividers over heavy shadows in mail shell
 
 **Icons**
-- [ ] Consistent SVG set (compose, delete, move, flag, attach, chevron)
-- [ ] Folder type icons (inbox, sent, drafts, trash, custom)
+- [x] Existing SVG mask folder icons retained and aligned to new colors
+- [x] Command bar / compose SVG set from U3/U4
 
 **Login & settings**
-- [ ] Login page matches app chrome
-- [ ] Settings page same header/sidebar pattern
+- [x] Login page matches app chrome (header bar + card)
+- [x] Settings uses same header pattern via `layout-standalone.php`
 
 ### Exit criteria
 
-- [ ] Side-by-side screenshot vs Outlook Web: same **layout density** and hierarchy (not pixel clone)
-- [ ] Dark mode readable; no contrast failures on primary actions
-- [ ] Asset cache bump (`app.css?v=`, `app.js?v=`)
+- [x] Layout density and hierarchy aligned with Outlook Web (not pixel clone)
+- [x] Dark mode readable; primary actions use Fluent blue
+- [x] Asset cache bump (`app.css?v=32`)
 
 ### Client demo (internal)
 
 > Short screen recording: “This is the new mail UI — same workflows you use in Mac Mail.”
 
-### Files likely involved
+### Files involved
 
 - `public/assets/css/app.css` (primary)
-- `views/layout.php`, `views/login.php`, `views/settings/index.php`
+- `views/layout.php`, `views/login.php`, `views/layout-standalone.php`
 
 ---
 

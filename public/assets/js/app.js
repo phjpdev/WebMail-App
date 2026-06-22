@@ -169,10 +169,14 @@
         return apiUrl('folder/' + b64 + '/message/' + uid + '/pane');
     }
 
-    function setSelectedRow(uid) {
-        document.querySelectorAll('.mail-row.is-selected, .mail-card.is-selected').forEach(function (el) {
-            el.classList.remove('is-selected');
+    function clearMailRowSelection() {
+        document.querySelectorAll('.mail-row.is-selected, .mail-card.is-selected, .mail-row.is-focused, .mail-card.is-focused').forEach(function (el) {
+            el.classList.remove('is-selected', 'is-focused');
         });
+    }
+
+    function setSelectedRow(uid) {
+        clearMailRowSelection();
         rowsForUid(uid).forEach(function (el) {
             el.classList.add('is-selected');
             el.classList.add('is-focused');
@@ -217,9 +221,7 @@
             bodyEl.innerHTML = '';
         }
         setPaneView('empty');
-        document.querySelectorAll('.mail-row.is-selected, .mail-card.is-selected').forEach(function (el) {
-            el.classList.remove('is-selected');
-        });
+        clearMailRowSelection();
     }
 
     function openMessageInPane(uid, pushHistory) {
@@ -1657,7 +1659,7 @@
                 var search = document.getElementById('mail-search');
                 if (search) search.focus();
             } else if (e.key === 'j' && idx < rows.length - 1) {
-                rows.forEach(function (r) { r.classList.remove('is-focused'); });
+                clearMailRowSelection();
                 var next = rows[idx + 1];
                 next.classList.add('is-focused');
                 next.scrollIntoView({ block: 'nearest' });
@@ -1666,7 +1668,7 @@
                     if (nextUid) openMessageInPane(nextUid, true);
                 }
             } else if (e.key === 'k' && idx > 0) {
-                rows.forEach(function (r) { r.classList.remove('is-focused'); });
+                clearMailRowSelection();
                 var prev = rows[idx - 1];
                 prev.classList.add('is-focused');
                 prev.scrollIntoView({ block: 'nearest' });
