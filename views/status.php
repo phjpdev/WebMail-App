@@ -22,7 +22,7 @@ ob_start();
 
     <p class="text-muted status-meta" id="status-checked-line">
         <?php if (!empty($lastCheckedAt)): ?>
-            Last live check: <?= e(date('g:i:s A', (int) $lastCheckedAt)) ?>
+            Last live check: <?= e(format_app_datetime((string) $lastCheckedAt, 'g:i:s A')) ?>
             <?php if (!empty($lastCheckMs)): ?>(<?= (int) $lastCheckMs ?> ms)<?php endif; ?>
         <?php else: ?>
             Running live connection test…

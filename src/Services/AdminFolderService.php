@@ -17,7 +17,17 @@ class AdminFolderService
             'SELECT f.*, u.name AS linked_user_name
              FROM folders f
              LEFT JOIN users u ON f.linked_user_id = u.id
-             ORDER BY f.folder_type, f.display_name'
+             ORDER BY CASE f.folder_type
+                 WHEN \'inbox\' THEN 1
+                 WHEN \'sent\' THEN 2
+                 WHEN \'other\' THEN 3
+                 WHEN \'spam\' THEN 4
+                 WHEN \'trash\' THEN 5
+                 WHEN \'employee\' THEN 6
+                 WHEN \'client\' THEN 7
+                 ELSE 8
+             END,
+             f.display_name'
         )->fetchAll();
     }
 
@@ -105,6 +115,20 @@ class AdminFolderService
     }
 
     /**
+     * Whether an admin may delete this folder (employee/client user folders only).
+     *
+     * @param array<string, mixed>|null $folder
+     */
+    public function isDeletable(?array $folder): bool
+    {
+        if ($folder === null) {
+            return false;
+        }
+
+        return in_array((string) ($folder['folder_type'] ?? ''), ['employee', 'client'], true);
+    }
+
+    /**
      * Remove a folder from the IMAP server (best effort) and the DB registry.
      * Filter rules targeting the folder are removed via ON DELETE CASCADE.
      */
@@ -115,17 +139,22 @@ class AdminFolderService
             return;
         }
 
-        $protected = ['INBOX', 'INBOX.Sent', 'INBOX.Drafts', 'INBOX.Trash', 'INBOX.Spam', 'INBOX.Junk'];
-        if (in_array($folder['imap_path'], $protected, true)) {
-            throw new \RuntimeException('System folders cannot be deleted.');
+        if (!$this->isDeletable($folder)) {
+            throw new \RuntimeException(
+                'Only user folders (employee or client) can be deleted. Inbox, Sent, Drafts, Trash, Spam, and other system folders are protected.'
+            );
         }
 
+        $imapPath = (string) $folder['imap_path'];
+
         $imap = new ImapService();
-        if ($imap->connect() && $imap->folderExistsOnServer($folder['imap_path'])) {
-            if (!$imap->deleteFolder($folder['imap_path'])) {
-                app_log('IMAP folder delete failed for ' . $folder['imap_path'] . ': ' . $imap->getLastError());
+        if ($imap->connect() && $imap->folderExistsOnServer($imapPath)) {
+            if (!$imap->deleteFolder($imapPath)) {
+                app_log('IMAP folder delete failed for ' . $imapPath . ': ' . $imap->getLastError());
             }
         }
+
+        MailCacheService::purgeFolder($imapPath);
 
         Database::query('UPDATE aliases SET default_folder_id = NULL WHERE default_folder_id = ?', [$id]);
         Database::query('DELETE FROM folders WHERE id = ?', [$id]);

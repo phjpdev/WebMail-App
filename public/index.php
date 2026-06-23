@@ -6,6 +6,7 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 require dirname(__DIR__) . '/src/helpers.php';
 
 bootstrapEnv(dirname(__DIR__));
+bootstrapAppTimezone();
 
 $config = config('app');
 if (!$config['debug']) {
@@ -145,6 +146,7 @@ $router->get('/admin/folders/create', fn () => $adminController->foldersCreate()
 $router->post('/admin/folders/store', fn () => $adminController->foldersStore());
 $router->get('/admin/folders/{id}/edit', fn ($p) => $adminController->foldersEdit($p));
 $router->post('/admin/folders/{id}/update', fn ($p) => $adminController->foldersUpdate($p));
+$router->post('/admin/folders/{id}/delete', fn ($p) => $adminController->foldersDelete($p));
 $router->get('/admin/rules', fn () => $adminController->rulesIndex());
 $router->get('/admin/rules/create', fn () => $adminController->rulesCreate());
 $router->post('/admin/rules/store', fn () => $adminController->rulesStore());

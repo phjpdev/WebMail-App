@@ -526,6 +526,39 @@ class AdminController
         redirect('admin/folders');
     }
 
+    /**
+     * @param array<string, string> $params
+     */
+    public function foldersDelete(array $params): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+        releaseSessionLock();
+
+        $id = (int) ($params['id'] ?? 0);
+        $folder = $this->folders->find($id);
+        if ($folder === null) {
+            flash('error', 'Folder not found.');
+            redirect('admin/folders');
+        }
+
+        if (!$this->folders->isDeletable($folder)) {
+            flash('error', 'This folder cannot be deleted. Only employee and client folders can be removed.');
+            redirect('admin/folders');
+        }
+
+        try {
+            $label = (string) ($folder['display_name'] ?? $folder['imap_path'] ?? '');
+            $this->folders->delete($id);
+            $this->audit('folder_delete', 'Deleted folder #' . $id . ' ' . $label);
+            flash('success', 'Folder deleted.');
+        } catch (\Throwable $e) {
+            flash('error', $e->getMessage());
+        }
+
+        redirect('admin/folders');
+    }
+
     private function normalizeFolderType(string $type): string
     {
         $allowed = ['client', 'company', 'employee', 'system'];

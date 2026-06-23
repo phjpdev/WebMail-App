@@ -854,6 +854,12 @@ a:hover {
 .data-table td a:not(.btn) {
     font-weight: 500;
     font-size: 0.8125rem;
+    color: var(--color-primary);
+    text-decoration: none;
+}
+
+.data-table td a:not(.btn):hover {
+    text-decoration: underline;
 }
 
 .mail-table .mail-row {
@@ -1231,17 +1237,43 @@ a:hover {
     flex-shrink: 0;
 }
 
+.mail-action-move-select-wrap,
+.mail-cmd-move-select-wrap {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.mail-action-move-select-wrap::after,
+.mail-cmd-move-select-wrap::after {
+    content: "";
+    position: absolute;
+    right: 0.45rem;
+    top: 50%;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-right: 1.5px solid var(--color-text-muted);
+    border-bottom: 1.5px solid var(--color-text-muted);
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+}
+
 .mail-action-move-select {
     max-width: 5.5rem;
+    width: 100%;
     font-size: 0.75rem;
-    padding: 0.35rem 0.35rem;
+    padding: 0.35rem 1.25rem 0.35rem 0.35rem;
     border: none;
     border-right: 1px solid var(--color-border-subtle);
     border-radius: 0;
-    background: transparent;
+    background: var(--color-surface-alt, var(--color-surface));
     color: var(--color-text);
     min-height: 2.25rem;
     font-family: inherit;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
 }
 
 .mail-action-btn--move {
@@ -1295,7 +1327,8 @@ a:hover {
     border-radius: var(--radius-sm);
     font-size: 0.8125rem;
     font-family: inherit;
-    background: #fff;
+    background: var(--color-surface);
+    color: var(--color-text);
 }
 
 .detail-list {
@@ -2062,6 +2095,7 @@ a:hover {
 
 /* Dark theme — Outlook dark grays */
 [data-theme="dark"] {
+    color-scheme: dark;
     --color-bg: #1b1a19;
     --color-surface: #252423;
     --color-surface-alt: #2d2c2b;
@@ -2927,13 +2961,13 @@ body.modal-open {
     top: -0.35rem;
     left: 100%;
     margin-left: 6px;
+    display: flex;
+    flex-direction: column;
     min-width: 212px;
     max-width: 260px;
-    max-height: 280px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
-    padding: 0.3rem;
+    max-height: min(320px, calc(100vh - 20px));
+    overflow: hidden;
+    padding: 0;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 10px;
@@ -2944,41 +2978,69 @@ body.modal-open {
     transition: opacity 0.12s ease, transform 0.12s ease;
     pointer-events: none;
     z-index: 2001;
+}
+
+.context-submenu-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0.25rem 0.3rem 0.35rem;
     scrollbar-width: thin;
     scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
 }
 
-.context-submenu::-webkit-scrollbar {
-    width: 4px;
+.context-submenu-scroll::-webkit-scrollbar {
+    width: 6px;
 }
 
-.context-submenu::-webkit-scrollbar-track {
+.context-submenu-scroll::-webkit-scrollbar-track {
     background: transparent;
-    margin: 4px 0;
+    margin: 2px 0;
 }
 
-.context-submenu::-webkit-scrollbar-thumb {
-    background: rgba(100, 116, 139, 0.3);
+.context-submenu-scroll::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.35);
     border-radius: 999px;
+    border: 1px solid transparent;
+    background-clip: padding-box;
 }
 
-.context-submenu::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 116, 139, 0.5);
+.context-submenu-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.55);
+    background-clip: padding-box;
+}
+
+.context-submenu::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 6px;
+    bottom: 0;
+    height: 18px;
+    border-radius: 0 0 10px 10px;
+    background: linear-gradient(to top, var(--color-surface) 30%, transparent);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.context-submenu.has-scroll:not(.is-scrolled-end)::after {
+    opacity: 1;
 }
 
 .context-submenu-header {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    padding: 0.35rem 0.6rem 0.3rem;
-    margin-bottom: 0.15rem;
+    flex-shrink: 0;
+    padding: 0.5rem 0.75rem 0.4rem;
     font-size: 0.6875rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--color-text-muted);
-    background: var(--color-surface);
+    background: var(--color-surface-alt, var(--color-surface));
     border-bottom: 1px solid var(--color-border-subtle);
+    border-radius: 10px 10px 0 0;
 }
 
 .context-submenu .context-submenu-item {
@@ -3417,24 +3479,42 @@ body:has(.mail-workspace) {
     overflow: hidden;
 }
 
+.mail-cmd-move-select-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 .mail-cmd-move-select {
+    width: 100%;
     min-width: 7.5rem;
     max-width: 13rem;
-    width: auto;
     font-size: 0.75rem;
     padding: 0.35rem 1.5rem 0.35rem 0.5rem;
     border: none;
     border-right: 1px solid var(--color-border-subtle);
     border-radius: 0;
-    background: transparent;
+    background: var(--color-surface-alt, var(--color-surface));
     color: var(--color-text);
     min-height: 2rem;
     text-overflow: ellipsis;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    font-family: inherit;
 }
 
 .mail-cmd-move-select:disabled {
     opacity: 0.38;
     cursor: not-allowed;
+}
+
+.mail-cmd-move-select option,
+.mail-action-move-select option,
+.move-form select option,
+.compose-form select option,
+.select-field select option {
+    background: var(--color-surface);
+    color: var(--color-text);
 }
 
 .mail-cmd-btn--move {
@@ -3496,6 +3576,39 @@ body:has(.mail-workspace) {
 [data-theme="dark"] .mail-cmd-btn:hover:not(:disabled),
 [data-theme="dark"] .mail-cmd-btn:focus-visible:not(:disabled) {
     background: var(--color-surface-alt, #2d2d2d);
+}
+
+[data-theme="dark"] .context-menu {
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .context-submenu {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .context-submenu-scroll {
+    scrollbar-color: rgba(161, 159, 157, 0.45) transparent;
+}
+
+[data-theme="dark"] .context-submenu-scroll::-webkit-scrollbar-thumb {
+    background: rgba(161, 159, 157, 0.4);
+    background-clip: padding-box;
+}
+
+[data-theme="dark"] .context-submenu-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(209, 208, 206, 0.55);
+    background-clip: padding-box;
+}
+
+[data-theme="dark"] .mail-cmd-move-select,
+[data-theme="dark"] .mail-action-move-select {
+    background: var(--color-surface-alt);
+}
+
+[data-theme="dark"] .mail-cmd-move-select:focus,
+[data-theme="dark"] .mail-action-move-select:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 1px var(--color-primary-subtle);
 }
 
 /* Outlook-style message rows (desktop list) */

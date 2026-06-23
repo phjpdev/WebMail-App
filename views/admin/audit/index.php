@@ -38,6 +38,7 @@
                     'alias_delete' => 'Alias delete',
                     'folder_create' => 'Folder create',
                     'folder_update' => 'Folder update',
+                    'folder_delete' => 'Folder delete',
                     'rule_create' => 'Rule create',
                     'rule_update' => 'Rule update',
                     'rule_toggle' => 'Rule toggle',
@@ -74,7 +75,7 @@
 
                 <tr>
 
-                    <td><?= e($entry['created_at']) ?></td>
+                    <td><?= e(format_app_datetime($entry['created_at'])) ?></td>
 
                     <td><?= e($entry['user_name'] ?? $entry['username'] ?? '—') ?></td>
 

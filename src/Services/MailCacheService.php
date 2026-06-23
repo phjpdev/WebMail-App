@@ -73,6 +73,18 @@ class MailCacheService
         return $row !== null;
     }
 
+    /** Drop all cached mail for a folder (after admin deletes the mailbox). */
+    public static function purgeFolder(string $folderPath): void
+    {
+        if ($folderPath === '') {
+            return;
+        }
+
+        Database::query('DELETE FROM mail_index WHERE folder_path = ?', [$folderPath]);
+        Database::query('DELETE FROM mail_bodies WHERE folder_path = ?', [$folderPath]);
+        Database::query('DELETE FROM mail_sync_state WHERE folder_path = ?', [$folderPath]);
+    }
+
     public static function isStale(string $folderPath): bool
     {
         $state = self::getSyncState($folderPath);
@@ -647,15 +659,8 @@ class MailCacheService
 
     private static function parseMsgDate(mixed $date): ?string
     {
-        if ($date === null || $date === '') {
-            return null;
-        }
+        $dt = to_app_datetime($date);
 
-        $ts = is_numeric($date) ? (int) $date : strtotime((string) $date);
-        if ($ts === false || $ts <= 0) {
-            return null;
-        }
-
-        return date('Y-m-d H:i:s', $ts);
+        return $dt?->format('Y-m-d H:i:s');
     }
 }

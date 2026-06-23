@@ -70,12 +70,14 @@ $isFlagged = !empty($message['flagged']);
     <?php if (!empty($moveTargets)): ?>
     <form class="mail-action-move move-form" onsubmit="return false;">
         <label class="sr-only" for="read-move-target-<?= $uid ?>">Move to folder</label>
-        <select id="read-move-target-<?= $uid ?>" name="target_folder" class="mail-action-move-select" required aria-label="Move to folder">
-            <option value="">Move to…</option>
-            <?php foreach ($moveTargets as $target): ?>
-                <option value="<?= e($target['path']) ?>"><?= e($target['name']) ?></option>
-            <?php endforeach; ?>
-        </select>
+        <div class="mail-action-move-select-wrap">
+            <select id="read-move-target-<?= $uid ?>" name="target_folder" class="mail-action-move-select" required aria-label="Move to folder">
+                <option value="">Move to…</option>
+                <?php foreach ($moveTargets as $target): ?>
+                    <option value="<?= e($target['path']) ?>"><?= e($target['name']) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
         <button type="button" class="mail-action-btn mail-action-btn--move" data-mail-action="move" title="Move" aria-label="Move to folder">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h5l2 3h11v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7z"/><path d="M9 12h7"/><path d="M13 9l3 3-3 3"/></svg>
             <span class="mail-action-label">Move</span>
@@ -92,7 +94,7 @@ $isFlagged = !empty($message['flagged']);
     <dt>Cc</dt><dd><?= e($message['cc']) ?></dd>
     <?php endif; ?>
     <dt>Delivered-To</dt><dd><?= e($message['delivered_to'] ?? '—') ?></dd>
-    <dt>Date</dt><dd><?= e($message['date'] ?? '—') ?></dd>
+    <dt>Date</dt><dd><?= e(format_mail_datetime($message['date'] ?? '') ?: '—') ?></dd>
     <dt>Reply as</dt><dd><code><?= e($replyFrom) ?></code></dd>
 </dl>
 

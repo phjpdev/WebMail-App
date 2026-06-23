@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 return [
     'name' => env('APP_NAME', 'D&J Webmail'),
+    'timezone' => env('APP_TIMEZONE', 'America/New_York'),
     'url' => app_base_url(),
     'debug' => filter_var(env('APP_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN),
     'session_lifetime' => (int) env('SESSION_LIFETIME', 28800),

@@ -619,33 +619,110 @@ function resolve_system_folder(array $keywords, string $default): string
     return $default;
 }
 
+function app_timezone(): string
+{
+    static $tz = null;
+
+    if ($tz === null) {
+        $tz = (string) (config('app')['timezone'] ?? 'America/New_York');
+    }
+
+    return $tz;
+}
+
+function app_timezone_object(): \DateTimeZone
+{
+    static $zone = null;
+
+    if ($zone === null) {
+        $zone = new \DateTimeZone(app_timezone());
+    }
+
+    return $zone;
+}
+
+function bootstrapAppTimezone(): void
+{
+    date_default_timezone_set(app_timezone());
+}
+
+/**
+ * Parse a mail or DB datetime into the application timezone (EST/EDT).
+ */
+function to_app_datetime(mixed $date): ?\DateTimeImmutable
+{
+    if ($date === null || $date === '') {
+        return null;
+    }
+
+    if (is_numeric($date)) {
+        $ts = (int) $date;
+        if ($ts <= 0) {
+            return null;
+        }
+
+        return (new \DateTimeImmutable('@' . $ts))->setTimezone(app_timezone_object());
+    }
+
+    $value = trim((string) $date);
+    if ($value === '') {
+        return null;
+    }
+
+    try {
+        return (new \DateTimeImmutable($value))->setTimezone(app_timezone_object());
+    } catch (\Exception) {
+        $ts = strtotime($value);
+        if ($ts === false || $ts <= 0) {
+            return null;
+        }
+
+        return (new \DateTimeImmutable('@' . $ts))->setTimezone(app_timezone_object());
+    }
+}
+
+function format_app_datetime(?string $date, string $format = 'Y-m-d H:i:s'): string
+{
+    $dt = to_app_datetime($date);
+    if ($dt === null) {
+        return $date ?? '';
+    }
+
+    return $dt->format($format);
+}
+
+function format_mail_datetime(?string $date): string
+{
+    return format_app_datetime($date, 'Y-m-d H:i:s');
+}
+
 function format_mail_date(?string $date): string
 {
     if ($date === null || $date === '') {
         return '';
     }
 
-    $ts = strtotime($date);
-    if ($ts === false) {
+    $dt = to_app_datetime($date);
+    if ($dt === null) {
         return $date;
     }
 
-    $now = time();
-    $diff = $now - $ts;
+    $now = new \DateTimeImmutable('now', app_timezone_object());
+    $diff = $now->getTimestamp() - $dt->getTimestamp();
 
-    if ($diff < 86400 && date('Y-m-d', $ts) === date('Y-m-d', $now)) {
-        return date('g:i A', $ts);
+    if ($diff < 86400 && $dt->format('Y-m-d') === $now->format('Y-m-d')) {
+        return $dt->format('g:i A');
     }
 
     if ($diff < 604800) {
-        return date('D g:i A', $ts);
+        return $dt->format('D g:i A');
     }
 
-    if (date('Y', $ts) === date('Y', $now)) {
-        return date('M j', $ts);
+    if ($dt->format('Y') === $now->format('Y')) {
+        return $dt->format('M j');
     }
 
-    return date('M j, Y', $ts);
+    return $dt->format('M j, Y');
 }
 
 function folder_icon_type(string $path): string

@@ -3030,6 +3030,9 @@
             header.textContent = 'Choose folder';
             sub.appendChild(header);
 
+            var scroll = document.createElement('div');
+            scroll.className = 'context-submenu-scroll';
+
             folders.forEach(function (f) {
                 var b = document.createElement('button');
                 b.type = 'button';
@@ -3041,23 +3044,46 @@
                     hide();
                     onPick(f);
                 });
-                sub.appendChild(b);
+                scroll.appendChild(b);
             });
+            sub.appendChild(scroll);
+
+            function updateScrollState() {
+                var canScroll = scroll.scrollHeight > scroll.clientHeight + 2;
+                sub.classList.toggle('has-scroll', canScroll);
+                sub.classList.toggle('is-scrolled', scroll.scrollTop > 4);
+                sub.classList.toggle('is-scrolled-end', scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4);
+            }
+
+            scroll.addEventListener('scroll', updateScrollState, { passive: true });
             item.appendChild(sub);
 
             function place() {
                 sub.classList.remove('flip-left');
                 var rect = item.getBoundingClientRect();
-                var subW = sub.offsetWidth || 200;
+                var subW = sub.offsetWidth || 212;
                 if (rect.right + subW + 8 > window.innerWidth) {
                     sub.classList.add('flip-left');
                 }
-                sub.style.top = '';
-                var subH = sub.offsetHeight;
-                var overflowBottom = (rect.top + subH + 8) - window.innerHeight;
+
+                sub.style.top = '0';
+                var margin = 10;
+                var headerEl = sub.querySelector('.context-submenu-header');
+                var headerH = headerEl ? headerEl.offsetHeight : 0;
+                var maxSubH = Math.min(320, window.innerHeight - margin * 2);
+                sub.style.maxHeight = maxSubH + 'px';
+                scroll.style.maxHeight = Math.max(120, maxSubH - headerH) + 'px';
+
+                var subRect = sub.getBoundingClientRect();
+                var overflowBottom = subRect.bottom - (window.innerHeight - margin);
+                var overflowTop = margin - subRect.top;
                 if (overflowBottom > 0) {
-                    sub.style.top = (-overflowBottom - 4) + 'px';
+                    sub.style.top = (-overflowBottom) + 'px';
+                } else if (overflowTop > 0) {
+                    sub.style.top = overflowTop + 'px';
                 }
+
+                updateScrollState();
             }
             item.addEventListener('mouseenter', place);
             item.addEventListener('focus', place);
