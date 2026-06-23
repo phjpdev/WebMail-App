@@ -3440,6 +3440,33 @@ body:has(.mail-workspace) {
     white-space: nowrap;
 }
 
+.mail-select-all-banner {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+    background: var(--color-surface-alt, #f5f6f8);
+    border-bottom: 1px solid var(--color-border-subtle);
+    text-align: center;
+}
+
+.mail-select-all-banner button {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--color-primary, #2563eb);
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.mail-select-all-banner button:hover {
+    color: var(--color-primary-hover, #1d4ed8);
+}
+
+[data-theme="dark"] .mail-select-all-banner {
+    background: var(--color-surface-alt, #2d2d2d);
+}
+
 [data-theme="dark"] .mail-cmd-btn:hover:not(:disabled),
 [data-theme="dark"] .mail-cmd-btn:focus-visible:not(:disabled) {
     background: var(--color-surface-alt, #2d2d2d);
@@ -3947,6 +3974,39 @@ body:has(.mail-workspace) {
     padding: 1rem 1.25rem;
     background: var(--color-surface);
     overflow: hidden;
+}
+
+.pane-preview-from {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 0.35rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pane-preview-subject {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 1rem;
+    line-height: 1.35;
+}
+
+.pane-preview-body {
+    min-height: 8rem;
+}
+
+.pane-preview-shimmer {
+    display: block;
+    height: 0.75rem;
+    width: 92%;
+    margin-bottom: 0.5rem;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(90deg, var(--color-surface-alt) 25%, var(--color-border-subtle) 50%, var(--color-surface-alt) 75%);
+    background-size: 200% 100%;
+    animation: pane-shimmer 1.2s ease-in-out infinite;
 }
 
 .pane-skeleton-toolbar {

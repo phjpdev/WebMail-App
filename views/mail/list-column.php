@@ -75,9 +75,12 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     data-folder-path="<?= e(encode_folder_path($folderPath)) ?>"
     data-folder-plain="<?= e($folderPath) ?>"
     data-folder-url="<?= e(folder_url($folderPath)) ?>"
-    data-folder-kind="<?= e(folder_icon_type($folderPath)) ?>">
+    data-folder-kind="<?= e(folder_icon_type($folderPath)) ?>"
+    data-total-messages="<?= (int) $totalMessages ?>">
 
     <?php require base_path('views/partials/mail-toolbar.php'); ?>
+
+    <div class="mail-select-all-banner" id="select-all-folder-banner" hidden></div>
 
     <?php if (empty($messages)): ?>
     <div id="mail-list-empty" class="empty-state">

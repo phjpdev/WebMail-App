@@ -50,6 +50,7 @@ class MailController
     public function folderFragment(array $params): void
     {
         requireAuth();
+        releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
         $folderPath = decode_folder_path($params['folderB64'] ?? '');
@@ -64,7 +65,7 @@ class MailController
             return;
         }
 
-        $context = $this->buildFolderListContext($folderPath, $params);
+        $context = $this->buildFolderListContext($folderPath, $params, ajaxFast: true);
         if ($context === null) {
             http_response_code(404);
             echo json_encode(['ok' => false, 'error' => 'Folder not found']);
@@ -86,13 +87,20 @@ class MailController
      * @param array<string, string> $params
      * @return array<string, mixed>|null
      */
-    private function buildFolderListContext(string $folderPath, array $params): ?array
+    private function buildFolderListContext(string $folderPath, array $params, bool $ajaxFast = false): ?array
     {
+        $forceRefresh = ($params['refresh'] ?? $_GET['refresh'] ?? '') === '1';
+        $fastOpen = $ajaxFast && !$forceRefresh;
+
         FolderCache::load(skipUnreadRefresh: true);
-        $filterResult = $this->maybeRunFilter($folderPath, false);
-        if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
-            FolderCache::syncUnreadBadges($folderPath);
+
+        if (!$fastOpen) {
+            $filterResult = $this->maybeRunFilter($folderPath, $forceRefresh);
+            if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
+                FolderCache::syncUnreadBadges($folderPath);
+            }
         }
+
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
@@ -107,16 +115,31 @@ class MailController
 
         $perPage = mail_per_page();
         $list = ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => $perPage, 'total_pages' => 0];
+        $servedFromCache = false;
 
-        if ($imapConnected) {
+        if ($imapConnected && $query === '') {
+            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            if ($cached !== null && ($fastOpen || !$forceRefresh)) {
+                $list = $cached;
+                $list['from_cache'] = true;
+                $servedFromCache = true;
+            }
+        }
+
+        if ($imapConnected && !$servedFromCache) {
             $imap = new ImapService();
             if ($imap->connect()) {
-                $list = $this->fetchFolderList($folderPath, $page, $perPage, $query, $imap);
-                MailCacheService::reconcileFolderBadge($imap, $folderPath);
-                if (!empty($list['from_cache'])) {
-                    $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
-                    if ($refreshed !== null) {
-                        $list = $refreshed;
+                $list = $this->fetchFolderList($folderPath, $page, $perPage, $query, $imap, $forceRefresh);
+                if ($forceRefresh) {
+                    $sessionBadge = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
+                    if ($sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath)) {
+                        MailCacheService::reconcileFolderBadge($imap, $folderPath);
+                        if (!empty($list['from_cache'])) {
+                            $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
+                            if ($refreshed !== null) {
+                                $list = $refreshed;
+                            }
+                        }
                     }
                 }
                 $folderData = FolderCache::load(skipUnreadRefresh: true);
@@ -177,18 +200,20 @@ class MailController
     /**
      * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int, from_cache?: bool}
      */
-    private function fetchFolderList(string $folderPath, int $page, int $perPage, string $query, ImapService $imap): array
-    {
-        if ($query === '') {
+    private function fetchFolderList(
+        string $folderPath,
+        int $page,
+        int $perPage,
+        string $query,
+        ImapService $imap,
+        bool $forceRefresh = false,
+    ): array {
+        if ($query === '' && !$forceRefresh) {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
             if ($cached !== null) {
-                MailCacheService::refreshHeadersIfNeeded($imap, $folderPath);
-                $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
-                if ($refreshed !== null && !MailCacheService::badgeAheadOfIndex($folderPath)) {
-                    $refreshed['from_cache'] = true;
+                $cached['from_cache'] = true;
 
-                    return $refreshed;
-                }
+                return $cached;
             }
         }
 
@@ -304,10 +329,6 @@ class MailController
             if (!MailCacheService::badgeAheadOfIndex($folderPath)) {
                 $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
                 if ($cached !== null) {
-                    $imap = new ImapService();
-                    if ($imap->connect()) {
-                        MailCacheService::reconcileFolderBadge($imap, $folderPath);
-                    }
                     $this->echoFolderSyncJson($folderPath, $cached);
                     return;
                 }
@@ -316,7 +337,7 @@ class MailController
 
         $forceFilter = ($_GET['force'] ?? '') === '1';
 
-        if (!$light) {
+        if (!$light || $forceFilter) {
             $filterResult = $this->maybeRunFilter($folderPath, $forceFilter);
             if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
                 FolderCache::syncUnreadBadges($folderPath);
@@ -332,12 +353,14 @@ class MailController
 
         $list = null;
 
-        if ($query === '' && $page === 1 && !$light && MailCacheService::isStale($folderPath)) {
-            MailCacheService::syncFolderHeaders($imap, $folderPath);
-            $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
+        if ($query === '' && $page === 1 && !$light) {
+            if ($forceFilter || MailCacheService::isStale($folderPath)) {
+                MailCacheService::syncFolderHeaders($imap, $folderPath);
+                $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            }
         }
 
-        if ($list === null) {
+        if ($list === null || $forceFilter) {
             $list = $query !== ''
                 ? $imap->searchMessages($folderPath, $query, $page, $perPage)
                 : $imap->listMessages($folderPath, $page, $perPage);
@@ -347,7 +370,12 @@ class MailController
             }
         }
 
-        MailCacheService::reconcileFolderBadge($imap, $folderPath);
+        if (!$light || $forceFilter) {
+            $sessionBadge = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            if ($forceFilter || $sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath)) {
+                MailCacheService::reconcileFolderBadge($imap, $folderPath);
+            }
+        }
         if ($query === '') {
             $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
             if ($refreshed !== null) {
@@ -398,15 +426,20 @@ class MailController
         header('Content-Type: application/json; charset=utf-8');
 
         // Route INBOX mail to target folders before refreshing badge counts.
-        FilterService::runBeforeMailList();
+        FilterService::runBackground(false);
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
         $imap = new ImapService();
         if ($imap->connect()) {
+            $reconciled = 0;
             foreach ($folderData['folders'] ?? [] as $folder) {
+                if ($reconciled >= 3) {
+                    break;
+                }
                 $path = $folder['path'];
                 if ((int) ($folderData['unread_counts'][$path] ?? 0) > 0) {
                     MailCacheService::reconcileFolderBadge($imap, $path);
+                    $reconciled++;
                 }
             }
             $folderData = FolderCache::load(skipUnreadRefresh: true);
@@ -507,7 +540,8 @@ class MailController
         }
 
         $prefetch = ($_GET['prefetch'] ?? '') === '1';
-        $context = $this->loadMessageContext($folderPath, $uid, markRead: !$prefetch);
+        $deferred = null;
+        $context = $this->loadMessageContext($folderPath, $uid, markRead: !$prefetch, deferred: $deferred);
         if ($context === null) {
             http_response_code(404);
             echo json_encode(['ok' => false, 'error' => 'Message not found']);
@@ -526,6 +560,13 @@ class MailController
             'unread_counts' => $context['unreadCounts'],
             'folder_unread' => (int) ($context['unreadCounts'][$folderPath] ?? 0),
         ]);
+
+        if ($deferred !== null) {
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            }
+            $deferred();
+        }
     }
 
     /**
@@ -584,7 +625,7 @@ class MailController
      *     wasUnread: bool
      * }|null
      */
-    private function loadMessageContext(string $folderPath, int $uid, bool $markRead = true): ?array
+    private function loadMessageContext(string $folderPath, int $uid, bool $markRead = true, ?callable &$deferred = null): ?array
     {
         assert_folder_access($folderPath);
 
@@ -592,31 +633,81 @@ class MailController
         $folders = $folderData['folders'];
         $unreadCounts = $folderData['unread_counts'] ?? [];
 
+        $message = MailCacheService::getBody($folderPath, $uid);
+        if ($message !== null) {
+            return $this->assembleMessageContext(
+                $folderPath,
+                $folders,
+                $unreadCounts,
+                $message,
+                $uid,
+                $markRead,
+                $deferred,
+            );
+        }
+
         $imap = new ImapService();
         if (!$imap->connect()) {
             return null;
         }
 
-        $message = MailCacheService::getBody($folderPath, $uid);
-
+        $message = $imap->getMessageByUid($folderPath, $uid);
         if ($message === null) {
-            $message = $imap->getMessageByUid($folderPath, $uid);
-            if ($message === null) {
-                return null;
-            }
-            MailCacheService::saveBody($folderPath, $message);
+            return null;
         }
 
-        $wasUnread = !$imap->isSeen($folderPath, $uid);
+        MailCacheService::saveBody($folderPath, $message);
+
+        return $this->assembleMessageContext(
+            $folderPath,
+            $folders,
+            $unreadCounts,
+            $message,
+            $uid,
+            $markRead,
+            $deferred,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $message
+     * @param array<string, int> $unreadCounts
+     * @param list<array{path: string, name: string, delimiter?: string}> $folders
+     * @return array{
+     *     folderPath: string,
+     *     folderB64: string,
+     *     folders: list<array{path: string, name: string, delimiter?: string}>,
+     *     unreadCounts: array<string, int>,
+     *     message: array<string, mixed>,
+     *     sanitizedHtml: string,
+     *     replyFrom: string|null,
+     *     moveTargets: list<array{path: string, name: string}>,
+     *     pollInterval: int,
+     *     wasUnread: bool
+     * }|null
+     */
+    private function assembleMessageContext(
+        string $folderPath,
+        array $folders,
+        array $unreadCounts,
+        array $message,
+        int $uid,
+        bool $markRead,
+        ?callable &$deferred,
+    ): ?array {
+        $wasUnread = empty($message['seen']);
+
         if ($wasUnread && $markRead) {
-            $imap->markSeen($folderPath, $uid);
             $message['seen'] = true;
             MailCacheService::updateIndexSeen($folderPath, $uid, true);
-        }
+            $unreadCounts = FolderCache::bumpUnread($folderPath, -1);
 
-        if ($markRead) {
-            MailCacheService::reconcileFolderBadge($imap, $folderPath);
-            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+            $deferred = static function () use ($folderPath, $uid): void {
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    $imap->markSeen($folderPath, $uid);
+                }
+            };
         }
 
         $aliasService = new AliasService();
@@ -757,6 +848,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
@@ -775,6 +867,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
@@ -796,11 +889,11 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
-        $uids = array_map('intval', $_POST['uids'] ?? []);
-        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
         $targetPath = $_POST['target_folder'] ?? '';
+        $uids = $this->resolveBulkUids($folderPath);
 
         if ($folderPath === '' || $uids === [] || $targetPath === '') {
             flash('error', 'Invalid bulk move request.');
@@ -816,10 +909,10 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
-        $uids = array_map('intval', $_POST['uids'] ?? []);
-        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+        $uids = $this->resolveBulkUids($folderPath);
 
         if ($folderPath === '' || $uids === []) {
             flash('error', 'Invalid bulk delete request.');
@@ -839,6 +932,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setSeenFlag(true);
     }
 
@@ -846,6 +940,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setSeenFlag(false);
     }
 
@@ -853,6 +948,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setFlaggedFlag(true);
     }
 
@@ -860,6 +956,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setFlaggedFlag(false);
     }
 
@@ -867,6 +964,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
@@ -883,6 +981,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setSeenFlagBulk(true);
     }
 
@@ -890,6 +989,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setSeenFlagBulk(false);
     }
 
@@ -897,6 +997,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setFlaggedFlagBulk(true);
     }
 
@@ -904,6 +1005,7 @@ class MailController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
         $this->setFlaggedFlagBulk(false);
     }
 
@@ -917,6 +1019,11 @@ class MailController
             $this->actionError($imap->getLastError(), $redirect);
         }
 
+        $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
+        if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
+            $unreadDelta = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        }
+
         $folders = FolderCache::load()['folders'];
         if (!$this->folderExists($folders, $targetPath)) {
             // Standard destinations like Trash/Spam may not exist yet on a fresh
@@ -927,21 +1034,17 @@ class MailController
             (new FolderCache())->clear();
         }
 
-        $moved = 0;
-        $errors = 0;
-        foreach ($uids as $uid) {
-            if ($imap->moveMessage($folderPath, $uid, $targetPath)) {
-                $moved++;
-                MailCacheService::removeMessage($folderPath, $uid);
-            } else {
-                $errors++;
-            }
+        $result = $imap->moveMessages($folderPath, $uids, $targetPath);
+        $moved = (int) ($result['moved'] ?? 0);
+        $errors = (int) ($result['errors'] ?? 0);
+        $movedUids = $result['uids'] ?? [];
+
+        if ($movedUids !== []) {
+            MailCacheService::removeMessages($folderPath, $movedUids);
         }
 
         if (wants_json()) {
-            // The client tells us how many of the moved messages were unread so
-            // we can adjust both folder badges without a costly status sweep.
-            $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
+            $unreadDelta = min($unreadDelta, $moved);
             if ($unreadDelta > 0 && $moved > 0) {
                 FolderCache::bumpUnread($folderPath, -$unreadDelta);
                 $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
@@ -953,7 +1056,7 @@ class MailController
                 'ok' => $moved > 0,
                 'moved' => $moved,
                 'errors' => $errors,
-                'uids' => array_values($uids),
+                'uids' => array_values($movedUids),
                 'target' => $targetPath,
                 'unread_counts' => $counts,
             ], $moved > 0 ? 200 : 422);
@@ -982,19 +1085,22 @@ class MailController
             $this->actionError($imap->getLastError(), $redirect);
         }
 
-        $deleted = 0;
-        $errors = 0;
-        foreach ($uids as $uid) {
-            if ($imap->deleteMessage($folderPath, $uid)) {
-                $deleted++;
-                MailCacheService::removeMessage($folderPath, $uid);
-            } else {
-                $errors++;
-            }
+        $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
+        if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
+            $unreadDelta = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        }
+
+        $result = $imap->deleteMessages($folderPath, $uids);
+        $deleted = (int) ($result['deleted'] ?? 0);
+        $errors = (int) ($result['errors'] ?? 0);
+        $deletedUids = $result['uids'] ?? [];
+
+        if ($deletedUids !== []) {
+            MailCacheService::removeMessages($folderPath, $deletedUids);
         }
 
         if (wants_json()) {
-            $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
+            $unreadDelta = min($unreadDelta, $deleted);
             if ($unreadDelta > 0 && $deleted > 0) {
                 $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
             } else {
@@ -1005,7 +1111,7 @@ class MailController
                 'ok' => $deleted > 0,
                 'deleted' => $deleted,
                 'errors' => $errors,
-                'uids' => array_values($uids),
+                'uids' => array_values($deletedUids),
                 'unread_counts' => $counts,
             ], $deleted > 0 ? 200 : 422);
         }
@@ -1020,6 +1126,35 @@ class MailController
         }
 
         redirect($redirect);
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function resolveBulkUids(string $folderPath): array
+    {
+        if (($_POST['all_in_folder'] ?? '') === '1') {
+            if ($folderPath === '') {
+                return [];
+            }
+
+            $searchQuery = trim($_POST['q'] ?? '');
+            $cached = MailCacheService::folderMessageUids($folderPath, $searchQuery);
+            if ($cached !== []) {
+                return $cached;
+            }
+
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                return [];
+            }
+
+            return $imap->allMessageUids($folderPath, $searchQuery);
+        }
+
+        $uids = array_map('intval', $_POST['uids'] ?? []);
+
+        return array_values(array_filter($uids, fn ($u) => $u > 0));
     }
 
     private function actionError(string $message, string $redirect): never
@@ -1037,16 +1172,7 @@ class MailController
      */
     private function unreadCountsAfterSeenChange(string $folderPath, int $seenDelta = 0): array
     {
-        if ($seenDelta !== 0) {
-            return FolderCache::bumpUnread($folderPath, $seenDelta);
-        }
-
-        $imap = new ImapService();
-        if ($imap->connect()) {
-            MailCacheService::reconcileFolderBadge($imap, $folderPath);
-        }
-
-        return FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+        return FolderCache::bumpUnread($folderPath, $seenDelta);
     }
 
     private function setSeenFlag(bool $seen): void
@@ -1132,8 +1258,7 @@ class MailController
     private function setSeenFlagBulk(bool $seen): void
     {
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
-        $uids = array_map('intval', $_POST['uids'] ?? []);
-        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+        $uids = $this->resolveBulkUids($folderPath);
         $redirect = 'folder/' . encode_folder_path($folderPath ?: 'INBOX');
 
         if ($folderPath === '' || $uids === []) {
@@ -1168,8 +1293,7 @@ class MailController
     private function setFlaggedFlagBulk(bool $flagged): void
     {
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
-        $uids = array_map('intval', $_POST['uids'] ?? []);
-        $uids = array_values(array_filter($uids, fn ($u) => $u > 0));
+        $uids = $this->resolveBulkUids($folderPath);
         $redirect = 'folder/' . encode_folder_path($folderPath ?: 'INBOX');
 
         if ($folderPath === '' || $uids === []) {

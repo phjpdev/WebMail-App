@@ -23,24 +23,28 @@ class ComposeController
     public function compose(): void
     {
         requireAuth();
+        releaseSessionLock();
         $this->showForm('compose', $this->defaultComposeData());
     }
 
     public function reply(): void
     {
         requireAuth();
+        releaseSessionLock();
         $this->loadMessageForm('reply');
     }
 
     public function replyAll(): void
     {
         requireAuth();
+        releaseSessionLock();
         $this->loadMessageForm('reply-all');
     }
 
     public function forward(): void
     {
         requireAuth();
+        releaseSessionLock();
         $this->loadMessageForm('forward');
     }
 
@@ -48,6 +52,7 @@ class ComposeController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $fromEmail = trim($_POST['from_email'] ?? config('mail')['mailbox_email']);
         $to = trim($_POST['to'] ?? '');
@@ -85,6 +90,7 @@ class ComposeController
     {
         requireAuth();
         verify_csrf_or_fail();
+        releaseSessionLock();
 
         $mode = $_POST['mode'] ?? 'compose';
         $to = trim($_POST['to'] ?? '');
@@ -252,16 +258,14 @@ class ComposeController
         }
         assert_folder_access($folderPath);
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            flash('error', $imap->getLastError());
-            redirect('folder/' . encode_folder_path($folderPath));
-        }
-
-        $message = $imap->getMessageByUid($folderPath, $uid);
+        $message = MailCacheService::getBody($folderPath, $uid);
         if ($message === null) {
-            flash('error', 'Message not found.');
-            redirect('folder/' . encode_folder_path($folderPath));
+            $message = $imap->getMessageByUid($folderPath, $uid);
+            if ($message === null) {
+                flash('error', 'Message not found.');
+                redirect('folder/' . encode_folder_path($folderPath));
+            }
+            MailCacheService::saveBody($folderPath, $message);
         }
 
         $aliasService = new AliasService();
@@ -334,6 +338,7 @@ class ComposeController
     public function editDraft(): void
     {
         requireAuth();
+        releaseSessionLock();
 
         $folderPath = decode_folder_path($_GET['folder'] ?? '');
         $uid = (int) ($_GET['uid'] ?? 0);
@@ -789,38 +794,23 @@ class ComposeController
     }
 
     /**
-     * Route new INBOX mail to target folders and refresh sidebar badges for the
-     * folder the user is working in (compose, reply, or send-as alias).
+     * Post-send sync: route new INBOX mail and refresh the working folder list.
+     * Kept short (filter cap + one folder header sync) so Send stays responsive.
      *
      * @return array{context_folder: string, sent_folder: string, unread_counts: array<string, int>}
      */
     private function syncMailboxAfterSend(string $fromEmail, string $returnFolder, string $folderPath, string $sentFolder): array
     {
-        FilterService::runBeforeMailList();
-
-        $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
-        $aliasFolder = folder_for_alias_email($fromEmail);
+        $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
 
-        $paths = array_values(array_unique(array_filter([
-            $inbox,
-            $contextFolder,
-            $folderPath,
-            $aliasFolder,
-        ])));
+        FilterService::runBackground(true, 8);
 
         $imap = new ImapService();
         if ($imap->connect()) {
-            $imap->clearRecentSelfSentCopies($paths, $fromEmail);
+            $scanPaths = array_values(array_unique(array_filter([$contextFolder, $inbox])));
+            $imap->clearRecentSelfSentCopies($scanPaths, $fromEmail, 6);
 
-            foreach ($paths as $path) {
-                if ($path === '') {
-                    continue;
-                }
-                $imap->removeDuplicateDeliveries($path);
-            }
-
-            // Keep the thread message read after a reply (some hosts flip \\Seen).
             $replyUid = (int) ($_POST['uid'] ?? 0);
             $mode = (string) ($_POST['mode'] ?? '');
             if (
@@ -833,17 +823,28 @@ class ComposeController
                 MailCacheService::updateIndexSeen($folderPath, $replyUid, true);
             }
 
-            foreach ($paths as $path) {
-                if ($path === '') {
-                    continue;
-                }
-                MailCacheService::reconcileFolderBadge($imap, $path);
-                try {
-                    MailCacheService::syncFolderHeaders($imap, $path);
-                } catch (\Throwable $e) {
-                    app_log('Mail cache sync after send failed for ' . $path . ': ' . $e->getMessage());
-                }
+            if ($contextFolder !== '') {
+                $imap->removeDuplicateDeliveries($contextFolder, 12);
+                MailCacheService::syncFolderHeaders(
+                    $imap,
+                    $contextFolder,
+                    (int) (config('app')['mail_cache_post_send_limit'] ?? 60)
+                );
+                MailCacheService::reconcileFolderBadge($imap, $contextFolder);
             }
+
+            if ($sentFolder !== '') {
+                MailCacheService::syncFolderHeaders(
+                    $imap,
+                    $sentFolder,
+                    (int) (config('app')['mail_cache_post_send_limit'] ?? 60)
+                );
+            }
+
+            FolderCache::refreshPaths(array_values(array_unique(array_filter([
+                $contextFolder,
+                $sentFolder,
+            ]))));
         }
 
         return [

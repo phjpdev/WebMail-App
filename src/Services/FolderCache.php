@@ -214,26 +214,13 @@ class FolderCache
         }
 
         $imapCounts = $imap->getFolderUnreadCounts($paths);
-        foreach ($paths as $path) {
-            if (($imapCounts[$path] ?? 0) > 0) {
-                MailCacheService::reconcileFolderBadge($imap, $path);
-            } else {
-                $data['unread_counts'][$path] = 0;
-            }
-        }
+        $data['unread_counts'] = array_merge(
+            $data['unread_counts'] ?? [],
+            $imapCounts
+        );
 
         if (isset($_SESSION[self::SESSION_KEY])) {
-            $merged = array_merge(
-                $data['unread_counts'] ?? [],
-                $_SESSION[self::SESSION_KEY]['unread_counts'] ?? []
-            );
-            foreach ($paths as $path) {
-                if (($imapCounts[$path] ?? 0) === 0) {
-                    $merged[$path] = 0;
-                }
-            }
-            $_SESSION[self::SESSION_KEY]['unread_counts'] = $merged;
-            $data['unread_counts'] = $merged;
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = $data['unread_counts'];
             $_SESSION[self::SESSION_KEY]['unread_expires'] = time() + self::UNREAD_TTL;
         }
 

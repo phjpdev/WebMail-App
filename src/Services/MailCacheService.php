@@ -399,9 +399,56 @@ class MailCacheService
      */
     public static function removeMessages(string $folderPath, array $uids): void
     {
-        foreach ($uids as $uid) {
-            self::removeMessage($folderPath, (int) $uid);
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
+        if ($uids === []) {
+            return;
         }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$folderPath], $uids);
+        Database::query(
+            "DELETE FROM mail_index WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        );
+        Database::query(
+            "DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        );
+    }
+
+    /**
+     * UIDs from the local header cache (fast path for bulk select-all).
+     *
+     * @return list<int>
+     */
+    public static function folderMessageUids(string $folderPath, string $searchQuery = ''): array
+    {
+        if ($folderPath === '') {
+            return [];
+        }
+
+        $query = trim($searchQuery);
+        if ($query !== '') {
+            $like = '%' . $query . '%';
+            $rows = Database::fetchAll(
+                'SELECT imap_uid FROM mail_index
+                 WHERE folder_path = ?
+                   AND (subject LIKE ? OR from_addr LIKE ?)
+                 ORDER BY msg_date DESC',
+                [$folderPath, $like, $like]
+            );
+        } else {
+            $rows = Database::fetchAll(
+                'SELECT imap_uid FROM mail_index WHERE folder_path = ? ORDER BY msg_date DESC',
+                [$folderPath]
+            );
+        }
+
+        if ($rows === []) {
+            return [];
+        }
+
+        return array_map(static fn (array $row): int => (int) $row['imap_uid'], $rows);
     }
 
     /**

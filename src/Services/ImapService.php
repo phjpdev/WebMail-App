@@ -460,6 +460,103 @@ class ImapService
         return true;
     }
 
+    /**
+     * Delete multiple messages in one folder (single expunge).
+     *
+     * @param list<int> $uids
+     * @return array{deleted: int, errors: int, uids: list<int>}
+     */
+    public function deleteMessages(string $folderPath, array $uids): array
+    {
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
+        if ($uids === [] || !$this->openFolder($folderPath)) {
+            return ['deleted' => 0, 'errors' => count($uids), 'uids' => []];
+        }
+
+        $deleted = [];
+        $failed = [];
+
+        foreach (array_chunk($uids, 100) as $chunk) {
+            $list = implode(',', $chunk);
+            if (@imap_delete($this->connection, $list, FT_UID)) {
+                foreach ($chunk as $uid) {
+                    $deleted[] = $uid;
+                }
+                continue;
+            }
+
+            imap_errors();
+
+            foreach ($chunk as $uid) {
+                if (@imap_delete($this->connection, (string) $uid, FT_UID)) {
+                    $deleted[] = $uid;
+                } else {
+                    imap_errors();
+                    $failed[] = $uid;
+                }
+            }
+        }
+
+        if ($deleted !== []) {
+            imap_expunge($this->connection);
+        }
+
+        return [
+            'deleted' => count($deleted),
+            'errors' => count($failed),
+            'uids' => $deleted,
+        ];
+    }
+
+    /**
+     * Move multiple messages to another folder (batched, single expunge).
+     *
+     * @param list<int> $uids
+     * @return array{moved: int, errors: int, uids: list<int>}
+     */
+    public function moveMessages(string $fromPath, array $uids, string $toPath): array
+    {
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
+        if ($uids === [] || !$this->openFolder($fromPath)) {
+            return ['moved' => 0, 'errors' => count($uids), 'uids' => []];
+        }
+
+        $mailboxString = $this->getMailboxString();
+        $target = $mailboxString . $this->encodeFolderPath($toPath);
+        $moved = [];
+        $failed = [];
+
+        foreach (array_chunk($uids, 50) as $chunk) {
+            $list = implode(',', $chunk);
+            if (@imap_mail_move($this->connection, $list, $target, CP_UID)) {
+                foreach ($chunk as $uid) {
+                    $moved[] = $uid;
+                }
+                continue;
+            }
+
+            imap_errors();
+
+            foreach ($chunk as $uid) {
+                if ($this->moveMessage($fromPath, $uid, $toPath)) {
+                    $moved[] = $uid;
+                } else {
+                    $failed[] = $uid;
+                }
+            }
+        }
+
+        if ($moved !== []) {
+            imap_expunge($this->connection);
+        }
+
+        return [
+            'moved' => count($moved),
+            'errors' => count($failed),
+            'uids' => $moved,
+        ];
+    }
+
     public function isSeen(string $path, int $uid): bool
     {
         if (!$this->openFolder($path)) {
@@ -924,6 +1021,41 @@ class ImapService
 
         $start = max(1, $total - $limit + 1);
         $overview = imap_fetch_overview($this->connection, "$start:$total");
+        if ($overview === false) {
+            return [];
+        }
+
+        $uids = [];
+        foreach (array_reverse($overview) as $row) {
+            if (isset($row->uid)) {
+                $uids[] = (int) $row->uid;
+            }
+        }
+
+        return $uids;
+    }
+
+    /**
+     * All message UIDs in a folder, optionally limited to a search query.
+     *
+     * @return list<int>
+     */
+    public function allMessageUids(string $path, string $searchQuery = ''): array
+    {
+        if (!$this->openFolder($path)) {
+            return [];
+        }
+
+        if (trim($searchQuery) !== '') {
+            return $this->searchUids($path, trim($searchQuery));
+        }
+
+        $total = imap_num_msg($this->connection) ?: 0;
+        if ($total === 0) {
+            return [];
+        }
+
+        $overview = imap_fetch_overview($this->connection, "1:$total");
         if ($overview === false) {
             return [];
         }
