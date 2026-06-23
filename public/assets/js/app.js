@@ -137,6 +137,15 @@
         return paneCache[paneCacheKey(uid)] || null;
     }
 
+    function invalidatePaneCache(uid) {
+        delete paneCache[paneCacheKey(uid)];
+    }
+
+    function isRowUnread(uid) {
+        var row = rowsForUid(uid)[0];
+        return !!(row && row.getAttribute('data-seen') === '0');
+    }
+
     function paneFetchUrl(uid) {
         var card = getListCard();
         if (!card) return null;
@@ -324,8 +333,13 @@
         bodyEl.innerHTML = data.html;
         setPaneView('content');
 
-        if (data.was_unread) {
+        if (data.was_unread || isRowUnread(uid)) {
             setRowSeen(uid, true);
+            var readCard = bodyEl.querySelector('.mail-read-card[data-uid]');
+            if (readCard) {
+                readCard.setAttribute('data-seen', '1');
+                syncReadSeenButton(readCard);
+            }
         }
         if (data.unread_counts) {
             applyUnreadCounts(data.unread_counts);
@@ -358,7 +372,8 @@
             return;
         }
 
-        var cached = getPaneCache(uid);
+        var isUnread = isRowUnread(uid);
+        var cached = !isUnread ? getPaneCache(uid) : null;
         if (cached && cached.html) {
             var rowCached = rowsForUid(uid)[0];
             var hrefCached = rowCached ? rowCached.getAttribute('data-href') : null;
@@ -1229,6 +1244,13 @@
 
     function setRowSeen(uid, seen) {
         rowsForUid(uid).forEach(function (el) { applySeen(el, seen); });
+        if (!seen) {
+            invalidatePaneCache(uid);
+        }
+        document.querySelectorAll('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]').forEach(function (card) {
+            card.setAttribute('data-seen', seen ? '1' : '0');
+            syncReadSeenButton(card);
+        });
     }
 
     function setRowFlagged(uid, flagged) {
