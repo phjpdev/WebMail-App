@@ -51,7 +51,11 @@
                             <?= csrf_field() ?>
                             <button type="submit" class="admin-action-link admin-action-link-muted">Toggle</button>
                         </form>
-                        <form method="post" action="<?= e(url('admin/rules/' . $r['id'] . '/delete')) ?>" class="admin-action-form" onsubmit="return confirm('Delete this rule?');">
+                        <form method="post" action="<?= e(url('admin/rules/' . $r['id'] . '/delete')) ?>" class="admin-action-form"
+                              data-confirm-title="Delete rule?"
+                              data-confirm-message="Remove this filter rule? This cannot be undone."
+                              data-confirm-danger="1"
+                              data-confirm-label="Delete">
                             <?= csrf_field() ?>
                             <button type="submit" class="admin-action-link btn-link-danger">Delete</button>
                         </form>

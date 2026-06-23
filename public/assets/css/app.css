@@ -2009,6 +2009,12 @@ a:hover {
     color: var(--color-text-muted);
 }
 
+.admin-action-form,
+.admin-actions form,
+.table-actions form {
+    display: inline;
+}
+
 .btn-link-danger,
 .btn-link-muted {
     background: none;
@@ -2381,12 +2387,17 @@ body.modal-open {
 .app-modal-dialog {
     position: relative;
     width: 100%;
-    max-width: 400px;
+    max-width: 420px;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius, 6px);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-radius: 12px;
+    box-shadow: 0 20px 48px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
     animation: app-modal-in 0.18s ease-out;
+    overflow: hidden;
+}
+
+.app-modal-dialog--danger {
+    border-color: rgba(198, 40, 40, 0.22);
 }
 
 @keyframes app-modal-in {
@@ -2408,8 +2419,8 @@ body.modal-open {
 
 .app-modal-body {
     display: flex;
-    gap: 0.875rem;
-    padding: 1.25rem 1.25rem 0.75rem;
+    gap: 1rem;
+    padding: 1.35rem 1.35rem 1rem;
 }
 
 .app-modal-icon {
@@ -2417,10 +2428,13 @@ body.modal-open {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2.25rem;
-    height: 2.25rem;
+    width: 2.5rem;
+    height: 2.5rem;
     border-radius: 50%;
-    background: rgba(198, 40, 40, 0.1);
+}
+
+.app-modal-icon.is-danger {
+    background: rgba(198, 40, 40, 0.12);
     color: var(--color-danger, #c62828);
 }
 
@@ -2450,15 +2464,17 @@ body.modal-open {
 .app-modal-message {
     margin: 0;
     font-size: 0.875rem;
-    line-height: 1.5;
-    color: var(--color-text-muted);
+    line-height: 1.55;
+    color: var(--color-text-secondary);
 }
 
 .app-modal-actions {
     display: flex;
     justify-content: flex-end;
     gap: 0.5rem;
-    padding: 0.75rem 1.25rem 1.25rem;
+    padding: 0.85rem 1.35rem 1.25rem;
+    border-top: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-alt, var(--color-bg));
 }
 
 .app-modal-actions .btn {
@@ -2470,7 +2486,11 @@ body.modal-open {
 }
 
 [data-theme="dark"] .app-modal-dialog {
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 24px 56px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] .app-modal-actions {
+    background: var(--color-surface-alt);
 }
 
 .mail-row.is-focused {

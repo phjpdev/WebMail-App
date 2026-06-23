@@ -33,7 +33,10 @@
             <?= csrf_field() ?>
             <button type="submit" class="btn btn-primary">Sync now</button>
         </form>
-        <form method="post" action="<?= e(url('admin/reprocess')) ?>" onsubmit="return confirm('Reprocess the whole inbox against all current rules?');">
+        <form method="post" action="<?= e(url('admin/reprocess')) ?>"
+              data-confirm-title="Reprocess inbox?"
+              data-confirm-message="Re-run every filter rule against all existing inbox mail. This may take a moment on large mailboxes."
+              data-confirm-label="Reprocess">
             <?= csrf_field() ?>
             <button type="submit" class="btn btn-outline">Reprocess inbox</button>
         </form>

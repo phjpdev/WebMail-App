@@ -6,7 +6,9 @@
     </div>
     <div class="page-header-actions">
         <form method="post" action="<?= e(url('admin/users/backfill')) ?>" class="admin-action-form"
-              onsubmit="return confirm('Provision missing folders, aliases and routing rules for all employees, then re-route existing inbox mail?');">
+              data-confirm-title="Backfill onboarding?"
+              data-confirm-message="Provision missing folders, aliases and routing rules for all employees, then re-route existing inbox mail."
+              data-confirm-label="Run backfill">
             <?= csrf_field() ?>
             <button type="submit" class="btn btn-outline">Backfill onboarding</button>
         </form>
@@ -34,14 +36,21 @@
                     <td class="admin-actions">
                         <a class="admin-action-link" href="<?= e(url('admin/users/' . $u['id'] . '/edit')) ?>">Edit</a>
                         <?php if ((int) $u['active'] && $u['role'] !== 'admin'): ?>
-                            <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/disable')) ?>" class="admin-action-form" onsubmit="return confirm('Disable this user?');">
+                            <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/disable')) ?>" class="admin-action-form"
+                                  data-confirm-title="Disable user?"
+                                  data-confirm-message="This user will no longer be able to sign in."
+                                  data-confirm-danger="1"
+                                  data-confirm-label="Disable">
                                 <?= csrf_field() ?>
                                 <button type="submit" class="admin-action-link admin-action-link-danger">Disable</button>
                             </form>
                         <?php endif; ?>
                         <?php if ($u['role'] !== 'admin'): ?>
                             <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/delete')) ?>" class="admin-action-form"
-                                  onsubmit="return confirm('Permanently delete this user? Their alias and routing rules will be removed. This cannot be undone.');">
+                                  data-confirm-title="Delete user?"
+                                  data-confirm-message="Permanently delete this user, their personal IMAP folder, alias, and routing rules. This cannot be undone."
+                                  data-confirm-danger="1"
+                                  data-confirm-label="Delete">
                                 <?= csrf_field() ?>
                                 <button type="submit" class="admin-action-link admin-action-link-danger">Delete</button>
                             </form>

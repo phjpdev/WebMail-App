@@ -1386,16 +1386,33 @@
         var cancelBtn = document.getElementById('confirm-modal-cancel');
         var iconEl = document.getElementById('confirm-modal-icon');
         var backdrop = modal.querySelector('[data-confirm-dismiss]');
+        var dialog = modal.querySelector('.app-modal-dialog');
+        var isAlert = !!opts.alert;
+        var isDanger = !!opts.danger;
+
+        var dangerIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>';
+        var infoIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></svg>';
 
         return new Promise(function (resolve) {
-            if (titleEl) titleEl.textContent = opts.title || 'Confirm';
+            if (titleEl) titleEl.textContent = opts.title || (isAlert ? 'Notice' : 'Confirm');
             if (msgEl) msgEl.textContent = opts.message || '';
             if (okBtn) {
-                okBtn.textContent = opts.confirmLabel || 'OK';
-                okBtn.className = opts.danger ? 'btn btn-danger' : 'btn btn-primary';
+                okBtn.textContent = opts.confirmLabel || (isAlert ? 'OK' : 'Confirm');
+                okBtn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
             }
-            if (cancelBtn) cancelBtn.textContent = opts.cancelLabel || 'Cancel';
-            if (iconEl) iconEl.hidden = !opts.danger;
+            if (cancelBtn) {
+                cancelBtn.hidden = isAlert;
+                cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+            }
+            if (iconEl) {
+                iconEl.hidden = false;
+                iconEl.innerHTML = isDanger ? dangerIcon : infoIcon;
+                iconEl.classList.toggle('is-danger', isDanger);
+                iconEl.classList.toggle('is-info', !isDanger);
+            }
+            if (dialog) {
+                dialog.classList.toggle('app-modal-dialog--danger', isDanger);
+            }
 
             function finish(result) {
                 modal.hidden = true;
@@ -1409,7 +1426,7 @@
             }
 
             confirmKeyHandler = function (e) {
-                if (e.key === 'Escape') {
+                if (e.key === 'Escape' && !isAlert) {
                     e.preventDefault();
                     e.stopPropagation();
                     finish(false);
@@ -1418,18 +1435,69 @@
 
             if (okBtn) okBtn.onclick = function () { finish(true); };
             if (cancelBtn) cancelBtn.onclick = function () { finish(false); };
-            if (backdrop) backdrop.onclick = function () { finish(false); };
-            document.addEventListener('keydown', confirmKeyHandler, true);
+            if (backdrop) backdrop.onclick = function () { if (!isAlert) finish(false); };
+            if (!isAlert) document.addEventListener('keydown', confirmKeyHandler, true);
 
             modal.hidden = false;
             modal.setAttribute('aria-hidden', 'false');
             body.classList.add('modal-open');
-            if (opts.danger && cancelBtn) cancelBtn.focus();
+            if (isDanger && cancelBtn && !isAlert) cancelBtn.focus();
             else if (okBtn) okBtn.focus();
         });
     }
 
+    function showAlert(opts) {
+        opts = opts || {};
+        return showConfirm({
+            title: opts.title || 'Notice',
+            message: opts.message || '',
+            confirmLabel: opts.okLabel || 'OK',
+            alert: true
+        });
+    }
+
     window.showConfirm = showConfirm;
+    window.showAlert = showAlert;
+
+    function initConfirmForms() {
+        document.addEventListener('submit', function (e) {
+            var form = e.target;
+            if (!form || form.tagName !== 'FORM') return;
+
+            var title = form.getAttribute('data-confirm-title');
+            var message = form.getAttribute('data-confirm-message');
+            if (!title && !message) return;
+
+            if (form.dataset.confirmed === '1') {
+                delete form.dataset.confirmed;
+                return;
+            }
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            showConfirm({
+                title: title || 'Confirm',
+                message: message || '',
+                confirmLabel: form.getAttribute('data-confirm-label') || 'Confirm',
+                cancelLabel: form.getAttribute('data-confirm-cancel') || 'Cancel',
+                danger: form.getAttribute('data-confirm-danger') === '1'
+            }).then(function (ok) {
+                if (!ok) return;
+                form.dataset.confirmed = '1';
+                if (typeof form.requestSubmit === 'function') {
+                    var submitter = e.submitter;
+                    if (submitter) {
+                        form.requestSubmit(submitter);
+                    } else {
+                        form.requestSubmit();
+                    }
+                } else {
+                    form.submit();
+                }
+            });
+        }, true);
+    }
 
     function initToasts() {
         document.querySelectorAll('.toast-payload').forEach(function (el) {
@@ -3241,13 +3309,16 @@
             var form = e.target;
             if (!form || form.tagName !== 'FORM') return;
             if (form.dataset.noBtnLoading !== undefined) return;
+            if (form.getAttribute('data-confirm-title') || form.getAttribute('data-confirm-message')) return;
             if (form.id === 'compose-form') return;
+            if (form.classList.contains('admin-action-form')) return;
 
             var submitter = e.submitter;
             var btn = (submitter && submitter.tagName === 'BUTTON')
                 ? submitter
                 : form.querySelector('button[type="submit"]:not([disabled])');
             if (!btn || btn.classList.contains('is-loading')) return;
+            if (btn.classList.contains('admin-action-link') || btn.classList.contains('btn-link-danger') || btn.classList.contains('btn-link-muted')) return;
 
             var raw = (submitter && submitter !== btn && submitter.textContent)
                 ? submitter.textContent.trim()
@@ -3372,6 +3443,7 @@
         initMailBootstrap();
         initComposePanel();
         initReadViewActions();
+        initConfirmForms();
         initGlobalFormLoading();
         initMobileReadSwipe();
         loadAttachmentHints(document);

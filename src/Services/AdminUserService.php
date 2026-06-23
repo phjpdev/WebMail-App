@@ -364,7 +364,35 @@ class AdminUserService
     }
 
     /**
-     * Permanently remove an employee account and clean up their alias + routing rules.
+     * @return list<int>
+     */
+    private function collectUserFolderIds(int $userId): array
+    {
+        $ids = [];
+
+        $linked = Database::query(
+            'SELECT id FROM folders WHERE linked_user_id = ?',
+            [$userId]
+        )->fetchAll();
+        foreach ($linked as $row) {
+            $ids[] = (int) $row['id'];
+        }
+
+        $viaAlias = Database::query(
+            'SELECT DISTINCT default_folder_id AS id
+             FROM aliases
+             WHERE user_id = ? AND default_folder_id IS NOT NULL',
+            [$userId]
+        )->fetchAll();
+        foreach ($viaAlias as $row) {
+            $ids[] = (int) $row['id'];
+        }
+
+        return array_values(array_unique(array_filter($ids, static fn (int $id): bool => $id > 0)));
+    }
+
+    /**
+     * Permanently remove an employee account and clean up their alias, rules, and folders.
      * Admins and the currently logged-in user cannot be deleted.
      */
     public function delete(int $id, int $actingUserId = 0): bool
@@ -378,6 +406,8 @@ class AdminUserService
         }
 
         Database::transaction(function () use ($id): void {
+            $folderIds = $this->collectUserFolderIds($id);
+
             $aliases = Database::query(
                 'SELECT id, email FROM aliases WHERE user_id = ?',
                 [$id]
@@ -392,17 +422,14 @@ class AdminUserService
             }
 
             $folderService = new AdminFolderService();
-            $linkedFolders = Database::query(
-                'SELECT id FROM folders WHERE linked_user_id = ?',
-                [$id]
-            )->fetchAll();
-
-            foreach ($linkedFolders as $folder) {
-                $folderService->delete((int) $folder['id']);
+            foreach ($folderIds as $folderId) {
+                $folderService->deleteUserFolder($folderId, $id);
             }
 
             Database::query('DELETE FROM users WHERE id = ? AND role != \'admin\'', [$id]);
         });
+
+        (new FolderCache())->clear();
 
         return true;
     }

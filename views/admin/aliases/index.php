@@ -23,7 +23,11 @@
                     <td><span class="badge badge-<?= (int) $a['active'] ? 'active' : 'inactive' ?>"><?= (int) $a['active'] ? 'Active' : 'Inactive' ?></span></td>
                     <td class="table-actions">
                         <a href="<?= e(url('admin/aliases/' . $a['id'] . '/edit')) ?>">Edit</a>
-                        <form method="post" action="<?= e(url('admin/aliases/' . $a['id'] . '/delete')) ?>" onsubmit="return confirm('Delete this alias?');">
+                        <form method="post" action="<?= e(url('admin/aliases/' . $a['id'] . '/delete')) ?>" class="admin-action-form"
+                              data-confirm-title="Delete alias?"
+                              data-confirm-message="Remove this send-as alias? This cannot be undone."
+                              data-confirm-danger="1"
+                              data-confirm-label="Delete">
                             <?= csrf_field() ?>
                             <button type="submit" class="btn-link-danger">Delete</button>
                         </form>

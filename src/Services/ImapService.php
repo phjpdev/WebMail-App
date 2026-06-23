@@ -1220,6 +1220,10 @@ class ImapService
             return true;
         }
 
+        if (!$this->emptyFolder($path)) {
+            app_log('IMAP folder empty failed for ' . $path . ': ' . $this->getLastError());
+        }
+
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($path);
 
         if (@imap_deletemailbox($this->connection, $mailbox)) {
@@ -1231,6 +1235,34 @@ class ImapService
         app_log($this->lastError);
 
         return false;
+    }
+
+    /**
+     * Delete every message in a folder (required by some servers before imap_deletemailbox).
+     */
+    public function emptyFolder(string $path): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        if (!$this->folderExistsOnServer($path)) {
+            return true;
+        }
+
+        for ($pass = 0; $pass < 50; $pass++) {
+            $uids = $this->allMessageUids($path);
+            if ($uids === []) {
+                return true;
+            }
+
+            $result = $this->deleteMessages($path, $uids);
+            if ($result['deleted'] === 0) {
+                return false;
+            }
+        }
+
+        return $this->allMessageUids($path) === [];
     }
 
     public function folderExistsOnServer(string $path): bool

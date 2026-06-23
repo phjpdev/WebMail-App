@@ -145,6 +145,37 @@ class AdminFolderService
             );
         }
 
+        $this->removeFolderRecord($folder);
+    }
+
+    /**
+     * Delete an employee/client folder when removing a user account.
+     */
+    public function deleteUserFolder(int $id, int $userId): void
+    {
+        $folder = $this->find($id);
+        if ($folder === null) {
+            return;
+        }
+
+        if (!in_array((string) ($folder['folder_type'] ?? ''), ['employee', 'client'], true)) {
+            return;
+        }
+
+        $linkedUserId = (int) ($folder['linked_user_id'] ?? 0);
+        if ($linkedUserId > 0 && $linkedUserId !== $userId) {
+            return;
+        }
+
+        $this->removeFolderRecord($folder);
+    }
+
+    /**
+     * @param array<string, mixed> $folder
+     */
+    private function removeFolderRecord(array $folder): void
+    {
+        $id = (int) $folder['id'];
         $imapPath = (string) $folder['imap_path'];
 
         $imap = new ImapService();

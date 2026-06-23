@@ -25,11 +25,11 @@
                     <td class="table-actions">
                         <a href="<?= e(url('admin/folders/' . $f['id'] . '/edit')) ?>">Edit</a>
                         <?php if ($canDelete): ?>
-                            <form method="post" action="<?= e(url('admin/folders/' . $f['id'] . '/delete')) ?>"
-                                  onsubmit="return confirm(<?= json_encode(
-                                      'Delete folder "' . ($f['display_name'] ?? '') . '"? Messages in this folder will be removed from the mail server. This cannot be undone.',
-                                      JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP
-                                  ) ?>);">
+                            <form method="post" action="<?= e(url('admin/folders/' . $f['id'] . '/delete')) ?>" class="admin-action-form"
+                                  data-confirm-title="Delete folder?"
+                                  data-confirm-message="<?= e('Delete folder "' . ($f['display_name'] ?? '') . '"? Messages in this folder will be removed from the mail server. This cannot be undone.') ?>"
+                                  data-confirm-danger="1"
+                                  data-confirm-label="Delete">
                                 <?= csrf_field() ?>
                                 <button type="submit" class="btn-link-danger">Delete</button>
                             </form>
