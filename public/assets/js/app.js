@@ -1233,15 +1233,22 @@
         var from = el.querySelector('.mail-card-from');
         if (from) {
             var mstar = from.querySelector('.flag-dot');
-            if (flagged && !mstar) {
-                var ms = document.createElement('span');
-                ms.className = 'flag-dot';
-                ms.title = 'Important';
-                ms.innerHTML = '\u2605';
-                from.insertBefore(document.createTextNode(' '), from.firstChild);
-                from.insertBefore(ms, from.firstChild);
-            } else if (!flagged && mstar) {
-                mstar.remove();
+            if (mstar) mstar.remove();
+        }
+
+        var cardMeta = el.querySelector('.mail-card-meta');
+        if (cardMeta) {
+            var cstar = cardMeta.querySelector('.mail-row-flag');
+            if (flagged && !cstar) {
+                var cs = document.createElement('span');
+                cs.className = 'flag-dot mail-row-flag';
+                cs.title = 'Important';
+                cs.innerHTML = '\u2605';
+                var cardDate = cardMeta.querySelector('.mail-card-date');
+                if (cardDate) cardMeta.insertBefore(cs, cardDate);
+                else cardMeta.appendChild(cs);
+            } else if (!flagged && cstar) {
+                cstar.remove();
             }
         }
 
@@ -1607,12 +1614,25 @@
         if (msg.reply_url) a.setAttribute('data-reply-url', msg.reply_url);
         if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
         if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
+        var fromText = msg.from || 'Unknown';
+        var initial = fromText.trim().charAt(0).toUpperCase() || '?';
+        var color = avatarColor(fromText);
+        var attachHtml = msg.has_attachment
+            ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>'
+            : '';
+        var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
+
         a.innerHTML =
-            '<div class="mail-card-top"><span class="mail-card-from">' + (msg.flagged ? '<span class="flag-dot" title="Important">\u2605</span> ' : '') + escapeHtml(msg.from) +
-            '</span><span class="mail-card-meta">' + (msg.has_attachment ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>' : '') +
-            '<span class="mail-card-date">' + escapeHtml(msg.date) + '</span></span>' +
-            '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button></div>' +
-            '<div class="mail-card-subject">' + escapeHtml(msg.subject) + '</div>';
+            '<div class="mail-card-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
+            '<div class="mail-card-body">' +
+                '<div class="mail-card-line1">' +
+                    '<span class="mail-card-from">' + escapeHtml(fromText) + '</span>' +
+                    '<span class="mail-card-meta">' + attachHtml + flagHtml +
+                        '<span class="mail-card-date">' + escapeHtml(msg.date) + '</span></span>' +
+                '</div>' +
+                '<div class="mail-card-subject">' + escapeHtml(msg.subject) + '</div>' +
+            '</div>' +
+            '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button>';
         bindMailRow(a);
         if (isNew) window.setTimeout(function () { a.classList.remove('mail-row-new'); }, 3000);
         return a;

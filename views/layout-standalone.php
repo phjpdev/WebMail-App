@@ -10,7 +10,7 @@
 
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
 
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=32">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=70">
 
     <script>
 
@@ -40,7 +40,12 @@
 
         <div class="standalone-header-right">
 
-            <a href="<?= e(url('')) ?>" class="standalone-back">← Mail</a>
+            <?php
+            $href = url('');
+            $label = 'Mail';
+            $class = 'back-nav--header';
+            require base_path('views/partials/back-nav.php');
+            ?>
 
             <form method="post" action="<?= e(url('logout')) ?>">
 
@@ -66,7 +71,7 @@
 
 
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=46" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=66" defer></script>
 
 </body>
 

@@ -952,37 +952,67 @@ a:hover {
 
 /* Mail cards (mobile) */
 .mail-card {
-    display: block;
-    padding: 1rem 1.25rem;
-    border-bottom: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+    border-left: 3px solid transparent;
     color: inherit;
     text-decoration: none;
     transition: background 0.12s;
+    cursor: pointer;
 }
 
-.mail-card:hover {
+.mail-card:hover,
+.mail-card:focus-visible {
     background: var(--color-surface-alt);
     text-decoration: none;
+}
+
+.mail-card.mail-unread {
+    border-left-color: var(--color-unread-accent);
 }
 
 .mail-card:last-child {
     border-bottom: none;
 }
 
-.mail-card-top {
+.mail-card-avatar {
+    flex-shrink: 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 0.25rem;
+    justify-content: center;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #fff;
+    letter-spacing: -0.02em;
+}
+
+.mail-card-body {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.mail-card-line1 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.15rem;
 }
 
 .mail-card-from {
+    flex: 1;
+    min-width: 0;
     font-size: 0.875rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    min-width: 0;
+    color: var(--color-text);
 }
 
 .mail-card-date {
@@ -992,14 +1022,27 @@ a:hover {
     color: var(--color-text-muted);
     flex-shrink: 0;
     line-height: 1;
+    white-space: nowrap;
 }
 
 .mail-card-subject {
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     color: var(--color-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    line-height: 1.35;
+}
+
+.mail-card .mail-kebab {
+    flex-shrink: 0;
+    align-self: center;
+    opacity: 0.55;
+}
+
+.mail-card:hover .mail-kebab,
+.mail-card:focus-within .mail-kebab {
+    opacity: 1;
 }
 
 .mail-row-new {
@@ -1177,11 +1220,62 @@ a:hover {
 
 /* Read view */
 .breadcrumb {
-    margin: 0 0 0.5rem;
-    font-size: 0.8125rem;
+    margin: 0 0 0.75rem;
 }
 
-.breadcrumb a {
+.back-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.9rem 0.45rem 0.65rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1;
+    text-decoration: none;
+    box-shadow: var(--shadow-xs);
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.back-nav:hover,
+.back-nav:focus-visible {
+    background: var(--color-surface-alt);
+    border-color: var(--color-border);
+    color: var(--color-text);
+    text-decoration: none;
+    box-shadow: var(--shadow-sm);
+    outline: none;
+}
+
+.back-nav-icon {
+    flex-shrink: 0;
+    opacity: 0.9;
+}
+
+.back-nav-label {
+    white-space: nowrap;
+}
+
+.back-nav--header {
+    margin: 0;
+    padding: 0.4rem 0.75rem 0.4rem 0.55rem;
+}
+
+.page-header--read {
+    margin-bottom: 1rem;
+}
+
+.page-header--read .read-subject-title {
+    margin: 0;
+    font-size: 1.125rem;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.breadcrumb a:not(.back-nav) {
     color: var(--color-text-muted);
     font-weight: 500;
 }
@@ -2870,6 +2964,11 @@ body.modal-open {
     text-decoration: none;
 }
 
+/* legacy alias — use .back-nav in standalone header */
+.standalone-header .back-nav {
+    margin: 0;
+}
+
 .standalone-header-right {
     display: flex;
     align-items: center;
@@ -3842,10 +3941,10 @@ body:has(.mail-workspace) {
 }
 
 .mail-card-meta {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    flex-shrink: 0;
+    gap: 0.35rem;
     height: 1.125rem;
 }
 
@@ -4114,6 +4213,7 @@ body:has(.mail-workspace) {
 .mail-row.is-selected,
 .mail-card.is-selected {
     background: var(--color-primary-light);
+    border-left-color: var(--color-primary);
 }
 
 .mail-row.is-selected:hover,
@@ -4319,8 +4419,24 @@ body:has(.mail-workspace) {
         padding-bottom: var(--space-2);
     }
 
+    .mail-list-mobile {
+        background: var(--color-surface);
+    }
+
     .mail-card {
-        min-height: 2.75rem;
+        min-height: 3.25rem;
+        padding: 0.8rem 0.875rem;
+    }
+
+    .mail-card.mail-unread .mail-card-from,
+    .mail-card.mail-unread .mail-card-subject {
+        font-weight: 600;
+        color: var(--color-text);
+    }
+
+    .mail-card.is-focused {
+        outline: 2px solid var(--color-primary);
+        outline-offset: -2px;
     }
 
     .mail-kebab {

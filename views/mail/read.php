@@ -1,10 +1,14 @@
 <?php ob_start(); ?>
 
-<section class="page-header">
-    <p class="breadcrumb">
-        <a href="<?= e(folder_url($folderPath)) ?>">← Back to folder</a>
-    </p>
-    <h2><?= e($message['subject'] ?: '(no subject)') ?></h2>
+<section class="page-header page-header--read">
+    <nav class="breadcrumb" aria-label="Back">
+        <?php
+        $href = folder_url($folderPath);
+        $label = 'Back to folder';
+        require base_path('views/partials/back-nav.php');
+        ?>
+    </nav>
+    <h2 class="read-subject-title"><?= e($message['subject'] ?: '(no subject)') ?></h2>
 </section>
 
 <section class="card mail-read-card print-area"

@@ -111,19 +111,30 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
-                <div class="mail-card-top">
-                    <span class="mail-card-from"><?= !empty($msg['flagged']) ? '<span class="flag-dot" title="Important">&#9733;</span> ' : '' ?><?= e(format_mail_from($msg['from'])) ?></span>
-                    <span class="mail-card-meta">
-                        <?php if (!empty($msg['has_attachment'])): ?>
-                            <span class="mail-row-attach" title="Has attachment" aria-label="Has attachment">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                            </span>
-                        <?php endif; ?>
-                        <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
-                    </span>
-                    <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
+                <?php
+                $fromDisplay = format_mail_from($msg['from'] ?? '');
+                $avatarInitial = mail_avatar_initial($msg['from'] ?? '');
+                $avatarColor = mail_avatar_color($msg['from'] ?? '');
+                ?>
+                <div class="mail-card-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
+                <div class="mail-card-body">
+                    <div class="mail-card-line1">
+                        <span class="mail-card-from" title="<?= e($fromDisplay) ?>"><?= e($fromDisplay) ?></span>
+                        <span class="mail-card-meta">
+                            <?php if (!empty($msg['has_attachment'])): ?>
+                                <span class="mail-row-attach" title="Has attachment" aria-label="Has attachment">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                                </span>
+                            <?php endif; ?>
+                            <?php if (!empty($msg['flagged'])): ?>
+                                <span class="flag-dot mail-row-flag" title="Important">&#9733;</span>
+                            <?php endif; ?>
+                            <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
+                        </span>
+                    </div>
+                    <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject']) ?></div>
                 </div>
-                <div class="mail-card-subject"><?= e($msg['subject']) ?></div>
+                <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
             </div>
         <?php endforeach; ?>
     </div>
