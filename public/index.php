@@ -120,6 +120,7 @@ $router->post('/compose/send', fn () => $composeController->send());
 $router->post('/compose/draft', fn () => $composeController->saveDraft());
 
 $router->get('/status', fn () => $dashboardController->status());
+$router->get('/status/check', fn () => $dashboardController->statusCheck());
 $router->post('/test-email', fn () => $dashboardController->sendTestEmail());
 
 $router->get('/admin', fn () => $adminController->dashboard());

@@ -122,7 +122,7 @@ class SettingsController
 
     private function render(string $view, array $data): void
     {
-        $folderData = FolderCache::load();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
         $data['user'] = Auth::user();
         $data['authUser'] = Auth::user();
         $data['folders'] = $folderData['folders'];

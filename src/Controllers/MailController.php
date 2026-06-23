@@ -1354,7 +1354,7 @@ class MailController
     private function renderMailView(string $viewName, array $data): void
     {
         if (!isset($data['unreadCounts'])) {
-            $data['unreadCounts'] = FolderCache::load()['unread_counts'] ?? [];
+            $data['unreadCounts'] = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
         }
 
         $data['user'] = Auth::user();

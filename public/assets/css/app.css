@@ -1647,6 +1647,19 @@ a:hover {
     color: var(--color-danger);
 }
 
+.status-meta {
+    margin: 0.75rem 0 0;
+    font-size: 0.875rem;
+}
+
+.status-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.65rem;
+    margin-top: 1rem;
+}
+
 .card-header-row {
     display: flex;
     align-items: center;

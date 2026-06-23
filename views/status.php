@@ -8,23 +8,36 @@ ob_start();
     <p class="text-muted">IMAP/SMTP diagnostics (admin)</p>
 </section>
 
-<section class="card">
-    <?php if ($imapConnected): ?>
-        <p class="status status-ok">IMAP connected successfully</p>
-        <p class="text-muted"><?= (int) $folderCount ?> folders found on mail server.</p>
-    <?php else: ?>
-        <p class="status status-error">IMAP connection failed</p>
-        <?php if (!empty($imapError)): ?>
-            <p class="text-muted error-detail"><?= e($imapError) ?></p>
+<section class="card" id="status-card" data-auto-check="1">
+    <div id="status-result">
+        <?php if ($imapConnected): ?>
+            <p class="status status-ok" id="status-imap-line">IMAP connected successfully</p>
+            <p class="text-muted" id="status-folder-line"><?= (int) $folderCount ?> folders found on mail server.</p>
+        <?php else: ?>
+            <p class="status status-error" id="status-imap-line">IMAP connection failed</p>
+            <p class="text-muted error-detail" id="status-error-line"<?= empty($imapError) ? ' hidden' : '' ?>><?= e($imapError ?? '') ?></p>
+            <p class="text-muted" id="status-folder-line" hidden></p>
         <?php endif; ?>
-    <?php endif; ?>
+    </div>
 
-    <?php if (($user['role'] ?? '') === 'admin'): ?>
-        <form method="post" action="<?= e(url('test-email')) ?>" style="margin-top: 1rem;">
-            <?= csrf_field() ?>
-            <button type="submit" class="btn btn-secondary">Send test email</button>
-        </form>
-    <?php endif; ?>
+    <p class="text-muted status-meta" id="status-checked-line">
+        <?php if (!empty($lastCheckedAt)): ?>
+            Last live check: <?= e(date('g:i:s A', (int) $lastCheckedAt)) ?>
+            <?php if (!empty($lastCheckMs)): ?>(<?= (int) $lastCheckMs ?> ms)<?php endif; ?>
+        <?php else: ?>
+            Running live connection test…
+        <?php endif; ?>
+    </p>
+
+    <div class="status-actions">
+        <button type="button" class="btn btn-secondary" id="status-refresh-btn">Test connection now</button>
+        <?php if (($user['role'] ?? '') === 'admin'): ?>
+            <form method="post" action="<?= e(url('test-email')) ?>" class="inline-form">
+                <?= csrf_field() ?>
+                <button type="submit" class="btn btn-outline">Send test email</button>
+            </form>
+        <?php endif; ?>
+    </div>
 </section>
 
 <?php

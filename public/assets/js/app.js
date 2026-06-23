@@ -3207,6 +3207,81 @@
             .catch(function () {});
     }
 
+    function initStatusPage() {
+        var card = document.getElementById('status-card');
+        if (!card) return;
+
+        var resultEl = document.getElementById('status-result');
+        var checkedLine = document.getElementById('status-checked-line');
+        var refreshBtn = document.getElementById('status-refresh-btn');
+        var checking = false;
+
+        function renderStatus(data) {
+            if (!resultEl || !data) return;
+
+            var connected = !!data.imap_connected;
+            var folderCount = parseInt(data.folder_count, 10) || 0;
+            var error = data.imap_error || '';
+
+            resultEl.innerHTML =
+                (connected
+                    ? '<p class="status status-ok" id="status-imap-line">IMAP connected successfully</p>'
+                    : '<p class="status status-error" id="status-imap-line">IMAP connection failed</p>') +
+                (error && !connected
+                    ? '<p class="text-muted error-detail" id="status-error-line">' + escapeHtml(error) + '</p>'
+                    : '') +
+                (connected
+                    ? '<p class="text-muted" id="status-folder-line">' + folderCount + ' folders found on mail server.</p>'
+                    : '');
+
+            if (checkedLine) {
+                var ms = data.duration_ms ? ' (' + data.duration_ms + ' ms)' : '';
+                checkedLine.textContent = 'Last live check: ' + (data.checked_at || 'just now') + ms;
+            }
+
+            if (data.unread_counts && Object.keys(data.unread_counts).length) {
+                applyUnreadCounts(data.unread_counts);
+            }
+        }
+
+        function runCheck() {
+            if (checking) return;
+            checking = true;
+            if (refreshBtn) {
+                refreshBtn.disabled = true;
+                refreshBtn.textContent = 'Testing…';
+            }
+            if (checkedLine) checkedLine.textContent = 'Testing connection to mail server…';
+
+            fetch(apiUrl('status/check'), {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function (res) {
+                return res.json().catch(function () { return { ok: false }; }).then(function (data) {
+                    if (!res.ok || !data || !data.ok) {
+                        throw new Error((data && data.imap_error) || 'Connection test failed.');
+                    }
+                    renderStatus(data);
+                });
+            }).catch(function (err) {
+                if (checkedLine) checkedLine.textContent = err.message || 'Connection test failed.';
+            }).finally(function () {
+                checking = false;
+                if (refreshBtn) {
+                    refreshBtn.disabled = false;
+                    refreshBtn.textContent = 'Test connection now';
+                }
+            });
+        }
+
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', runCheck);
+        }
+        if (card.getAttribute('data-auto-check') === '1') {
+            window.setTimeout(runCheck, 80);
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         initToasts();
         initMailSync();
@@ -3222,6 +3297,7 @@
         initContextMenu();
         initReadingPane();
         initAjaxFolderNav();
+        initStatusPage();
         initMailBootstrap();
         initComposePanel();
         initReadViewActions();

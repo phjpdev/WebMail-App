@@ -745,7 +745,7 @@ class AdminController
         $data['authUser'] = Auth::user();
         $data['sessionUser'] = $data['authUser'];
         $data['user'] = $data['authUser'];
-        $folderData = FolderCache::load();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
         $data['sidebarFolders'] = $folderData['folders'];
         $data['unreadCounts'] = $folderData['unread_counts'] ?? [];
         // Do not overwrite $data['folders'] — admin views use it for the DB folder
