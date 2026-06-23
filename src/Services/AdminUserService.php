@@ -14,7 +14,19 @@ class AdminUserService
     public function listAll(): array
     {
         return Database::query(
-            'SELECT id, name, username, role, active, created_at FROM users ORDER BY role DESC, name'
+            'SELECT u.id, u.name, u.username, u.role, u.active, u.created_at,
+                    (SELECT a.email
+                     FROM aliases a
+                     WHERE a.user_id = u.id AND a.active = 1
+                     ORDER BY a.id
+                     LIMIT 1) AS alias_email,
+                    (SELECT f.display_name
+                     FROM folders f
+                     WHERE f.linked_user_id = u.id AND f.folder_type = \'employee\'
+                     ORDER BY f.id
+                     LIMIT 1) AS folder_name
+             FROM users u
+             ORDER BY u.role DESC, u.name'
         )->fetchAll();
     }
 

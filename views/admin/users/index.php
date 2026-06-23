@@ -20,13 +20,15 @@
     <div class="table-wrap">
         <table class="data-table">
             <thead>
-                <tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr>
+                <tr><th>Name</th><th>Username</th><th>Email</th><th>Folder</th><th>Role</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
                 <?php foreach ($users as $u): ?>
                 <tr>
                     <td><?= e($u['name']) ?></td>
                     <td><?= e($u['username']) ?></td>
+                    <td><?= e($u['alias_email'] ?? '') ?: '—' ?></td>
+                    <td><?= e($u['folder_name'] ?? '') ?: '—' ?></td>
                     <td><span class="badge badge-<?= e($u['role']) ?>"><?= e($u['role']) ?></span></td>
                     <td><span class="badge badge-<?= (int) $u['active'] ? 'active' : 'inactive' ?>"><?= (int) $u['active'] ? 'Active' : 'Disabled' ?></span></td>
                     <td class="admin-actions">
