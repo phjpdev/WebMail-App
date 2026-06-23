@@ -330,14 +330,13 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $perPage = mail_per_page();
 
-        // Lightweight poll: serve from MySQL when the list is in sync with IMAP badges.
+        // Lightweight poll: MySQL cache only — never hit IMAP here or deleted
+        // messages reappear while background move/delete is still running.
         if ($light && $query === '') {
-            if (!MailCacheService::badgeAheadOfIndex($folderPath)) {
-                $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-                if ($cached !== null) {
-                    $this->echoFolderSyncJson($folderPath, $cached);
-                    return;
-                }
+            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            if ($cached !== null) {
+                $this->echoFolderSyncJson($folderPath, $cached);
+                return;
             }
         }
 

@@ -71,6 +71,8 @@
     var lastMailPollAt = 0;
     var mailPollMinGapMs = 25000;
     var mailSyncHooksBound = false;
+    var pendingRemovalUntil = {};
+    var PENDING_REMOVAL_MS = 120000;
     var PANE_CACHE_MAX = 24;
     var PANE_NAV_DEBOUNCE_MS = 0;
 
@@ -80,6 +82,24 @@
 
     function getListCard() {
         return document.querySelector('.mail-list-card[data-folder-b64]');
+    }
+
+    function markUidsPendingRemoval(uids) {
+        var until = Date.now() + PENDING_REMOVAL_MS;
+        (uids || []).forEach(function (uid) {
+            if (uid) pendingRemovalUntil[String(uid)] = until;
+        });
+    }
+
+    function isUidPendingRemoval(uid) {
+        var key = String(uid);
+        var until = pendingRemovalUntil[key];
+        if (!until) return false;
+        if (Date.now() > until) {
+            delete pendingRemovalUntil[key];
+            return false;
+        }
+        return true;
     }
 
     function currentFolderKind() {
@@ -1270,6 +1290,7 @@
     }
 
     function removeRowByUid(uid) {
+        markUidsPendingRemoval([uid]);
         var removed = false;
         rowsForUid(uid).forEach(function (el) {
             removed = true;
@@ -1282,6 +1303,10 @@
     }
 
     function clearMailListRows() {
+        var card = getListCard();
+        if (card) {
+            markUidsPendingRemoval(Array.from(collectKnownUids(card)));
+        }
         var body = document.getElementById('mail-list-body');
         var mobile = document.getElementById('mail-list-mobile');
         if (body) body.innerHTML = '';
@@ -1652,6 +1677,9 @@
 
                     data.messages.forEach(function (m) {
                         var uid = String(m.uid);
+                        if (isUidPendingRemoval(uid)) {
+                            return;
+                        }
                         freshUids[uid] = true;
                         if (known.has(uid)) {
                             // Reconcile existing rows so seen/flagged state stays
@@ -2083,7 +2111,6 @@
             }
         }).catch(function (err) {
             showToast('error', err.message || 'Action failed.');
-            if (mailPoll) scheduleMailPoll(true);
         });
     }
 
