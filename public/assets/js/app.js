@@ -1509,13 +1509,15 @@
             '</div>' +
             '<div class="mail-row-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
             '<div class="mail-row-body">' +
-                '<div class="mail-row-line1">' +
-                    '<span class="mail-row-from">' + escapeHtml(fromText) + '</span>' +
-                    '<span class="mail-row-meta">' + attachHtml + flagHtml +
-                        '<span class="mail-row-date">' + escapeHtml(msg.date) + '</span>' +
-                    '</span>' +
+                '<div class="mail-row-text">' +
+                    '<div class="mail-row-line1">' +
+                        '<span class="mail-row-from">' + escapeHtml(fromText) + '</span>' +
+                    '</div>' +
+                    '<div class="mail-row-subject">' + escapeHtml(msg.subject) + '</div>' +
                 '</div>' +
-                '<div class="mail-row-subject">' + escapeHtml(msg.subject) + '</div>' +
+                '<span class="mail-row-meta">' + attachHtml + flagHtml +
+                    '<span class="mail-row-date">' + escapeHtml(msg.date) + '</span>' +
+                '</span>' +
             '</div>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button>';
         bindMailRow(row);
