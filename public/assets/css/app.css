@@ -61,15 +61,15 @@
 *::before,
 *::after {
     box-sizing: border-box;
-}
-
-html {
-    -webkit-text-size-adjust: 100%;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
-/* Thin scrollbars app-wide (message list, reading pane, submenus, etc.) */
+html {
+    -webkit-text-size-adjust: 100%;
+}
+
+/* Thin scrollbars app-wide (WebKit / Blink) */
 *::-webkit-scrollbar {
     width: var(--scrollbar-size);
     height: var(--scrollbar-size);
@@ -90,6 +90,25 @@ html {
 
 *::-webkit-scrollbar-corner {
     background: transparent;
+}
+
+/* Known scroll regions — reinforce thin bars (Firefox + WebKit) */
+.sidebar-scroll,
+.sidebar-groups,
+.mail-list-scroller,
+.mail-list-mobile,
+.mail-list-desktop,
+.reading-pane-body,
+.compose-panel-body,
+.context-submenu-scroll,
+.mail-body-html,
+.table-wrap,
+.rich-editor,
+textarea,
+select,
+.app-modal-body {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 body {
@@ -942,7 +961,7 @@ a:hover {
 }
 
 .mail-card:hover {
-    background: #f8fafc;
+    background: var(--color-surface-alt);
     text-decoration: none;
 }
 
@@ -977,7 +996,7 @@ a:hover {
 
 .mail-card-subject {
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--color-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1365,17 +1384,55 @@ a:hover {
     word-break: break-word;
 }
 
+.detail-list dd code {
+    font-size: 0.8125rem;
+    padding: 0.15rem 0.4rem;
+    background: var(--color-surface-alt);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 4px;
+    color: var(--color-text);
+}
+
 .attachments {
     margin-bottom: 1rem;
     padding: 0.75rem 1rem;
-    background: #f8fafc;
+    background: var(--color-surface-alt);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-sm);
     font-size: 0.875rem;
+    color: var(--color-text);
+}
+
+.attachments strong {
+    display: block;
+    margin-bottom: 0.35rem;
+    color: var(--color-text);
+    font-weight: 600;
 }
 
 .attachments ul {
-    margin: 0.35rem 0 0;
+    margin: 0;
     padding-left: 1.25rem;
+    list-style: disc;
+}
+
+.attachments li {
+    color: var(--color-text-secondary);
+    line-height: 1.5;
+}
+
+.attachments a {
+    color: var(--color-primary);
+    text-decoration: none;
+}
+
+.attachments a:hover {
+    text-decoration: underline;
+}
+
+.attachments .attachment-preview {
+    list-style: none;
+    margin-left: -1.25rem;
 }
 
 .mail-body {
@@ -1723,7 +1780,7 @@ a:hover {
 
 .data-table code {
     font-size: 0.8125rem;
-    color: #374151;
+    color: var(--color-text-secondary);
 }
 
 /* Login — matches app chrome */
