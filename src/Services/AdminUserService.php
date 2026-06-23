@@ -78,12 +78,17 @@ class AdminUserService
 
             $userId = (int) Database::connection()->lastInsertId();
 
-            if ($role === 'employee' && !empty($data['alias_email'])) {
+            if ($role === 'employee') {
+                $aliasEmail = trim($data['alias_email'] ?? '');
+                $folderName = trim($data['folder_name'] ?? '');
+                if ($aliasEmail === '' || $folderName === '') {
+                    throw new \RuntimeException('Email and folder name are required for employee accounts.');
+                }
                 $this->provisionEmployeeMailbox(
                     $userId,
                     $data['name'],
-                    $data['alias_email'],
-                    $data['folder_name'] ?? null,
+                    $aliasEmail,
+                    $folderName,
                     $data['username']
                 );
             }
@@ -108,7 +113,11 @@ class AdminUserService
         $created = false;
 
         $folderName = ($folderName !== null && trim($folderName) !== '') ? trim($folderName) : $username;
-        $imapPath = 'INBOX.' . preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+        $safeFolder = preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+        if ($safeFolder === '') {
+            throw new \RuntimeException('Invalid folder name.');
+        }
+        $imapPath = 'INBOX.' . $safeFolder;
 
         $existingFolder = Database::fetchOne(
             'SELECT id FROM folders WHERE linked_user_id = ? OR imap_path = ? LIMIT 1',
@@ -143,7 +152,7 @@ class AdminUserService
         }
 
         $existingRule = Database::fetchOne(
-            "SELECT id FROM filter_rules WHERE condition_field = 'to' AND condition_value = ? LIMIT 1",
+            "SELECT id, target_folder_id FROM filter_rules WHERE condition_field = 'to' AND condition_value = ? LIMIT 1",
             [$aliasEmail]
         );
         if ($existingRule === null) {
@@ -158,7 +167,15 @@ class AdminUserService
                 'active' => 1,
             ]);
             $created = true;
+        } elseif ((int) ($existingRule['target_folder_id'] ?? 0) !== $folderId) {
+            Database::query(
+                'UPDATE filter_rules SET target_folder_id = ?, active = 1 WHERE id = ?',
+                [$folderId, (int) $existingRule['id']]
+            );
+            $created = true;
         }
+
+        FilterService::clearProcessed((string) (config('app')['filter_source_folder'] ?? 'INBOX'));
 
         return $created;
     }

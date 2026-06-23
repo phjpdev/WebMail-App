@@ -21,6 +21,7 @@ $isPane = true;
         data-folder-b64="<?= e($folderB64) ?>"
         data-uid="<?= (int) $message['uid'] ?>"
         data-seen="<?= !empty($message['seen']) ? '1' : '0' ?>"
+        data-flagged="<?= !empty($message['flagged']) ? '1' : '0' ?>"
         data-sync-url="<?= e(url('folder/' . $folderB64 . '/message/' . (int) $message['uid'] . '/sync')) ?>"
         data-folder-url="<?= e(folder_url($folderPath)) ?>"
         data-poll-interval="<?= (int) $pollInterval ?>">

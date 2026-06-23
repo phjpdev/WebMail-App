@@ -66,7 +66,7 @@
 
 
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=33" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=46" defer></script>
 
 </body>
 

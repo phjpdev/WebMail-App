@@ -48,14 +48,18 @@ ob_start();
         <?php endif; ?>
         <?php if (!$isEdit): ?>
         <div class="form-group" id="employee-onboarding-fields">
-            <label for="alias_email">Email address (required for employees)</label>
-            <input type="email" id="alias_email" name="alias_email" placeholder="employee@bebenailsmd.com">
-            <small class="form-hint">This becomes the employee's send-as address. A personal folder and an
-                auto-routing rule (incoming mail to this address &rarr; their folder) are created automatically.</small>
+            <label for="alias_email">Email address <span class="text-required">*</span></label>
+            <input type="email" id="alias_email" name="alias_email" required
+                   placeholder="employee@bebenailsmd.com or personal@gmail.com">
+            <small class="form-hint">Send-as address for this employee (any valid email — @bebenailsmd.com, Gmail, Outlook, etc.).
+                Incoming mail <em>to this address</em> is auto-routed to their folder when it arrives in this mailbox.</small>
         </div>
-        <div class="form-group">
-            <label for="folder_name">IMAP folder name</label>
-            <input type="text" id="folder_name" name="folder_name" placeholder="Defaults to username">
+        <div class="form-group" id="employee-folder-field">
+            <label for="folder_name">Folder name <span class="text-required">*</span></label>
+            <input type="text" id="folder_name" name="folder_name" required
+                   pattern="[A-Za-z0-9_-]+" title="Letters, numbers, hyphens, and underscores only"
+                   placeholder="e.g. ankesh or support">
+            <small class="form-hint">Creates an IMAP folder (INBOX.<em>name</em>) and links it to this user. Required for employees.</small>
         </div>
         <?php endif; ?>
         <?php if ($isEdit && ($editUser['role'] ?? '') !== 'admin'): ?>
@@ -63,7 +67,7 @@ ob_start();
             <label for="alias_email">Email address</label>
             <input type="email" id="alias_email" name="alias_email"
                    value="<?= e($editUser['alias_email'] ?? '') ?>" required>
-            <small class="form-hint">Send-as address for this employee. Changing it updates the alias and routing rule.</small>
+            <small class="form-hint">Send-as address (any valid email). Changing it updates the alias and routing rule.</small>
         </div>
         <div class="form-group form-check">
             <label class="form-check-label">
@@ -78,6 +82,30 @@ ob_start();
         </div>
     </form>
 </section>
+
+<?php if (!$isEdit): ?>
+<script>
+(function () {
+    var role = document.getElementById('role');
+    var email = document.getElementById('alias_email');
+    var folder = document.getElementById('folder_name');
+    var onboarding = document.getElementById('employee-onboarding-fields');
+    var folderField = document.getElementById('employee-folder-field');
+    if (!role || !email || !folder) return;
+
+    function syncEmployeeFields() {
+        var isEmployee = role.value === 'employee';
+        email.required = isEmployee;
+        folder.required = isEmployee;
+        if (onboarding) onboarding.hidden = !isEmployee;
+        if (folderField) folderField.hidden = !isEmployee;
+    }
+
+    role.addEventListener('change', syncEmployeeFields);
+    syncEmployeeFields();
+})();
+</script>
+<?php endif; ?>
 
 <?php
 $content = ob_get_clean();

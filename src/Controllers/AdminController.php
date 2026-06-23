@@ -132,6 +132,20 @@ class AdminController
                 flash('error', 'A valid email address is required for employee accounts.');
                 redirect('admin/users/create');
             }
+            $folderName = trim($data['folder_name'] ?? '');
+            if ($folderName === '') {
+                flash('error', 'A folder name is required for employee accounts.');
+                redirect('admin/users/create');
+            }
+            if (!preg_match('/^[a-zA-Z0-9_-]+$/', $folderName)) {
+                flash('error', 'Folder name may only contain letters, numbers, hyphens, and underscores.');
+                redirect('admin/users/create');
+            }
+            $imapPath = 'INBOX.' . $folderName;
+            if (Database::fetchOne('SELECT id FROM folders WHERE imap_path = ? LIMIT 1', [$imapPath]) !== null) {
+                flash('error', 'A folder with that name already exists. Choose a different folder name.');
+                redirect('admin/users/create');
+            }
         }
 
         try {
@@ -142,15 +156,21 @@ class AdminController
             redirect('admin/users/create');
         }
 
-        // New employee aliases/rules mean existing inbox mail should be re-routed.
-        FilterService::reprocess();
-        $this->audit('user_create', 'Created user ' . $data['username']);
-        flash(
-            'success',
-            ($data['role'] ?? 'employee') === 'employee'
-                ? 'User created with folder, alias, and filter rule.'
-                : 'User created.'
-        );
+        if (($data['role'] ?? 'employee') === 'employee') {
+            FilterService::reprocess();
+            $filter = FilterService::runBackground(true);
+            $moved = (int) ($filter['moved'] ?? 0);
+            $this->audit('user_create', 'Created user ' . $data['username']);
+            flash(
+                'success',
+                $moved > 0
+                    ? sprintf('User created with folder and routing rule. %d existing message(s) moved from Inbox.', $moved)
+                    : 'User created with folder, alias, and filter rule. New mail to their address will route to their folder.'
+            );
+        } else {
+            $this->audit('user_create', 'Created user ' . $data['username']);
+            flash('success', 'User created.');
+        }
         redirect('admin/users');
     }
 
@@ -249,6 +269,7 @@ class AdminController
 
         if (($data['role'] ?? 'employee') === 'employee') {
             FilterService::reprocess();
+            FilterService::runBackground(true);
         }
         $this->audit('user_update', 'Updated user #' . $id);
         flash('success', 'User updated.');

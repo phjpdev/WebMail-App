@@ -117,6 +117,21 @@ class FolderCache
     }
 
     /**
+     * Patch a single folder's cached unread count (e.g. from mail_index reconciliation).
+     */
+    public static function setUnreadCount(string $path, int $count): void
+    {
+        if ($path === '') {
+            return;
+        }
+
+        self::ensureCache();
+        if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max(0, $count);
+        }
+    }
+
+    /**
      * Refresh sidebar badge counts for the folders the user is looking at plus
      * the filter inbox. Cheap (1–2 IMAP status calls) and keeps badges accurate
      * after filter moves even when the throttle skips another filter pass.
@@ -193,19 +208,32 @@ class FolderCache
             return $data;
         }
 
-        $paths = array_column($data['folders'], 'path');
-        $paths = $this->pathsToRefreshUnread($paths);
+        $paths = $this->pathsToRefreshUnread(array_column($data['folders'], 'path'));
         if ($paths === []) {
             return $data;
         }
 
-        $data['unread_counts'] = array_merge(
-            $data['unread_counts'] ?? [],
-            $imap->getFolderUnreadCounts($paths)
-        );
+        $imapCounts = $imap->getFolderUnreadCounts($paths);
+        foreach ($paths as $path) {
+            if (($imapCounts[$path] ?? 0) > 0) {
+                MailCacheService::reconcileFolderBadge($imap, $path);
+            } else {
+                $data['unread_counts'][$path] = 0;
+            }
+        }
 
         if (isset($_SESSION[self::SESSION_KEY])) {
-            $_SESSION[self::SESSION_KEY]['unread_counts'] = $data['unread_counts'];
+            $merged = array_merge(
+                $data['unread_counts'] ?? [],
+                $_SESSION[self::SESSION_KEY]['unread_counts'] ?? []
+            );
+            foreach ($paths as $path) {
+                if (($imapCounts[$path] ?? 0) === 0) {
+                    $merged[$path] = 0;
+                }
+            }
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = $merged;
+            $data['unread_counts'] = $merged;
             $_SESSION[self::SESSION_KEY]['unread_expires'] = time() + self::UNREAD_TTL;
         }
 

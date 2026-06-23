@@ -42,10 +42,16 @@ $labels = [
     'trash' => 'Trash',
 ];
 
+$composeHref = url('compose');
+$composeActive = $activeFolder ?? '';
+if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
+    $composeHref = url('compose') . '?return_folder=' . rawurlencode(encode_folder_path($composeActive));
+}
+
 ?>
 
 <nav class="sidebar-nav">
-    <a class="btn btn-primary btn-compose" href="<?= e(url('compose')) ?>" id="compose-link">
+    <a class="btn btn-primary btn-compose" href="<?= e($composeHref) ?>" id="compose-link">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         Compose
     </a>

@@ -434,6 +434,32 @@ class ImapService
         return true;
     }
 
+    public function deleteMessage(string $folderPath, int $uid): bool
+    {
+        if (!$this->openFolder($folderPath)) {
+            return false;
+        }
+
+        if (!@imap_delete($this->connection, (string) $uid, FT_UID)) {
+            $errors = imap_errors() ?: [];
+            $this->lastError = 'Failed to delete message: ' . implode('; ', $errors);
+            app_log($this->lastError);
+
+            return false;
+        }
+
+        imap_expunge($this->connection);
+
+        if (imap_msgno($this->connection, $uid) !== 0) {
+            $this->lastError = 'Message still present after delete.';
+            app_log($this->lastError);
+
+            return false;
+        }
+
+        return true;
+    }
+
     public function isSeen(string $path, int $uid): bool
     {
         if (!$this->openFolder($path)) {
@@ -726,6 +752,165 @@ class ImapService
     /**
      * @return list<int>
      */
+    public function getUnseenUids(string $path, int $limit = 500): array
+    {
+        if (!$this->openFolder($path)) {
+            return [];
+        }
+
+        $result = @imap_search($this->connection, 'UNSEEN', SE_UID);
+        if (!is_array($result)) {
+            return [];
+        }
+
+        $uids = array_values(array_map('intval', $result));
+        if (count($uids) > $limit) {
+            $uids = array_slice($uids, 0, $limit);
+        }
+
+        return $uids;
+    }
+
+    /**
+     * Some hosts duplicate just-sent mail into INBOX (or a working folder) as
+     * unread. Mark those as read so sidebar badges stay accurate.
+     *
+     * @param list<string> $paths
+     */
+    public function clearRecentSelfSentCopies(array $paths, string $fromEmail, int $limit = 12): void
+    {
+        if ($fromEmail === '') {
+            return;
+        }
+
+        $needle = strtolower($fromEmail);
+        foreach (array_values(array_unique(array_filter($paths))) as $path) {
+            if (!$this->openFolder($path)) {
+                continue;
+            }
+
+            foreach (array_reverse($this->getFolderUids($path, $limit)) as $uid) {
+                if ($this->isSeen($path, $uid)) {
+                    continue;
+                }
+
+                $headers = $this->fetchFilterHeaders($path, $uid);
+                if ($headers === null) {
+                    continue;
+                }
+
+                if (str_contains(strtolower($headers['from'] ?? ''), $needle)) {
+                    $this->markSeen($path, $uid);
+                    MailCacheService::updateIndexSeen($path, $uid, true);
+                }
+            }
+        }
+    }
+
+    /**
+     * @deprecated Use clearRecentSelfSentCopies()
+     */
+    public function clearRecentSentCopiesFromInbox(string $inboxPath, string $fromEmail): void
+    {
+        $this->clearRecentSelfSentCopies([$inboxPath], $fromEmail);
+    }
+
+    /**
+     * Remove duplicate deliveries (same Message-ID or same from/subject/minute).
+     *
+     * @return int Number of messages deleted
+     */
+    public function removeDuplicateDeliveries(string $path, int $limit = 30): int
+    {
+        if (!$this->openFolder($path)) {
+            return 0;
+        }
+
+        $uids = $this->getFolderUids($path, $limit);
+        if ($uids === []) {
+            return 0;
+        }
+
+        $byMessageId = [];
+        $byFingerprint = [];
+
+        foreach ($uids as $uid) {
+            $uid = (int) $uid;
+            $headers = $this->fetchFilterHeaders($path, $uid);
+            if ($headers === null) {
+                continue;
+            }
+
+            $seen = !empty($headers['seen']);
+            $entry = ['uid' => $uid, 'seen' => $seen];
+
+            $messageId = strtolower(trim($headers['message_id'] ?? ''));
+            if ($messageId !== '') {
+                $byMessageId[$messageId][] = $entry;
+            }
+
+            $from = strtolower(trim($headers['from'] ?? ''));
+            $subject = strtolower(trim($headers['subject'] ?? ''));
+            $dateKey = $this->headerMinuteKey($headers['date'] ?? '');
+            if ($from !== '' && $subject !== '' && $dateKey !== '') {
+                $byFingerprint[$from . '|' . $subject . '|' . $dateKey][] = $entry;
+            }
+        }
+
+        $toDelete = [];
+        foreach ([$byMessageId, $byFingerprint] as $groups) {
+            foreach ($groups as $entries) {
+                if (count($entries) < 2) {
+                    continue;
+                }
+                $toDelete = array_merge($toDelete, $this->duplicateUidsToRemove($entries));
+            }
+        }
+
+        $removed = 0;
+        foreach (array_unique($toDelete) as $uid) {
+            if ($this->deleteMessage($path, $uid)) {
+                MailCacheService::removeMessage($path, $uid);
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * @param list<array{uid: int, seen: bool}> $entries
+     * @return list<int>
+     */
+    private function duplicateUidsToRemove(array $entries): array
+    {
+        usort($entries, static function (array $a, array $b): int {
+            if ($a['seen'] !== $b['seen']) {
+                return $b['seen'] <=> $a['seen'];
+            }
+
+            return $a['uid'] <=> $b['uid'];
+        });
+
+        array_shift($entries);
+
+        return array_map(static fn (array $e): int => $e['uid'], $entries);
+    }
+
+    private function headerMinuteKey(string $date): string
+    {
+        if ($date === '') {
+            return '';
+        }
+
+        $ts = strtotime($date);
+
+        return $ts !== false ? date('Y-m-d H:i', $ts) : '';
+    }
+
+    /**
+     * @return list<int>
+     */
     public function getFolderUids(string $path, int $limit = 400): array
     {
         if (!$this->openFolder($path)) {
@@ -791,6 +976,7 @@ class ImapService
             'from' => $from,
             'to' => $to,
             'subject' => isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '',
+            'date' => $header->date ?? '',
             'seen' => !$unseen,
             'delivered_to' => $this->extractHeaderValue($rawHeader, 'Delivered-To'),
             'x_original_to' => $this->extractHeaderValue($rawHeader, 'X-Original-To'),
@@ -1216,10 +1402,25 @@ class ImapService
     private function decodePartBody(string $body, int $encoding): string
     {
         return match ($encoding) {
-            ENCBASE64 => base64_decode($body) ?: $body,
+            ENCBASE64 => $this->decodeBase64Body($body),
             ENCQUOTEDPRINTABLE => quoted_printable_decode($body),
             default => $body,
         };
+    }
+
+    private function decodeBase64Body(string $body): string
+    {
+        if (function_exists('imap_base64')) {
+            $decoded = @imap_base64($body);
+            if (is_string($decoded) && $decoded !== '') {
+                return $decoded;
+            }
+        }
+
+        $clean = preg_replace('/\s+/', '', $body) ?? $body;
+        $decoded = base64_decode($clean, true);
+
+        return $decoded !== false ? $decoded : $body;
     }
 
     private function decodeMimeHeader(string $value): string

@@ -6,6 +6,7 @@
  * @var string $folderB64
  * @var list<array<string, mixed>> $messages
  * @var int $totalMessages
+ * @var int $unreadCount
  * @var int $page
  * @var int $totalPages
  * @var string $searchQuery
@@ -20,7 +21,14 @@
 <section class="page-header page-header--compact page-header--mail">
     <div class="page-title-row">
         <h2><?= e($title ?? 'Mail') ?></h2>
-        <span class="page-header-count" id="mail-count-label" title="<?= (int) $totalMessages ?> message<?= $totalMessages === 1 ? '' : 's' ?>"><?= (int) $totalMessages ?></span>
+        <?php
+        $headerUnread = (int) ($unreadCount ?? 0);
+        $headerCount = $headerUnread > 0 ? $headerUnread : (int) $totalMessages;
+        $headerTitle = $headerUnread > 0
+            ? $headerUnread . ' unread'
+            : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's');
+        ?>
+        <span class="page-header-count" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" title="<?= e($headerTitle) ?>"><?= $headerCount ?></span>
     </div>
     <form method="get" action="<?= e(folder_url($folderPath)) ?>" class="search-field search-field--mail mail-search-form" id="mail-search-form">
         <?php if (!empty($perPage)): ?>
@@ -65,7 +73,9 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     data-poll-url="<?= e(url('folder/' . ($folderB64 ?? encode_folder_path($folderPath)) . '/sync' . $syncQuery)) ?>"
     data-poll-interval="<?= (int) ($pollInterval ?? 30) ?>"
     data-folder-path="<?= e(encode_folder_path($folderPath)) ?>"
-    data-folder-url="<?= e(folder_url($folderPath)) ?>">
+    data-folder-plain="<?= e($folderPath) ?>"
+    data-folder-url="<?= e(folder_url($folderPath)) ?>"
+    data-folder-kind="<?= e(folder_icon_type($folderPath)) ?>">
 
     <?php require base_path('views/partials/mail-toolbar.php'); ?>
 

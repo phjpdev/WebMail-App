@@ -86,6 +86,53 @@ class MailCacheService
     }
 
     /**
+     * True when the server has a different message count than our last index sync
+     * (e.g. after filter moved mail into this folder).
+     */
+    public static function imapTotalDrifted(string $folderPath, int $imapTotal): bool
+    {
+        $state = self::getSyncState($folderPath);
+        if ($state === null) {
+            return $imapTotal > 0;
+        }
+
+        return (int) ($state['imap_total'] ?? 0) !== $imapTotal;
+    }
+
+    /**
+     * Sidebar badge shows unread on IMAP but the cached list has not caught up yet.
+     */
+    public static function badgeAheadOfIndex(string $folderPath): bool
+    {
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        $badge = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
+        if ($badge <= 0) {
+            return false;
+        }
+
+        if (!self::hasFolderData($folderPath)) {
+            return true;
+        }
+
+        return self::countUnseenInIndex($folderPath) < $badge;
+    }
+
+    /**
+     * Refresh the MySQL header index when stale, counts drift, or badges are ahead of the list.
+     */
+    public static function refreshHeadersIfNeeded(ImapService $imap, string $folderPath): void
+    {
+        $imapTotal = $imap->getMessageCount($folderPath);
+        if (
+            self::isStale($folderPath)
+            || self::imapTotalDrifted($folderPath, $imapTotal)
+            || self::badgeAheadOfIndex($folderPath)
+        ) {
+            self::syncFolderHeaders($imap, $folderPath);
+        }
+    }
+
+    /**
      * @return array{folder_path: string, imap_total: int, headers_cached: int, last_sync_at: string|null}|null
      */
     public static function getSyncState(string $folderPath): ?array
@@ -263,6 +310,82 @@ class MailCacheService
             'UPDATE mail_index SET flagged = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid = ?',
             [$flagged ? 1 : 0, $folderPath, $uid]
         );
+    }
+
+    /**
+     * Unread messages in the local index for a folder.
+     */
+    public static function countUnseenInIndex(string $folderPath): int
+    {
+        $row = Database::fetchOne(
+            'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 0',
+            [$folderPath]
+        );
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    /**
+     * When the folder is fully indexed, align the sidebar badge with the list
+     * (avoids stale IMAP counts when cache and server flags disagree).
+     */
+    public static function syncBadgeFromIndex(string $folderPath): bool
+    {
+        if (!self::hasFolderData($folderPath)) {
+            return false;
+        }
+
+        $state = self::getSyncState($folderPath);
+        $imapTotal = (int) ($state['imap_total'] ?? 0);
+        $row = Database::fetchOne(
+            'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ?',
+            [$folderPath]
+        );
+        $indexed = (int) ($row['c'] ?? 0);
+
+        if ($imapTotal > 0 && $indexed < $imapTotal) {
+            return false;
+        }
+
+        FolderCache::setUnreadCount($folderPath, self::countUnseenInIndex($folderPath));
+
+        return true;
+    }
+
+    /**
+     * Align mail_index \\Seen flags with IMAP, clear phantom UNSEEN entries on
+     * hosts where STATUS/SEARCH disagree with per-message flags, and set the
+     * sidebar badge from the index when the folder is fully cached.
+     */
+    public static function reconcileFolderBadge(ImapService $imap, string $folderPath): int
+    {
+        self::refreshHeadersIfNeeded($imap, $folderPath);
+
+        foreach ($imap->getUnseenUids($folderPath) as $uid) {
+            $uid = (int) $uid;
+            if ($imap->isSeen($folderPath, $uid)) {
+                // Phantom UNSEEN — overview says read; clear stale server flag.
+                $imap->markSeen($folderPath, $uid);
+                self::updateIndexSeen($folderPath, $uid, true);
+            } else {
+                self::updateIndexSeen($folderPath, $uid, false);
+            }
+        }
+
+        if (self::syncBadgeFromIndex($folderPath)) {
+            return self::countUnseenInIndex($folderPath);
+        }
+
+        FolderCache::refreshPaths([$folderPath]);
+        $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+
+        return (int) ($counts[$folderPath] ?? 0);
+    }
+
+    /** @deprecated Use reconcileFolderBadge() */
+    public static function alignFolderSeenFromImap(ImapService $imap, string $folderPath): int
+    {
+        return self::reconcileFolderBadge($imap, $folderPath);
     }
 
     public static function removeMessage(string $folderPath, int $uid): void

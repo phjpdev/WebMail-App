@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=38">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=51">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -36,20 +36,6 @@
       data-csrf="<?= e(csrf_token()) ?>"
       data-base-url="<?= e(url('')) ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
-
-    <div id="shortcuts-modal" class="shortcuts-modal" hidden>
-        <div class="shortcuts-modal-inner">
-            <h3>Keyboard shortcuts</h3>
-            <ul class="shortcut-list">
-                <li><kbd>c</kbd> Compose</li>
-                <li><kbd>/</kbd> Focus search</li>
-                <li><kbd>j</kbd> / <kbd>k</kbd> Next / previous</li>
-                <li><kbd>r</kbd> Reply · <kbd>a</kbd> Reply all</li>
-                <li><kbd>e</kbd> Delete · <kbd>?</kbd> This help</li>
-            </ul>
-            <button type="button" class="btn btn-secondary" id="shortcuts-close">Close</button>
-        </div>
-    </div>
 
     <div id="confirm-modal" class="app-modal" hidden aria-hidden="true">
         <div class="app-modal-backdrop" data-confirm-dismiss tabindex="-1"></div>
@@ -117,6 +103,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=38" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=51" defer></script>
 </body>
 </html>

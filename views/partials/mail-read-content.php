@@ -13,6 +13,7 @@
 $isPane = !empty($isPane);
 $folderB64 = $folderB64 ?? encode_folder_path($folderPath);
 $uid = (int) ($message['uid'] ?? 0);
+$isFlagged = !empty($message['flagged']);
 ?>
 
 <div class="mail-actions no-print" role="toolbar" aria-label="Message actions">
@@ -52,13 +53,10 @@ $uid = (int) ($message['uid'] ?? 0);
             <span class="mail-action-label">Read</span>
         </button>
     <?php endif; ?>
-    <button type="button" class="mail-action-btn" data-mail-action="flag" title="Mark important" aria-label="Mark important">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/></svg>
+    <button type="button" class="mail-action-btn mail-action-btn--flag" data-mail-action="flag-toggle" title="<?= $isFlagged ? 'Remove importance' : 'Mark important' ?>" aria-label="<?= $isFlagged ? 'Remove importance' : 'Mark important' ?>" aria-pressed="<?= $isFlagged ? 'true' : 'false' ?>">
+        <svg class="mail-action-icon mail-action-icon--flag" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/></svg>
+        <svg class="mail-action-icon mail-action-icon--unflag" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/><path d="M4 4l16 16"/></svg>
         <span class="mail-action-label">Flag</span>
-    </button>
-    <button type="button" class="mail-action-btn" data-mail-action="unflag" title="Remove importance" aria-label="Remove importance">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/><path d="M4 4l16 16"/></svg>
-        <span class="mail-action-label">Unflag</span>
     </button>
     <button type="button" class="mail-action-btn" data-mail-action="spam" title="Spam" aria-label="Report spam">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>

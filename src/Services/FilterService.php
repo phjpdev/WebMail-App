@@ -76,6 +76,19 @@ class FilterService
 
             if ($pathsToRefresh !== []) {
                 FolderCache::refreshPaths(array_keys($pathsToRefresh));
+
+                if ($totals['moved'] > 0) {
+                    $imap = new ImapService();
+                    if ($imap->connect()) {
+                        foreach (array_keys($pathsToRefresh) as $path) {
+                            try {
+                                MailCacheService::syncFolderHeaders($imap, $path);
+                            } catch (\Throwable $e) {
+                                app_log('Mail cache sync after filter failed for ' . $path . ': ' . $e->getMessage());
+                            }
+                        }
+                    }
+                }
             }
 
             $totals['duration_ms'] = (int) round((microtime(true) - $start) * 1000);

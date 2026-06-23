@@ -483,6 +483,58 @@ function default_mail_folder(): string
     return resolve_system_folder(['sent'], 'INBOX.Sent');
 }
 
+/**
+ * IMAP folder linked to a send-as alias (e.g. support@ → INBOX.support).
+ */
+function folder_for_alias_email(string $email): ?string
+{
+    if ($email === '') {
+        return null;
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            'SELECT f.imap_path
+             FROM aliases a
+             INNER JOIN folders f ON a.default_folder_id = f.id AND f.active = 1
+             WHERE LOWER(a.email) = LOWER(?) AND a.active = 1
+             LIMIT 1',
+            [$email]
+        );
+
+        return !empty($row['imap_path']) ? (string) $row['imap_path'] : null;
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+/**
+ * Best folder context for compose/send: return folder, reply folder, alias folder,
+ * or the employee's linked folder — never default to Inbox for badge refresh.
+ */
+function compose_context_folder(string $returnFolder, string $messageFolder, string $fromEmail = ''): string
+{
+    foreach ([$returnFolder, $messageFolder] as $path) {
+        if ($path !== '' && App\Services\FolderCache::canAccess($path)) {
+            return $path;
+        }
+    }
+
+    if ($fromEmail !== '') {
+        $aliasFolder = folder_for_alias_email($fromEmail);
+        if ($aliasFolder !== null && App\Services\FolderCache::canAccess($aliasFolder)) {
+            return $aliasFolder;
+        }
+    }
+
+    $default = default_mail_folder();
+    if ($default !== 'INBOX' && App\Services\FolderCache::canAccess($default)) {
+        return $default;
+    }
+
+    return '';
+}
+
 function message_url(string $folderPath, int $uid): string
 {
     return folder_url($folderPath, 'message/' . $uid);
@@ -571,6 +623,11 @@ function folder_icon_type(string $path): string
     }
 
     return 'folder';
+}
+
+function is_trash_folder(string $path): bool
+{
+    return folder_icon_type($path) === 'trash';
 }
 
 function normalize_email_token(string $token): string

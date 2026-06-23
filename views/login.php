@@ -41,7 +41,7 @@
             </form>
         </div>
     </div>
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=33" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=46" defer></script>
     <script>
         document.querySelector('.login-form')?.addEventListener('submit', function () {
             var o = document.getElementById('loading-overlay');

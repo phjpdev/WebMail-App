@@ -45,13 +45,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>
             <span class="mail-cmd-label">Unread</span>
         </button>
-        <button type="button" class="mail-cmd-btn" data-cmd="flag" disabled title="Mark as important">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/></svg>
+        <button type="button" class="mail-cmd-btn mail-cmd-btn--flag" data-cmd="flag-toggle" disabled title="Mark as important" aria-pressed="false">
+            <svg class="mail-cmd-icon mail-cmd-icon--flag" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/></svg>
+            <svg class="mail-cmd-icon mail-cmd-icon--unflag" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/><path d="M4 4l16 16"/></svg>
             <span class="mail-cmd-label">Flag</span>
-        </button>
-        <button type="button" class="mail-cmd-btn" data-cmd="unflag" disabled title="Remove importance">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.8 6.6 20l1-6.1L3.2 9.5l6.1-.9z"/><path d="M4 4l16 16"/></svg>
-            <span class="mail-cmd-label">Unflag</span>
         </button>
 
         <span class="mail-command-divider" aria-hidden="true"></span>

@@ -30,6 +30,6 @@ FROM folders f WHERE f.imap_path = 'INBOX.Spam'
 AND NOT EXISTS (SELECT 1 FROM filter_rules WHERE name = 'Spam keyword');
 
 INSERT INTO filter_rules (name, priority, active, rule_type, condition_field, condition_operator, condition_value, target_folder_id)
-SELECT 'Route support alias', 30, 1, 'employee', 'to', 'equals', 'support@bebenailsmd.com', f.id
+SELECT 'Route support alias', 30, 1, 'employee', 'to', 'contains', 'support@bebenailsmd.com', f.id
 FROM folders f WHERE f.imap_path = 'INBOX.support'
 AND NOT EXISTS (SELECT 1 FROM filter_rules WHERE name = 'Route support alias');
