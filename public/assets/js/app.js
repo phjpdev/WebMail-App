@@ -1466,6 +1466,179 @@
     window.showConfirm = showConfirm;
     window.showAlert = showAlert;
 
+    function isMobileUi() {
+        return window.matchMedia('(max-width: 900px)').matches;
+    }
+
+    function folderIconTypeFromPath(path) {
+        var lower = (path || '').toLowerCase();
+        if (path === 'INBOX') return 'inbox';
+        if (lower.indexOf('sent') >= 0) return 'sent';
+        if (lower.indexOf('draft') >= 0) return 'draft';
+        if (lower.indexOf('trash') >= 0) return 'trash';
+        if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0) return 'spam';
+        return 'folder';
+    }
+
+    function folderDepthFromPath(path) {
+        if (!path) return 0;
+        return (path.match(/\./g) || []).length;
+    }
+
+    function folderIconHtml(iconType) {
+        return '<span class="ctx-folder-icon folder-icon folder-icon-' + iconType + '" aria-hidden="true"></span>';
+    }
+
+    function iconTypeFromSidebarLink(link) {
+        var iconEl = link.querySelector('.folder-icon');
+        if (iconEl) {
+            var classes = iconEl.className.split(/\s+/);
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i].indexOf('folder-icon-') === 0 && classes[i] !== 'folder-icon') {
+                    return classes[i].replace('folder-icon-', '');
+                }
+            }
+        }
+        return folderIconTypeFromPath(link.getAttribute('data-folder-path') || '');
+    }
+
+    function folderSortKey(folder) {
+        var lower = folder.path.toLowerCase();
+        if (folder.path === 'INBOX') return '0';
+        if (lower.indexOf('sent') >= 0) return '1';
+        if (lower.indexOf('draft') >= 0) return '2';
+        return '3' + folder.name.toLowerCase();
+    }
+
+    function collectMoveFoldersFromSidebar() {
+        var out = [];
+        var active = document.querySelector('.sidebar-link.active[data-folder-path]');
+        var current = active ? active.getAttribute('data-folder-path') : null;
+        document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
+            var path = link.getAttribute('data-folder-path');
+            if (!path || path === current) return;
+            var lower = path.toLowerCase();
+            if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0 || lower.indexOf('trash') >= 0) return;
+            var textEl = link.querySelector('.sidebar-link-text');
+            out.push({
+                path: path,
+                name: textEl ? textEl.textContent.trim() : path,
+                icon: iconTypeFromSidebarLink(link),
+                depth: folderDepthFromPath(path)
+            });
+        });
+        out.sort(function (a, b) {
+            return folderSortKey(a).localeCompare(folderSortKey(b));
+        });
+        return out;
+    }
+
+    function collectToolbarMoveFolders() {
+        var sel = document.getElementById('cmd-move-target');
+        if (!sel) return collectMoveFoldersFromSidebar();
+        var out = [];
+        sel.querySelectorAll('option').forEach(function (opt) {
+            if (!opt.value) return;
+            out.push({
+                path: opt.value,
+                name: opt.textContent.trim(),
+                icon: folderIconTypeFromPath(opt.value),
+                depth: folderDepthFromPath(opt.value)
+            });
+        });
+        return out.length ? out : collectMoveFoldersFromSidebar();
+    }
+
+    var folderPickerKeyHandler = null;
+
+    /**
+     * @param {{ title?: string, folders?: Array<{path:string,name:string,icon?:string,depth?:number}>, onPick?: Function }} opts
+     * @returns {Promise<object|null>}
+     */
+    function showFolderPicker(opts) {
+        opts = opts || {};
+        var modal = document.getElementById('folder-picker-modal');
+        var folders = opts.folders || [];
+        if (!modal) {
+            return Promise.resolve(null);
+        }
+
+        var titleEl = document.getElementById('folder-picker-title');
+        var listEl = document.getElementById('folder-picker-list');
+        var searchEl = document.getElementById('folder-picker-search');
+        var cancelBtn = document.getElementById('folder-picker-cancel');
+        var backdrop = modal.querySelector('[data-folder-picker-dismiss]');
+
+        function renderList(filter) {
+            if (!listEl) return;
+            var q = (filter || '').trim().toLowerCase();
+            listEl.innerHTML = '';
+            var shown = 0;
+            folders.forEach(function (f) {
+                if (q && f.name.toLowerCase().indexOf(q) < 0 && f.path.toLowerCase().indexOf(q) < 0) return;
+                shown++;
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'folder-picker-item';
+                btn.setAttribute('role', 'option');
+                if (f.depth) btn.style.paddingLeft = (0.75 + f.depth * 1.1) + 'rem';
+                btn.innerHTML = folderIconHtml(f.icon || folderIconTypeFromPath(f.path)) +
+                    '<span class="folder-picker-item-label"></span>';
+                btn.querySelector('.folder-picker-item-label').textContent = f.name;
+                btn.addEventListener('click', function () {
+                    close(f);
+                });
+                listEl.appendChild(btn);
+            });
+            if (!shown) {
+                var empty = document.createElement('p');
+                empty.className = 'folder-picker-empty';
+                empty.textContent = q ? 'No folders match your search.' : 'No folders available.';
+                listEl.appendChild(empty);
+            }
+        }
+
+        return new Promise(function (resolve) {
+            if (titleEl) titleEl.textContent = opts.title || 'Choose folder';
+            if (searchEl) {
+                searchEl.value = '';
+                searchEl.oninput = function () { renderList(searchEl.value); };
+            }
+            renderList('');
+
+            function close(result) {
+                modal.hidden = true;
+                modal.setAttribute('aria-hidden', 'true');
+                body.classList.remove('modal-open');
+                if (folderPickerKeyHandler) {
+                    document.removeEventListener('keydown', folderPickerKeyHandler, true);
+                    folderPickerKeyHandler = null;
+                }
+                if (result && opts.onPick) opts.onPick(result);
+                resolve(result || null);
+            }
+
+            folderPickerKeyHandler = function (e) {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    close(null);
+                }
+            };
+
+            if (cancelBtn) cancelBtn.onclick = function () { close(null); };
+            if (backdrop) backdrop.onclick = function () { close(null); };
+            document.addEventListener('keydown', folderPickerKeyHandler, true);
+
+            modal.hidden = false;
+            modal.setAttribute('aria-hidden', 'false');
+            body.classList.add('modal-open');
+            if (searchEl) searchEl.focus();
+        });
+    }
+
+    window.showFolderPicker = showFolderPicker;
+
     function initConfirmForms() {
         document.addEventListener('submit', function (e) {
             var form = e.target;
@@ -2083,6 +2256,25 @@
         if (action === 'delete') {
             showConfirm(deleteConfirmOptions(selectionCount)).then(function (ok) {
                 if (ok) runBulkCommandExecute(action, uids, folderEnc, triggerBtn);
+            });
+            return;
+        }
+
+        if (action === 'move' && isMobileUi()) {
+            var moveFolders = collectToolbarMoveFolders();
+            if (!moveFolders.length) {
+                showToast('error', 'No folders available.');
+                return;
+            }
+            var moveTitle = selectionCount === 1 ? 'Move message' : 'Move ' + selectionCount + ' messages';
+            showFolderPicker({
+                title: moveTitle,
+                folders: moveFolders,
+                onPick: function (f) {
+                    var moveSelect = document.getElementById('cmd-move-target');
+                    if (moveSelect) moveSelect.value = f.path;
+                    runBulkCommandExecute('move', uids, folderEnc, triggerBtn);
+                }
             });
             return;
         }
@@ -3069,42 +3261,28 @@
             return item;
         }
 
-        function folderIconTypeFromPath(path) {
-            var lower = (path || '').toLowerCase();
-            if (path === 'INBOX') return 'inbox';
-            if (lower.indexOf('sent') >= 0) return 'sent';
-            if (lower.indexOf('draft') >= 0) return 'draft';
-            if (lower.indexOf('trash') >= 0) return 'trash';
-            if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0) return 'spam';
-            return 'folder';
-        }
-
-        function iconTypeFromSidebarLink(link) {
-            var iconEl = link.querySelector('.folder-icon');
-            if (iconEl) {
-                var classes = iconEl.className.split(/\s+/);
-                for (var i = 0; i < classes.length; i++) {
-                    if (classes[i].indexOf('folder-icon-') === 0 && classes[i] !== 'folder-icon') {
-                        return classes[i].replace('folder-icon-', '');
-                    }
-                }
-            }
-            return folderIconTypeFromPath(link.getAttribute('data-folder-path') || '');
-        }
-
-        function folderIconHtml(iconType) {
-            return '<span class="ctx-folder-icon folder-icon folder-icon-' + iconType + '" aria-hidden="true"></span>';
-        }
-
-        function folderSortKey(folder) {
-            var lower = folder.path.toLowerCase();
-            if (folder.path === 'INBOX') return '0';
-            if (lower.indexOf('sent') >= 0) return '1';
-            if (lower.indexOf('draft') >= 0) return '2';
-            return '3' + folder.name.toLowerCase();
-        }
-
         function addSubmenu(label, iconPaths, folders, onPick) {
+            if (isMobileUi()) {
+                var mobItem = document.createElement('button');
+                mobItem.type = 'button';
+                mobItem.className = 'context-menu-item';
+                mobItem.innerHTML = iconSvg(iconPaths) + '<span class="ctx-label"></span>' +
+                    iconSvg(ICONS.chevron, 'ctx-chevron');
+                mobItem.querySelector('.ctx-label').textContent = label;
+                mobItem.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    hide();
+                    showFolderPicker({
+                        title: 'Move to folder',
+                        folders: folders,
+                        onPick: onPick
+                    });
+                });
+                menu.appendChild(mobItem);
+                return mobItem;
+            }
+
             var item = document.createElement('div');
             item.className = 'context-menu-item has-submenu';
             item.setAttribute('tabindex', '0');
@@ -3127,6 +3305,7 @@
                 var b = document.createElement('button');
                 b.type = 'button';
                 b.className = 'context-menu-item context-submenu-item';
+                if (f.depth) b.style.paddingLeft = (0.6 + f.depth * 1.1) + 'rem';
                 b.innerHTML = folderIconHtml(f.icon || 'folder') + '<span class="ctx-label"></span>';
                 b.querySelector('.ctx-label').textContent = f.name;
                 b.addEventListener('click', function (e) {
@@ -3149,14 +3328,12 @@
             item.appendChild(sub);
 
             function place() {
-                sub.classList.remove('flip-left');
+                sub.classList.remove('flip-left', 'flip-below');
+                sub.style.top = '0';
+                sub.style.marginTop = '';
+
                 var rect = item.getBoundingClientRect();
                 var subW = sub.offsetWidth || 212;
-                if (rect.right + subW + 8 > window.innerWidth) {
-                    sub.classList.add('flip-left');
-                }
-
-                sub.style.top = '0';
                 var margin = 10;
                 var headerEl = sub.querySelector('.context-submenu-header');
                 var headerH = headerEl ? headerEl.offsetHeight : 0;
@@ -3164,13 +3341,24 @@
                 sub.style.maxHeight = maxSubH + 'px';
                 scroll.style.maxHeight = Math.max(120, maxSubH - headerH) + 'px';
 
+                if (rect.right + subW + 8 > window.innerWidth) {
+                    sub.classList.add('flip-left');
+                }
+
                 var subRect = sub.getBoundingClientRect();
+                if (subRect.left < margin || subRect.right > window.innerWidth - margin) {
+                    sub.classList.remove('flip-left');
+                    sub.classList.add('flip-below');
+                }
+
+                subRect = sub.getBoundingClientRect();
                 var overflowBottom = subRect.bottom - (window.innerHeight - margin);
                 var overflowTop = margin - subRect.top;
+                var topOffset = parseFloat(sub.style.top) || 0;
                 if (overflowBottom > 0) {
-                    sub.style.top = (-overflowBottom) + 'px';
+                    sub.style.top = (topOffset - overflowBottom) + 'px';
                 } else if (overflowTop > 0) {
-                    sub.style.top = overflowTop + 'px';
+                    sub.style.top = (topOffset + overflowTop) + 'px';
                 }
 
                 updateScrollState();
@@ -3187,30 +3375,8 @@
             menu.appendChild(sep);
         }
 
-        function activeFolderPath() {
-            var active = document.querySelector('.sidebar-link.active[data-folder-path]');
-            return active ? active.getAttribute('data-folder-path') : null;
-        }
-
         function collectMoveFolders() {
-            var out = [];
-            var current = activeFolderPath();
-            document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
-                var path = link.getAttribute('data-folder-path');
-                if (!path || path === current) return;
-                var lower = path.toLowerCase();
-                if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0 || lower.indexOf('trash') >= 0) return;
-                var textEl = link.querySelector('.sidebar-link-text');
-                out.push({
-                    path: path,
-                    name: textEl ? textEl.textContent.trim() : path,
-                    icon: iconTypeFromSidebarLink(link)
-                });
-            });
-            out.sort(function (a, b) {
-                return folderSortKey(a).localeCompare(folderSortKey(b));
-            });
-            return out;
+            return collectMoveFoldersFromSidebar();
         }
 
         function openFor(row, x, y) {

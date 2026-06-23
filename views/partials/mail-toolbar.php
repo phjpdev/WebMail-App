@@ -20,10 +20,10 @@
             <span class="mail-cmd-label">Delete</span>
         </button>
 
-        <div class="mail-cmd-move">
+        <div class="mail-cmd-move" id="mail-cmd-move">
             <label class="sr-only" for="cmd-move-target">Move to folder</label>
-            <div class="mail-cmd-move-select-wrap">
-                <select id="cmd-move-target" class="mail-cmd-move-select" disabled aria-label="Move to folder">
+            <div class="mail-cmd-move-select-wrap" aria-hidden="true">
+                <select id="cmd-move-target" class="mail-cmd-move-select" disabled aria-label="Move to folder" tabindex="-1">
                     <option value="">Move to…</option>
                     <?php foreach ($folders as $f): ?>
                         <?php if ($f['path'] !== $folderPath): ?>

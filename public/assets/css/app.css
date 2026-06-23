@@ -2587,6 +2587,184 @@ body.modal-open {
     background: var(--color-surface-alt);
 }
 
+/* Folder picker (mobile sheet + desktop dialog) */
+.folder-picker-modal {
+    z-index: 9600;
+}
+
+.folder-picker-modal .app-modal-dialog--sheet {
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    max-height: min(520px, calc(100vh - 2.5rem));
+}
+
+.folder-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 1rem 1rem 0.65rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.folder-picker-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--color-text);
+}
+
+.folder-picker-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+
+.folder-picker-close:hover,
+.folder-picker-close:focus-visible {
+    background: var(--color-surface-alt);
+    color: var(--color-text);
+    outline: none;
+}
+
+.folder-picker-search-wrap {
+    padding: 0.65rem 1rem 0.5rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.folder-picker-search {
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 8px;
+    background: var(--color-surface-alt, var(--color-surface));
+    color: var(--color-text);
+    font-size: 0.875rem;
+    font-family: inherit;
+}
+
+.folder-picker-search:focus {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+    border-color: var(--color-primary);
+}
+
+.folder-picker-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0.35rem;
+}
+
+.folder-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+
+.folder-picker-item:hover,
+.folder-picker-item:focus-visible {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+    outline: none;
+}
+
+.folder-picker-item .ctx-folder-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    opacity: 0.85;
+    background: currentColor;
+    mask-size: contain;
+    mask-repeat: no-repeat;
+    mask-position: center;
+}
+
+.folder-picker-item:hover .ctx-folder-icon,
+.folder-picker-item:focus-visible .ctx-folder-icon {
+    opacity: 1;
+}
+
+.folder-picker-item-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.folder-picker-empty {
+    padding: 1.25rem 0.75rem;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+}
+
+@media (max-width: 900px) {
+    .folder-picker-modal {
+        align-items: flex-end;
+        padding: 0;
+    }
+
+    .folder-picker-modal .app-modal-backdrop {
+        background: rgba(0, 0, 0, 0.45);
+    }
+
+    .folder-picker-modal .app-modal-dialog--sheet {
+        width: 100%;
+        max-width: 100%;
+        max-height: min(72vh, 520px);
+        border-radius: 16px 16px 0 0;
+        border-bottom: none;
+        animation: folder-sheet-in 0.22s ease-out;
+    }
+
+    @keyframes folder-sheet-in {
+        from {
+            opacity: 0;
+            transform: translateY(100%);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .folder-picker-modal .app-modal-dialog--sheet {
+        animation: none;
+    }
+}
+
+[data-theme="dark"] .folder-picker-search {
+    background: var(--color-surface);
+}
+
 .mail-row.is-focused {
     outline: 2px solid var(--color-primary);
     outline-offset: -2px;
@@ -3290,6 +3468,28 @@ body.modal-open {
     margin-left: 0;
     margin-right: 4px;
     transform: translateX(6px);
+}
+
+.context-submenu.flip-below {
+    top: 100%;
+    left: 0;
+    right: auto;
+    margin-left: 0;
+    margin-top: 4px;
+    margin-right: 0;
+    transform: translateY(-4px);
+}
+
+.context-submenu.flip-below::before {
+    top: -10px;
+    left: 0;
+    width: 100%;
+    height: 10px;
+}
+
+.context-menu-item.has-submenu:hover > .context-submenu.flip-below,
+.context-menu-item.has-submenu:focus-within > .context-submenu.flip-below {
+    transform: translateY(0);
 }
 
 .context-menu-item.has-submenu:hover > .context-submenu.flip-left,
@@ -4446,5 +4646,9 @@ body:has(.mail-workspace) {
 
     .btn-compose {
         min-height: 2.75rem;
+    }
+
+    .mail-cmd-move {
+        display: none;
     }
 }

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=70">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=73">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -56,6 +56,23 @@
         </div>
     </div>
 
+    <div id="folder-picker-modal" class="app-modal folder-picker-modal" hidden aria-hidden="true">
+        <div class="app-modal-backdrop" data-folder-picker-dismiss tabindex="-1"></div>
+        <div class="app-modal-dialog app-modal-dialog--sheet" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
+            <div class="folder-picker-header">
+                <h2 id="folder-picker-title" class="folder-picker-title">Choose folder</h2>
+                <button type="button" class="folder-picker-close" id="folder-picker-cancel" aria-label="Close">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="folder-picker-search-wrap">
+                <label class="sr-only" for="folder-picker-search">Search folders</label>
+                <input type="search" id="folder-picker-search" class="folder-picker-search" placeholder="Search folders…" autocomplete="off">
+            </div>
+            <div class="folder-picker-list" id="folder-picker-list" role="listbox" aria-labelledby="folder-picker-title"></div>
+        </div>
+    </div>
+
     <header class="site-header">
         <div class="header-inner">
             <div class="header-left">
@@ -103,6 +120,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=66" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=67" defer></script>
 </body>
 </html>
