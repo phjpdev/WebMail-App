@@ -304,12 +304,94 @@ class MailCacheService
         );
     }
 
+    public static function indexSeenState(string $folderPath, int $uid): ?bool
+    {
+        $row = Database::fetchOne(
+            'SELECT seen FROM mail_index WHERE folder_path = ? AND imap_uid = ?',
+            [$folderPath, $uid]
+        );
+
+        return $row !== null ? (bool) $row['seen'] : null;
+    }
+
     public static function updateIndexFlagged(string $folderPath, int $uid, bool $flagged): void
     {
         Database::query(
             'UPDATE mail_index SET flagged = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid = ?',
             [$flagged ? 1 : 0, $folderPath, $uid]
         );
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public static function updateIndexSeenBulk(string $folderPath, array $uids, bool $seen): void
+    {
+        if ($uids === []) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$seen ? 1 : 0, $folderPath], $uids);
+        Database::query(
+            "UPDATE mail_index SET seen = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        );
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public static function updateIndexFlaggedBulk(string $folderPath, array $uids, bool $flagged): void
+    {
+        if ($uids === []) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$flagged ? 1 : 0, $folderPath], $uids);
+        Database::query(
+            "UPDATE mail_index SET flagged = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        );
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public static function countUnreadAmongUids(string $folderPath, array $uids): int
+    {
+        if ($uids === []) {
+            return 0;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$folderPath], $uids);
+        $row = Database::fetchOne(
+            "SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 0 AND imap_uid IN ({$placeholders})",
+            $params
+        );
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public static function countSeenAmongUids(string $folderPath, array $uids): int
+    {
+        if ($uids === []) {
+            return 0;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$folderPath], $uids);
+        $row = Database::fetchOne(
+            "SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 1 AND imap_uid IN ({$placeholders})",
+            $params
+        );
+
+        return (int) ($row['c'] ?? 0);
     }
 
     /**

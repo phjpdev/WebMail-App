@@ -604,6 +604,54 @@ class ImapService
         imap_clearflag_full($this->connection, (string) $uid, '\\Flagged', ST_UID);
     }
 
+    /**
+     * @param list<int> $uids
+     */
+    public function markSeenBulk(string $path, array $uids): void
+    {
+        if ($uids === [] || !$this->openFolder($path)) {
+            return;
+        }
+
+        imap_setflag_full($this->connection, implode(',', $uids), '\\Seen', ST_UID);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public function markUnseenBulk(string $path, array $uids): void
+    {
+        if ($uids === [] || !$this->openFolder($path)) {
+            return;
+        }
+
+        imap_clearflag_full($this->connection, implode(',', $uids), '\\Seen', ST_UID);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public function markFlaggedBulk(string $path, array $uids): void
+    {
+        if ($uids === [] || !$this->openFolder($path)) {
+            return;
+        }
+
+        imap_setflag_full($this->connection, implode(',', $uids), '\\Flagged', ST_UID);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    public function markUnflaggedBulk(string $path, array $uids): void
+    {
+        if ($uids === [] || !$this->openFolder($path)) {
+            return;
+        }
+
+        imap_clearflag_full($this->connection, implode(',', $uids), '\\Flagged', ST_UID);
+    }
+
     public function messageExists(string $path, int $uid): bool
     {
         if (!$this->openFolder($path)) {

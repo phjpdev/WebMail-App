@@ -1011,20 +1011,39 @@ class MailController
      */
     private function performMove(string $folderPath, array $uids, string $targetPath, string $redirect, ?string $successMsg = null): void
     {
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            $this->actionError($imap->getLastError(), $redirect);
-        }
-
         $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
         if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
             $unreadDelta = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
         }
 
-        $folders = FolderCache::load()['folders'];
+        if (wants_json()) {
+            MailCacheService::removeMessages($folderPath, $uids);
+            if ($unreadDelta > 0) {
+                FolderCache::bumpUnread($folderPath, -$unreadDelta);
+                $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
+            } else {
+                $counts = FolderCache::bumpUnread($folderPath, 0);
+            }
+
+            json_response_then([
+                'ok' => true,
+                'moved' => count($uids),
+                'errors' => 0,
+                'uids' => array_values($uids),
+                'target' => $targetPath,
+                'unread_counts' => $counts,
+            ], function () use ($folderPath, $uids, $targetPath): void {
+                $this->executeMoveOnServer($folderPath, $uids, $targetPath);
+            });
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            $this->actionError($imap->getLastError(), $redirect);
+        }
+
+        $folders = FolderCache::load(skipUnreadRefresh: true)['folders'];
         if (!$this->folderExists($folders, $targetPath)) {
-            // Standard destinations like Trash/Spam may not exist yet on a fresh
-            // mailbox — create them on demand instead of failing the move.
             if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
                 $this->actionError('Target folder could not be created on the mail server.', $redirect);
             }
@@ -1040,26 +1059,6 @@ class MailController
             MailCacheService::removeMessages($folderPath, $movedUids);
         }
 
-        if (wants_json()) {
-            $unreadDelta = min($unreadDelta, $moved);
-            if ($unreadDelta > 0 && $moved > 0) {
-                FolderCache::bumpUnread($folderPath, -$unreadDelta);
-                $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
-            } else {
-                $counts = FolderCache::bumpUnread($folderPath, 0);
-            }
-
-            json_response([
-                'ok' => $moved > 0,
-                'moved' => $moved,
-                'errors' => $errors,
-                'uids' => array_values($movedUids),
-                'target' => $targetPath,
-                'unread_counts' => $counts,
-            ], $moved > 0 ? 200 : 422);
-        }
-
-        // Non-AJAX (full page) path: drop the cache so the next render is fresh.
         (new FolderCache())->clear();
 
         if ($moved > 0) {
@@ -1075,16 +1074,65 @@ class MailController
     /**
      * @param list<int> $uids
      */
-    private function performPermanentDelete(string $folderPath, array $uids, string $redirect, ?string $successMsg = null): void
+    private function executeMoveOnServer(string $folderPath, array $uids, string $targetPath): void
     {
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            $this->actionError($imap->getLastError(), $redirect);
+        if ($uids === []) {
+            return;
         }
 
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            app_log('Background move failed: ' . $imap->getLastError());
+
+            return;
+        }
+
+        $folders = FolderCache::load(skipUnreadRefresh: true)['folders'];
+        if (!$this->folderExists($folders, $targetPath)) {
+            if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
+                app_log('Background move: could not create target folder ' . $targetPath);
+
+                return;
+            }
+            (new FolderCache())->clear();
+        }
+
+        $imap->moveMessages($folderPath, $uids, $targetPath);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    private function performPermanentDelete(string $folderPath, array $uids, string $redirect, ?string $successMsg = null): void
+    {
         $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
         if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
             $unreadDelta = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        }
+
+        if (wants_json()) {
+            MailCacheService::removeMessages($folderPath, $uids);
+            $unreadDelta = min($unreadDelta, count($uids));
+            if ($unreadDelta > 0) {
+                $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
+            } else {
+                $counts = FolderCache::bumpUnread($folderPath, 0);
+            }
+
+            json_response_then([
+                'ok' => true,
+                'deleted' => count($uids),
+                'errors' => 0,
+                'uids' => array_values($uids),
+                'unread_counts' => $counts,
+            ], function () use ($folderPath, $uids): void {
+                $this->executeDeleteOnServer($folderPath, $uids);
+            });
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            $this->actionError($imap->getLastError(), $redirect);
         }
 
         $result = $imap->deleteMessages($folderPath, $uids);
@@ -1094,23 +1142,6 @@ class MailController
 
         if ($deletedUids !== []) {
             MailCacheService::removeMessages($folderPath, $deletedUids);
-        }
-
-        if (wants_json()) {
-            $unreadDelta = min($unreadDelta, $deleted);
-            if ($unreadDelta > 0 && $deleted > 0) {
-                $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
-            } else {
-                $counts = FolderCache::bumpUnread($folderPath, 0);
-            }
-
-            json_response([
-                'ok' => $deleted > 0,
-                'deleted' => $deleted,
-                'errors' => $errors,
-                'uids' => array_values($deletedUids),
-                'unread_counts' => $counts,
-            ], $deleted > 0 ? 200 : 422);
         }
 
         (new FolderCache())->clear();
@@ -1123,6 +1154,25 @@ class MailController
         }
 
         redirect($redirect);
+    }
+
+    /**
+     * @param list<int> $uids
+     */
+    private function executeDeleteOnServer(string $folderPath, array $uids): void
+    {
+        if ($uids === []) {
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            app_log('Background delete failed: ' . $imap->getLastError());
+
+            return;
+        }
+
+        $imap->deleteMessages($folderPath, $uids);
     }
 
     /**
@@ -1183,24 +1233,7 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            $this->actionError($imap->getLastError(), $redirect);
-        }
-
-        // Only adjust the badge if the flag actually changes, so repeated clicks
-        // (or acting on an already-read message) can't drive the count negative
-        // or inflate it.
-        // Lightweight overview fetch — getMessageByUid() would download the full
-        // MIME body just to learn whether the \\Seen flag is already set.
-        $overview = $imap->getMessageOverviewByUid($folderPath, $uid);
-        $alreadySeen = $overview !== null ? $overview['seen'] : null;
-
-        if ($seen) {
-            $imap->markSeen($folderPath, $uid);
-        } else {
-            $imap->markUnseen($folderPath, $uid);
-        }
+        $alreadySeen = MailCacheService::indexSeenState($folderPath, $uid);
 
         MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
 
@@ -1213,7 +1246,33 @@ class MailController
         $counts = $this->unreadCountsAfterSeenChange($folderPath, $delta);
 
         if (wants_json()) {
-            json_response(['ok' => true, 'seen' => $seen, 'uid' => $uid, 'unread_counts' => $counts]);
+            json_response_then([
+                'ok' => true,
+                'seen' => $seen,
+                'uid' => $uid,
+                'unread_counts' => $counts,
+            ], function () use ($folderPath, $uid, $seen): void {
+                $imap = new ImapService();
+                if (!$imap->connect()) {
+                    app_log('Background mark seen failed: ' . $imap->getLastError());
+
+                    return;
+                }
+                if ($seen) {
+                    $imap->markSeen($folderPath, $uid);
+                } else {
+                    $imap->markUnseen($folderPath, $uid);
+                }
+            });
+        }
+
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            if ($seen) {
+                $imap->markSeen($folderPath, $uid);
+            } else {
+                $imap->markUnseen($folderPath, $uid);
+            }
         }
 
         flash('success', $seen ? 'Marked as read.' : 'Marked as unread.');
@@ -1231,21 +1290,36 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            $this->actionError($imap->getLastError(), $redirect);
-        }
-
-        if ($flagged) {
-            $imap->markFlagged($folderPath, $uid);
-        } else {
-            $imap->markUnflagged($folderPath, $uid);
-        }
-
         MailCacheService::updateIndexFlagged($folderPath, $uid, $flagged);
 
         if (wants_json()) {
-            json_response(['ok' => true, 'flagged' => $flagged, 'uid' => $uid, 'unread_counts' => FolderCache::bumpUnread($folderPath, 0)]);
+            json_response_then([
+                'ok' => true,
+                'flagged' => $flagged,
+                'uid' => $uid,
+                'unread_counts' => FolderCache::bumpUnread($folderPath, 0),
+            ], function () use ($folderPath, $uid, $flagged): void {
+                $imap = new ImapService();
+                if (!$imap->connect()) {
+                    app_log('Background flag failed: ' . $imap->getLastError());
+
+                    return;
+                }
+                if ($flagged) {
+                    $imap->markFlagged($folderPath, $uid);
+                } else {
+                    $imap->markUnflagged($folderPath, $uid);
+                }
+            });
+        }
+
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            if ($flagged) {
+                $imap->markFlagged($folderPath, $uid);
+            } else {
+                $imap->markUnflagged($folderPath, $uid);
+            }
         }
 
         flash('success', $flagged ? 'Marked as important.' : 'Importance removed.');
@@ -1263,24 +1337,41 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            $this->actionError($imap->getLastError(), $redirect);
-        }
+        $delta = $seen
+            ? -MailCacheService::countUnreadAmongUids($folderPath, $uids)
+            : MailCacheService::countSeenAmongUids($folderPath, $uids);
 
-        foreach ($uids as $uid) {
-            if ($seen) {
-                $imap->markSeen($folderPath, $uid);
-            } else {
-                $imap->markUnseen($folderPath, $uid);
-            }
-            MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
-        }
-
-        $counts = $this->unreadCountsAfterSeenChange($folderPath);
+        MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
+        $counts = $this->unreadCountsAfterSeenChange($folderPath, $delta);
 
         if (wants_json()) {
-            json_response(['ok' => true, 'seen' => $seen, 'uids' => $uids, 'unread_counts' => $counts]);
+            json_response_then([
+                'ok' => true,
+                'seen' => $seen,
+                'uids' => $uids,
+                'unread_counts' => $counts,
+            ], function () use ($folderPath, $uids, $seen): void {
+                $imap = new ImapService();
+                if (!$imap->connect()) {
+                    app_log('Background bulk seen failed: ' . $imap->getLastError());
+
+                    return;
+                }
+                if ($seen) {
+                    $imap->markSeenBulk($folderPath, $uids);
+                } else {
+                    $imap->markUnseenBulk($folderPath, $uids);
+                }
+            });
+        }
+
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            if ($seen) {
+                $imap->markSeenBulk($folderPath, $uids);
+            } else {
+                $imap->markUnseenBulk($folderPath, $uids);
+            }
         }
 
         flash('success', sprintf('%d message(s) marked as %s.', count($uids), $seen ? 'read' : 'unread'));
@@ -1298,22 +1389,36 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            $this->actionError($imap->getLastError(), $redirect);
-        }
-
-        foreach ($uids as $uid) {
-            if ($flagged) {
-                $imap->markFlagged($folderPath, $uid);
-            } else {
-                $imap->markUnflagged($folderPath, $uid);
-            }
-            MailCacheService::updateIndexFlagged($folderPath, $uid, $flagged);
-        }
+        MailCacheService::updateIndexFlaggedBulk($folderPath, $uids, $flagged);
 
         if (wants_json()) {
-            json_response(['ok' => true, 'flagged' => $flagged, 'uids' => $uids, 'unread_counts' => FolderCache::bumpUnread($folderPath, 0)]);
+            json_response_then([
+                'ok' => true,
+                'flagged' => $flagged,
+                'uids' => $uids,
+                'unread_counts' => FolderCache::bumpUnread($folderPath, 0),
+            ], function () use ($folderPath, $uids, $flagged): void {
+                $imap = new ImapService();
+                if (!$imap->connect()) {
+                    app_log('Background bulk flag failed: ' . $imap->getLastError());
+
+                    return;
+                }
+                if ($flagged) {
+                    $imap->markFlaggedBulk($folderPath, $uids);
+                } else {
+                    $imap->markUnflaggedBulk($folderPath, $uids);
+                }
+            });
+        }
+
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            if ($flagged) {
+                $imap->markFlaggedBulk($folderPath, $uids);
+            } else {
+                $imap->markUnflaggedBulk($folderPath, $uids);
+            }
         }
 
         flash('success', sprintf('%d message(s) %s.', count($uids), $flagged ? 'marked as important' : 'unflagged'));

@@ -2011,6 +2011,70 @@
         }
     }
 
+    function bumpFolderUnread(delta) {
+        if (!delta) return;
+        var card = getListCard();
+        var plain = card ? card.getAttribute('data-folder-plain') : '';
+        if (plain) {
+            var counts = Object.assign({}, lastUnreadCounts);
+            counts[plain] = Math.max(0, (counts[plain] || 0) + delta);
+            applyUnreadCounts(counts);
+        }
+        var label = document.getElementById('mail-count-label');
+        var total = label ? parseInt(label.getAttribute('data-total') || '0', 10) : 0;
+        var unread = label ? parseInt(label.getAttribute('data-unread') || '0', 10) : 0;
+        updateMailCount(total, Math.max(0, unread + delta));
+    }
+
+    function syncReadSeenButton(card) {
+        if (!card) return;
+        var seen = card.getAttribute('data-seen') === '1';
+        var btn = card.querySelector('[data-mail-action="mark-read"], [data-mail-action="mark-unread"]');
+        if (!btn) return;
+        btn.setAttribute('data-mail-action', seen ? 'mark-unread' : 'mark-read');
+        btn.title = seen ? 'Mark unread' : 'Mark read';
+        btn.setAttribute('aria-label', btn.title);
+        var label = btn.querySelector('.mail-action-label');
+        if (label) label.textContent = seen ? 'Unread' : 'Read';
+    }
+
+    function fireAndForgetAction(actionPath, payload) {
+        fetch(apiUrl(actionPath), {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                Accept: 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: payload.toString()
+        }).then(function (res) {
+            return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                if (!res.ok || (data && data.ok === false)) {
+                    throw new Error((data && data.error) || 'Action failed.');
+                }
+                return data;
+            });
+        }).then(function (data) {
+            if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                applyUnreadCounts(data.unread_counts);
+            }
+        }).catch(function (err) {
+            showToast('error', err.message || 'Action failed.');
+            if (mailPoll) scheduleMailPoll(true);
+        });
+    }
+
+    function countReadAmong(uids) {
+        var n = 0;
+        uids.forEach(function (uid) {
+            rowsForUid(uid).forEach(function (el) {
+                if (el.getAttribute('data-seen') === '1') n++;
+            });
+        });
+        return n;
+    }
+
     function applyOptimisticUnreadDelta(action, allInFolder, uids, targetFolder) {
         var card = getListCard();
         var plain = card ? card.getAttribute('data-folder-plain') : '';
@@ -2044,6 +2108,7 @@
         }
 
         var successMsg = '';
+        var seenDelta = 0;
 
         if (action === 'delete') {
             actionPath = 'message/bulk-trash';
@@ -2071,6 +2136,7 @@
             successMsg = 'Selected messages moved.';
         } else if (action === 'mark-read') {
             actionPath = 'message/bulk-mark-read';
+            seenDelta = -(allInFolder ? folderUnreadCount() : countUnreadAmong(uids));
             if (allInFolder) {
                 document.querySelectorAll('.mail-row[data-seen="0"], .mail-card[data-seen="0"]').forEach(function (el) {
                     setRowSeen(parseInt(el.getAttribute('data-uid'), 10), true);
@@ -2081,6 +2147,13 @@
             successMsg = selectionCount + ' message(s) marked as read.';
         } else if (action === 'mark-unread') {
             actionPath = 'message/bulk-mark-unread';
+            if (allInFolder) {
+                var countLabel = document.getElementById('mail-count-label');
+                var totalMsgs = countLabel ? parseInt(countLabel.getAttribute('data-total') || '0', 10) : 0;
+                seenDelta = Math.max(0, totalMsgs - folderUnreadCount());
+            } else {
+                seenDelta = countReadAmong(uids);
+            }
             if (allInFolder) {
                 document.querySelectorAll('.mail-row[data-seen="1"], .mail-card[data-seen="1"]').forEach(function (el) {
                     setRowSeen(parseInt(el.getAttribute('data-uid'), 10), false);
@@ -2113,110 +2186,23 @@
             return;
         }
 
-        var isInstantListAction = action === 'delete' || action === 'move';
+        var instantActions = ['delete', 'move', 'mark-read', 'mark-unread', 'flag', 'unflag'];
+        var isInstantListAction = instantActions.indexOf(action) >= 0;
         var moveTarget = action === 'move' ? (document.getElementById('cmd-move-target') || {}).value || '' : '';
 
         if (isInstantListAction) {
-            if (allInFolder) {
+            if (allInFolder && (action === 'delete' || action === 'move')) {
                 payload.set('unread_delta', String(folderUnreadCount()));
             }
             showToast('success', successMsg);
-            applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
-            finishBulkSelectionUi(action, allInFolder, uids);
-
-            fetch(apiUrl(actionPath), {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    Accept: 'application/json',
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: payload.toString()
-            }).then(function (res) {
-                return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
-                    if (!res.ok || (data && data.ok === false)) {
-                        throw new Error((data && data.error) || 'Action failed.');
-                    }
-                    return data;
-                });
-            }).then(function (data) {
-                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                    applyUnreadCounts(data.unread_counts);
-                }
-            }).catch(function (err) {
-                showToast('error', err.message || 'Action failed.');
-                if (mailPoll) scheduleMailPoll(true);
-            });
-            return;
-        }
-
-        if (triggerBtn) setButtonLoading(triggerBtn, true, loadingLabelForAction(action));
-
-        fetch(apiUrl(actionPath), {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-                'Accept': 'application/json',
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: payload.toString()
-        }).then(function (res) {
-            return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
-                if (!res.ok || (data && data.ok === false)) {
-                    throw new Error((data && data.error) || 'Action failed.');
-                }
-                return data;
-            });
-        }).then(function (data) {
-            if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                applyUnreadCounts(data.unread_counts);
-            } else {
-                refreshUnreadBadges();
-            }
-            var selectAll = document.getElementById('select-all');
-            if (selectAll) {
-                selectAll.checked = false;
-                selectAll.indeterminate = false;
-            }
-            selectAllInFolder = false;
-            document.querySelectorAll('.mail-check:checked').forEach(function (cb) { cb.checked = false; });
-            var moveSelect = document.getElementById('cmd-move-target');
-            if (moveSelect && action === 'move') moveSelect.value = '';
-            updateCommandBar();
             if (action === 'delete' || action === 'move') {
-                if (allInFolder) {
-                    clearReadingPane();
-                    var listCard = getListCard();
-                    var folderOnly = listCard ? listCard.getAttribute('data-folder-url') : null;
-                    if (folderOnly && window.history && window.history.replaceState) {
-                        window.history.replaceState({}, '', folderOnly);
-                    }
-                    var folderB64 = currentMailFolderEnc();
-                    if (folderB64) loadFolderAjax(folderB64, false, true);
-                } else {
-                var paneCard = document.querySelector('#reading-pane-body .mail-read-card[data-uid]');
-                if (paneCard) {
-                    var paneUid = String(paneCard.getAttribute('data-uid'));
-                    if (uids.some(function (u) { return String(u) === paneUid; })) {
-                        clearReadingPane();
-                        var listCard = getListCard();
-                        var folderOnly = listCard ? listCard.getAttribute('data-folder-url') : null;
-                        if (folderOnly && window.history && window.history.replaceState) {
-                            window.history.replaceState({}, '', folderOnly);
-                        }
-                    }
-                }
-                }
+                applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
+            } else if (action === 'mark-read' || action === 'mark-unread') {
+                bumpFolderUnread(seenDelta);
             }
-            if (successMsg) showToast('success', successMsg);
-        }).catch(function (err) {
-            showToast('error', err.message || 'Action failed.');
-            if (mailPoll) scheduleMailPoll(true);
-        }).finally(function () {
-            if (triggerBtn) setButtonLoading(triggerBtn, false);
-        });
+            finishBulkSelectionUi(action, allInFolder, uids);
+            fireAndForgetAction(actionPath, payload);
+        }
     }
 
     function selectedMailUids() {
@@ -2329,21 +2315,6 @@
 
                 dispatchMessageAction(dispatchAction, folderEnc, uid, extra, btn).then(function (completed) {
                     if (completed === false) return;
-                    if (dispatchAction === 'mark-read') {
-                        showToast('success', 'Marked as read.');
-                    } else if (dispatchAction === 'mark-unread') {
-                        showToast('success', 'Marked as unread.');
-                    } else if (dispatchAction === 'flag') {
-                        showToast('success', 'Marked as important.');
-                    } else if (dispatchAction === 'unflag') {
-                        showToast('success', 'Importance removed.');
-                    } else if (dispatchAction === 'trash') {
-                        showToast('success', deleteSuccessMessage(1));
-                    } else if (action === 'spam') {
-                        showToast('success', 'Message moved to Spam.');
-                    } else if (action === 'move') {
-                        showToast('success', 'Message moved.');
-                    }
                 });
             });
         });
@@ -2815,36 +2786,64 @@
 
         if (kind === 'mark-read') {
             setRowSeen(uid, true);
-            if (readCard) readCard.setAttribute('data-seen', '1');
+            if (readCard) {
+                readCard.setAttribute('data-seen', '1');
+                syncReadSeenButton(readCard);
+            }
+            if (wasUnread) bumpFolderUnread(-1);
+            showToast('success', 'Marked as read.');
+            var readPayload = new URLSearchParams();
+            readPayload.set('_csrf', csrf);
+            Object.keys(fields).forEach(function (k) { readPayload.set(k, fields[k]); });
+            fireAndForgetAction('message/' + kind, readPayload);
+            return Promise.resolve(true);
         } else if (kind === 'mark-unread') {
             setRowSeen(uid, false);
-            if (readCard) readCard.setAttribute('data-seen', '0');
+            if (readCard) {
+                readCard.setAttribute('data-seen', '0');
+                syncReadSeenButton(readCard);
+            }
+            if (!wasUnread) bumpFolderUnread(1);
+            showToast('success', 'Marked as unread.');
+            var unreadPayload = new URLSearchParams();
+            unreadPayload.set('_csrf', csrf);
+            Object.keys(fields).forEach(function (k) { unreadPayload.set(k, fields[k]); });
+            fireAndForgetAction('message/' + kind, unreadPayload);
+            return Promise.resolve(true);
         } else if (kind === 'flag') {
             setRowFlagged(uid, true);
             if (readCard) {
                 readCard.setAttribute('data-flagged', '1');
                 syncReadFlagButton(readCard);
             }
+            showToast('success', 'Marked as important.');
+            var flagPayload = new URLSearchParams();
+            flagPayload.set('_csrf', csrf);
+            Object.keys(fields).forEach(function (k) { flagPayload.set(k, fields[k]); });
+            fireAndForgetAction('message/' + kind, flagPayload);
+            return Promise.resolve(true);
         } else if (kind === 'unflag') {
             setRowFlagged(uid, false);
             if (readCard) {
                 readCard.setAttribute('data-flagged', '0');
                 syncReadFlagButton(readCard);
             }
+            showToast('success', 'Importance removed.');
+            var unflagPayload = new URLSearchParams();
+            unflagPayload.set('_csrf', csrf);
+            Object.keys(fields).forEach(function (k) { unflagPayload.set(k, fields[k]); });
+            fireAndForgetAction('message/' + kind, unflagPayload);
+            return Promise.resolve(true);
         } else if (kind === 'spam' || kind === 'trash' || kind === 'move') {
             fields.unread_delta = wasUnread ? 1 : 0;
             removeRowByUid(uid);
 
             if (wasUnread) {
-                var listCard = getListCard();
-                var plain = listCard ? listCard.getAttribute('data-folder-plain') : '';
-                if (plain) {
-                    var counts = Object.assign({}, lastUnreadCounts);
-                    counts[plain] = Math.max(0, (counts[plain] || 0) - 1);
-                    if (kind === 'move' && extra.target_folder) {
-                        counts[extra.target_folder] = (counts[extra.target_folder] || 0) + 1;
-                    }
-                    applyUnreadCounts(counts);
+                bumpFolderUnread(-1);
+                if (kind === 'move' && extra.target_folder) {
+                    var moveCounts = Object.assign({}, lastUnreadCounts);
+                    moveCounts[extra.target_folder] = (moveCounts[extra.target_folder] || 0) + 1;
+                    applyUnreadCounts(moveCounts);
                 }
             }
 
@@ -2867,49 +2866,14 @@
                 }
             }
 
-            return ajaxAction('message/' + kind, fields)
-                .then(function (data) {
-                    if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                        applyUnreadCounts(data.unread_counts);
-                    }
-                })
-                .catch(function (err) {
-                    showToast('error', err.message || 'Action failed.');
-                    if (mailPoll) scheduleMailPoll(true);
-                });
+            var movePayload = new URLSearchParams();
+            movePayload.set('_csrf', csrf);
+            Object.keys(fields).forEach(function (k) { movePayload.set(k, fields[k]); });
+            fireAndForgetAction('message/' + kind, movePayload);
+            return Promise.resolve(true);
         }
 
-        if (triggerBtn) setButtonLoading(triggerBtn, true, loadingLabelForAction(kind));
-
-        return ajaxAction('message/' + kind, fields)
-            .then(function (data) {
-                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                    applyUnreadCounts(data.unread_counts);
-                } else if (kind !== 'flag' && kind !== 'unflag') {
-                    refreshUnreadBadges();
-                }
-                if ((kind === 'trash' || kind === 'spam' || kind === 'move')) {
-                    var paneHost = document.getElementById('reading-pane-body');
-                    var inPane = paneHost && paneHost.querySelector('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]');
-                    if (inPane) {
-                        clearReadingPane();
-                        var listCard = getListCard();
-                        var folderOnly = listCard ? listCard.getAttribute('data-folder-url') : null;
-                        if (folderOnly && window.history && window.history.replaceState) {
-                            window.history.replaceState({}, '', folderOnly);
-                        }
-                    } else if (folderUrl) {
-                        window.location = folderUrl;
-                    }
-                }
-            })
-            .catch(function (err) {
-                showToast('error', err.message || 'Action failed.');
-                if (mailPoll) scheduleMailPoll(true);
-            })
-            .finally(function () {
-                if (triggerBtn) setButtonLoading(triggerBtn, false);
-            });
+        return Promise.resolve(false);
     }
 
     var openContextMenuFor = null;
