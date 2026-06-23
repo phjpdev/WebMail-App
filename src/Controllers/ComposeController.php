@@ -184,27 +184,33 @@ class ComposeController
         $smtp = new SmtpService();
         if ($smtp->send($options)) {
             unset($_SESSION[self::DRAFT_KEY], $_SESSION[self::FORWARD_KEY]);
-            $this->deleteSourceDraftIfRequested();
+
             $sentFolder = $this->resolveSentFolder();
             $sentMime = $smtp->getLastMime();
-            $this->saveToSent($sentFolder, $sentMime);
-            $afterSend = $this->syncMailboxAfterSend($fromEmail, $returnFolder, $folderPath, $sentFolder);
+            $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
+            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+
+            $afterSend = function () use ($fromEmail, $returnFolder, $folderPath, $sentFolder, $sentMime): void {
+                $this->deleteSourceDraftIfRequested();
+                $this->saveToSent($sentFolder, $sentMime);
+                $this->syncMailboxAfterSend($fromEmail, $returnFolder, $folderPath, $sentFolder);
+            };
 
             if (wants_json()) {
-                json_response([
+                json_response_then([
                     'ok' => true,
                     'message' => 'Email sent successfully.',
-                    'return_folder' => $afterSend['context_folder'] !== ''
-                        ? encode_folder_path($afterSend['context_folder'])
+                    'return_folder' => $contextFolder !== ''
+                        ? encode_folder_path($contextFolder)
                         : '',
                     'draft_uid' => $draftUid > 0 ? $draftUid : null,
-                    'unread_counts' => $afterSend['unread_counts'],
-                ]);
+                    'unread_counts' => $unreadCounts,
+                ], $afterSend);
             }
 
             flash('success', 'Email sent successfully.');
-            $redirectFolder = $afterSend['context_folder'] !== '' ? $afterSend['context_folder'] : $sentFolder;
-            redirect('folder/' . encode_folder_path($redirectFolder));
+            $redirectFolder = $contextFolder !== '' ? $contextFolder : $sentFolder;
+            redirect_then('folder/' . encode_folder_path($redirectFolder), $afterSend);
         }
 
         $this->composeFail($this->friendlySendError($smtp->getLastError()), $draft, $mode, $folderPath, $uid);
@@ -765,7 +771,7 @@ class ComposeController
 
     private function resolveSentFolder(): string
     {
-        foreach (FolderCache::load()['folders'] as $folder) {
+        foreach (FolderCache::load(skipUnreadRefresh: true)['folders'] as $folder) {
             if (str_contains(strtolower($folder['path']), 'sent')) {
                 return $folder['path'];
             }
@@ -794,8 +800,7 @@ class ComposeController
     }
 
     /**
-     * Post-send sync: route new INBOX mail and refresh the working folder list.
-     * Kept short (filter cap + one folder header sync) so Send stays responsive.
+     * Post-send sync (runs in background after the client gets a response).
      *
      * @return array{context_folder: string, sent_folder: string, unread_counts: array<string, int>}
      */
@@ -803,13 +808,14 @@ class ComposeController
     {
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+        $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
 
-        FilterService::runBackground(true, 8);
+        FilterService::runBackground(true, 6);
 
         $imap = new ImapService();
         if ($imap->connect()) {
             $scanPaths = array_values(array_unique(array_filter([$contextFolder, $inbox])));
-            $imap->clearRecentSelfSentCopies($scanPaths, $fromEmail, 6);
+            $imap->clearRecentSelfSentCopies($scanPaths, $fromEmail, 4);
 
             $replyUid = (int) ($_POST['uid'] ?? 0);
             $mode = (string) ($_POST['mode'] ?? '');
@@ -824,21 +830,13 @@ class ComposeController
             }
 
             if ($contextFolder !== '') {
-                $imap->removeDuplicateDeliveries($contextFolder, 12);
-                MailCacheService::syncFolderHeaders(
-                    $imap,
-                    $contextFolder,
-                    (int) (config('app')['mail_cache_post_send_limit'] ?? 60)
-                );
-                MailCacheService::reconcileFolderBadge($imap, $contextFolder);
+                $imap->removeDuplicateDeliveries($contextFolder, 8);
+                MailCacheService::syncFolderHeaders($imap, $contextFolder, $headerLimit);
+                MailCacheService::reconcileBadgeFromIndex($contextFolder);
             }
 
             if ($sentFolder !== '') {
-                MailCacheService::syncFolderHeaders(
-                    $imap,
-                    $sentFolder,
-                    (int) (config('app')['mail_cache_post_send_limit'] ?? 60)
-                );
+                MailCacheService::syncFolderHeaders($imap, $sentFolder, $headerLimit);
             }
 
             FolderCache::refreshPaths(array_values(array_unique(array_filter([

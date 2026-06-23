@@ -3208,6 +3208,16 @@ body:has(.mail-workspace) {
     font-size: 0.6875rem;
 }
 
+.page-header-count--unread {
+    color: #fff;
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+}
+
+.page-header-count--hidden {
+    display: none !important;
+}
+
 .mail-list-column .page-header--compact .page-header-row {
     flex-wrap: wrap;
     gap: 0.75rem;

@@ -149,6 +149,12 @@ class MailController
             }
         }
 
+        if ($imapConnected && $query === '') {
+            $folderUnread = MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+            $folderData = FolderCache::load(skipUnreadRefresh: true);
+            $folderData['unread_counts'][$folderPath] = $folderUnread;
+        }
+
         $prefs = user_preferences();
 
         return [
@@ -391,6 +397,10 @@ class MailController
      */
     private function echoFolderSyncJson(string $folderPath, array $list): void
     {
+        if (trim($_GET['q'] ?? '') === '') {
+            MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+        }
+
         $messages = [];
 
         foreach ($list['messages'] as $msg) {
@@ -425,27 +435,14 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        // Route INBOX mail to target folders before refreshing badge counts.
         FilterService::runBackground(false);
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
-        $imap = new ImapService();
-        if ($imap->connect()) {
-            $reconciled = 0;
-            foreach ($folderData['folders'] ?? [] as $folder) {
-                if ($reconciled >= 3) {
-                    break;
-                }
-                $path = $folder['path'];
-                if ((int) ($folderData['unread_counts'][$path] ?? 0) > 0) {
-                    MailCacheService::reconcileFolderBadge($imap, $path);
-                    $reconciled++;
-                }
-            }
-            $folderData = FolderCache::load(skipUnreadRefresh: true);
+        foreach ($folderData['folders'] ?? [] as $folder) {
+            MailCacheService::syncBadgeFromIndex($folder['path']);
         }
 
-        echo json_encode(['unread_counts' => $folderData['unread_counts'] ?? []]);
+        echo json_encode(['unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? []]);
     }
 
     /**

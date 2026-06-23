@@ -965,9 +965,9 @@
                     var returnFolder = data && data.return_folder ? data.return_folder : '';
                     var currentFolder = currentMailFolderEnc();
                     if (currentFolder) {
-                        loadFolderAjax(currentFolder, false, true);
+                        loadFolderAjax(currentFolder, false, false);
                     } else if (returnFolder) {
-                        loadFolderAjax(returnFolder, false, true);
+                        loadFolderAjax(returnFolder, false, false);
                     }
                     if (mailPoll) scheduleMailPoll(true);
                 }).catch(function (err) {
@@ -1088,18 +1088,39 @@
         var label = document.getElementById('mail-count-label');
         if (!label) return;
         var u = typeof unread === 'number' ? unread : 0;
-        var n = u > 0 ? u : total;
-        label.textContent = String(n);
-        label.title = u > 0
-            ? u + ' unread'
-            : total + ' message' + (total === 1 ? '' : 's');
+        label.setAttribute('data-total', String(typeof total === 'number' ? total : 0));
+        label.setAttribute('data-unread', String(u));
+        if (u > 0) {
+            label.hidden = false;
+            label.removeAttribute('aria-hidden');
+            label.classList.add('page-header-count--unread');
+            label.classList.remove('page-header-count--hidden');
+            label.textContent = String(u);
+            label.title = u + ' unread';
+        } else {
+            label.hidden = true;
+            label.setAttribute('aria-hidden', 'true');
+            label.classList.remove('page-header-count--unread');
+            label.classList.add('page-header-count--hidden');
+            label.textContent = '';
+            label.title = (typeof total === 'number' ? total : 0) + ' message' + (total === 1 ? '' : 's');
+        }
+    }
+
+    function unreadCountFromMessages(messages) {
+        var unread = 0;
+        (messages || []).forEach(function (m) {
+            if (!m.seen) unread++;
+        });
+        return unread;
     }
 
     function adjustMailCount(delta) {
         var label = document.getElementById('mail-count-label');
         if (!label) return;
-        var n = parseInt(label.textContent, 10) || 0;
-        updateMailCount(Math.max(0, n + delta));
+        var total = parseInt(label.getAttribute('data-total') || '0', 10) || 0;
+        var unread = parseInt(label.getAttribute('data-unread') || '0', 10) || 0;
+        updateMailCount(total, Math.max(0, unread + delta));
     }
 
     var mailPoll = null;
@@ -1247,8 +1268,10 @@
         var label = document.getElementById('mail-count-label');
         var card = document.querySelector('.mail-list-card[data-total-messages]');
         if (label) {
-            label.textContent = '0';
+            label.textContent = '';
             label.setAttribute('data-total', '0');
+            label.setAttribute('data-unread', '0');
+            label.hidden = true;
             label.title = '0 messages';
         }
         if (card) card.setAttribute('data-total-messages', '0');
@@ -1584,8 +1607,15 @@
                     var folderUnread = (data.unread_counts && plainPath)
                         ? (data.unread_counts[plainPath] || 0)
                         : 0;
+                    if (page === 1 && plainPath && data.messages.length) {
+                        var pageUnread = unreadCountFromMessages(data.messages);
+                        if (pageUnread > folderUnread) {
+                            folderUnread = pageUnread;
+                            data.unread_counts = data.unread_counts || {};
+                            data.unread_counts[plainPath] = pageUnread;
+                        }
+                    }
                     updateMailCount(data.total, folderUnread);
-
                     if (data.unread_counts) {
                         applyUnreadCounts(data.unread_counts);
                     }

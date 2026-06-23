@@ -23,12 +23,15 @@
         <h2><?= e($title ?? 'Mail') ?></h2>
         <?php
         $headerUnread = (int) ($unreadCount ?? 0);
-        $headerCount = $headerUnread > 0 ? $headerUnread : (int) $totalMessages;
         $headerTitle = $headerUnread > 0
             ? $headerUnread . ' unread'
             : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's');
         ?>
-        <span class="page-header-count" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" title="<?= e($headerTitle) ?>"><?= $headerCount ?></span>
+        <?php if ($headerUnread > 0): ?>
+        <span class="page-header-count page-header-count--unread" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="<?= $headerUnread ?>" title="<?= e($headerTitle) ?>"><?= $headerUnread ?></span>
+        <?php else: ?>
+        <span class="page-header-count page-header-count--hidden" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="0" title="<?= e($headerTitle) ?>" hidden aria-hidden="true"></span>
+        <?php endif; ?>
     </div>
     <form method="get" action="<?= e(folder_url($folderPath)) ?>" class="search-field search-field--mail mail-search-form" id="mail-search-form">
         <?php if (!empty($perPage)): ?>

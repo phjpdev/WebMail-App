@@ -326,6 +326,57 @@ class MailCacheService
     }
 
     /**
+     * Align session badge with mail_index (and optional visible page), without IMAP.
+     * Fixes phantom badges (badge but no unread rows) and missing badges.
+     *
+     * @param list<array<string, mixed>>|null $pageMessages
+     */
+    public static function reconcileBadgeFromIndex(string $folderPath, ?array $pageMessages = null): int
+    {
+        $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+
+        $pageUnread = 0;
+        if ($pageMessages !== null) {
+            foreach ($pageMessages as $msg) {
+                if (empty($msg['seen'])) {
+                    $pageUnread++;
+                }
+            }
+        }
+
+        if (!self::hasFolderData($folderPath)) {
+            return $session;
+        }
+
+        if (self::syncBadgeFromIndex($folderPath)) {
+            return self::countUnseenInIndex($folderPath);
+        }
+
+        $indexUnread = self::countUnseenInIndex($folderPath);
+
+        if ($pageUnread === 0 && $indexUnread === 0 && $session > 0) {
+            FolderCache::setUnreadCount($folderPath, 0);
+
+            return 0;
+        }
+
+        $truth = max($indexUnread, $pageUnread);
+        if ($truth > $session) {
+            FolderCache::setUnreadCount($folderPath, $truth);
+
+            return $truth;
+        }
+
+        if ($session > 0 && $truth === 0 && $pageMessages !== null) {
+            FolderCache::setUnreadCount($folderPath, 0);
+
+            return 0;
+        }
+
+        return $session;
+    }
+
+    /**
      * When the folder is fully indexed, align the sidebar badge with the list
      * (avoids stale IMAP counts when cache and server flags disagree).
      */

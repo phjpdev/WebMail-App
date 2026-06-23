@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=57">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=58">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -103,6 +103,6 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=57" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=59" defer></script>
 </body>
 </html>

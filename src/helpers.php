@@ -295,6 +295,51 @@ function json_response(array $data, int $status = 200): never
     exit;
 }
 
+/**
+ * Send JSON, flush the HTTP response, then run work in the background.
+ *
+ * @param array<string, mixed> $data
+ */
+function json_response_then(array $data, callable $after, int $status = 200): never
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    header('Connection: close');
+    $body = json_encode($data);
+    header('Content-Length: ' . (string) strlen($body));
+    echo $body;
+    finish_background($after);
+    exit;
+}
+
+function redirect_then(string $path, callable $after): never
+{
+    header('Location: ' . url($path));
+    finish_background($after);
+    exit;
+}
+
+function finish_background(callable $after): void
+{
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } else {
+        while (ob_get_level() > 0) {
+            ob_end_flush();
+        }
+        flush();
+    }
+
+    ignore_user_abort(true);
+    @set_time_limit(120);
+
+    try {
+        $after();
+    } catch (\Throwable $e) {
+        app_log('Background task failed: ' . $e->getMessage());
+    }
+}
+
 function requireAuth(): void
 {
     if (!App\Auth::isLoggedIn()) {
