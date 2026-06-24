@@ -94,6 +94,7 @@ $router->get('/folder/{folderB64}/fragment', fn ($p) => $mailController->folderF
 $router->get('/folder/{folderB64}/attachments', fn ($p) => $mailController->messageAttachments($p));
 $router->get('/folder/{folderB64}/message/{uid}/sync', fn ($p) => $mailController->messageSync($p));
 $router->get('/folder/{folderB64}/message/{uid}/pane', fn ($p) => $mailController->messagePane($p));
+$router->get('/folder/{folderB64}/message/{uid}/warm-body', fn ($p) => $mailController->warmBody($p));
 $router->get('/folder/{folderB64}/message/{uid}', fn ($p) => $mailController->read($p));
 $router->get('/folder/{folderB64}/sync', fn ($p) => $mailController->folderSync($p));
 $router->get('/folder/{folderB64}', fn ($p) => $mailController->folder($p));

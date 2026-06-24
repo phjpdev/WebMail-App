@@ -249,7 +249,7 @@ class ComposeController
 
     private function loadMessageForm(string $mode): void
     {
-        $folderPath = decode_folder_path($_GET['folder'] ?? '');
+        $folderPath = mail_folder_path((string) ($_GET['folder'] ?? ''));
         $uid = (int) ($_GET['uid'] ?? 0);
 
         $draft = $this->peekDraft();
@@ -266,6 +266,11 @@ class ComposeController
 
         $message = MailCacheService::getBody($folderPath, $uid);
         if ($message === null) {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                flash('error', $imap->getLastError());
+                redirect('folder/' . encode_folder_path($folderPath));
+            }
             $message = $imap->getMessageByUid($folderPath, $uid);
             if ($message === null) {
                 flash('error', 'Message not found.');
@@ -516,7 +521,9 @@ class ComposeController
         }
 
         $aliasService = new AliasService();
-        $folderData = FolderCache::load();
+        $folderData = $this->isEmbedRequest()
+            ? ['folders' => [], 'unread_counts' => []]
+            : FolderCache::load(skipUnreadRefresh: true);
         $returnFolder = decode_folder_path($_GET['return_folder'] ?? '');
         if ($returnFolder === '') {
             $returnFolder = compose_context_folder(

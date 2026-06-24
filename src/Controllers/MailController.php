@@ -583,6 +583,51 @@ class MailController
     }
 
     /**
+     * Cache message body for compose (reply/forward) without marking read.
+     *
+     * @param array<string, string> $params
+     */
+    public function warmBody(array $params): void
+    {
+        requireAuth();
+        releaseSessionLock();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
+        $uid = (int) ($params['uid'] ?? 0);
+
+        if ($folderPath === '' || $uid <= 0) {
+            http_response_code(404);
+            echo json_encode(['ok' => false]);
+            return;
+        }
+
+        assert_folder_access($folderPath);
+
+        if (MailCacheService::getBody($folderPath, $uid) !== null) {
+            echo json_encode(['ok' => true, 'cached' => true]);
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
+            return;
+        }
+
+        $message = $imap->getMessageByUid($folderPath, $uid);
+        if ($message === null) {
+            http_response_code(404);
+            echo json_encode(['ok' => false]);
+            return;
+        }
+
+        MailCacheService::saveBody($folderPath, $message);
+        echo json_encode(['ok' => true, 'cached' => false]);
+    }
+
+    /**
      * @param array<string, string> $params
      */
     public function read(array $params): void
