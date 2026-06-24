@@ -882,6 +882,7 @@ class ImapService
         }
 
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($folderPath);
+        $rawMessage = $this->normalizeRawMessage($rawMessage);
 
         $appended = $flags !== null && $flags !== ''
             ? @imap_append($this->connection, $mailbox, $rawMessage, $flags)
@@ -895,6 +896,80 @@ class ImapService
         $this->lastError = 'Failed to save draft: ' . implode('; ', $errors);
 
         return false;
+    }
+
+    /**
+     * Copy a message to another folder on the same mailbox (UID preserved).
+     */
+    public function copyMessageByUid(string $fromPath, int $uid, string $toPath): bool
+    {
+        if (!$this->openFolder($fromPath)) {
+            return false;
+        }
+
+        $target = $this->getMailboxString() . $this->encodeFolderPath($toPath);
+        if (@imap_mail_copy($this->connection, (string) $uid, $target, CP_UID)) {
+            return true;
+        }
+
+        $errors = imap_errors() ?: [];
+        $this->lastError = 'Failed to copy message: ' . implode('; ', $errors);
+        app_log($this->lastError);
+
+        return false;
+    }
+
+    /**
+     * Copy to another folder; fall back to append when the host disallows COPY.
+     */
+    public function copyMessageWithFallback(string $fromPath, int $uid, string $toPath): bool
+    {
+        if ($this->copyMessageByUid($fromPath, $uid, $toPath)) {
+            return true;
+        }
+
+        $raw = $this->fetchRawMessage($fromPath, $uid);
+        if ($raw === null) {
+            return false;
+        }
+
+        if ($this->appendMessage($toPath, $raw)) {
+            return true;
+        }
+
+        app_log('Copy fallback append failed for ' . $toPath . ': ' . $this->getLastError());
+
+        return false;
+    }
+
+    private function normalizeRawMessage(string $raw): string
+    {
+        $raw = str_replace(["\r\n", "\r"], "\n", $raw);
+
+        return str_replace("\n", "\r\n", $raw);
+    }
+
+    /**
+     * Fetch the full RFC822 source for a message (headers + body, \\Seen unchanged).
+     */
+    public function fetchRawMessage(string $folderPath, int $uid): ?string
+    {
+        if (!$this->openFolder($folderPath)) {
+            return null;
+        }
+
+        $msgno = imap_msgno($this->connection, $uid);
+        if ($msgno === 0) {
+            return null;
+        }
+
+        $header = @imap_fetchheader($this->connection, $msgno);
+        $body = @imap_body($this->connection, $msgno, FT_PEEK);
+        if ($header === false || $body === false) {
+            return null;
+        }
+
+        return $header . $body;
     }
 
     /**

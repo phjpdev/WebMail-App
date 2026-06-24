@@ -820,12 +820,16 @@ class ComposeController
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
         $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
 
-        FilterService::runBackground(true, 6);
+        $filterResult = FilterService::runBackground(true, 15);
+        $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
+            ? $filterResult['refresh_paths']
+            : [];
 
         $imap = new ImapService();
         if ($imap->connect()) {
-            $scanPaths = array_values(array_unique(array_filter([$contextFolder, $inbox])));
-            $imap->clearRecentSelfSentCopies($scanPaths, $fromEmail, 4);
+            // Only clear self-sent copies from the filter inbox — not employee
+            // folders where routed mail should stay unread for the recipient.
+            $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
 
             $replyUid = (int) ($_POST['uid'] ?? 0);
             $mode = (string) ($_POST['mode'] ?? '');
@@ -839,20 +843,22 @@ class ComposeController
                 MailCacheService::updateIndexSeen($folderPath, $replyUid, true);
             }
 
-            if ($contextFolder !== '') {
-                $imap->removeDuplicateDeliveries($contextFolder, 8);
-                MailCacheService::syncFolderHeaders($imap, $contextFolder, $headerLimit);
-                MailCacheService::reconcileBadgeFromIndex($contextFolder);
-            }
+            $pathsToSync = array_values(array_unique(array_filter(array_merge(
+                [$inbox, $contextFolder, $sentFolder],
+                $routedPaths
+            ))));
 
-            if ($sentFolder !== '') {
-                MailCacheService::syncFolderHeaders($imap, $sentFolder, $headerLimit);
+            foreach ($pathsToSync as $path) {
+                if ($path === $contextFolder && $contextFolder !== '') {
+                    $imap->removeDuplicateDeliveries($contextFolder, 8);
+                }
+                try {
+                    MailCacheService::syncFolderHeaders($imap, $path, $headerLimit);
+                    MailCacheService::reconcileBadgeFromIndex($path);
+                } catch (\Throwable $e) {
+                    app_log('Post-send cache sync failed for ' . $path . ': ' . $e->getMessage());
+                }
             }
-
-            FolderCache::refreshPaths(array_values(array_unique(array_filter([
-                $contextFolder,
-                $sentFolder,
-            ]))));
         }
 
         return [

@@ -481,7 +481,15 @@ class MailCacheService
         }
 
         if (self::syncBadgeFromIndex($folderPath)) {
-            return self::countUnseenInIndex($folderPath);
+            $indexUnread = self::countUnseenInIndex($folderPath);
+            $truth = max($indexUnread, $session);
+            if ($truth !== $session) {
+                FolderCache::setUnreadCount($folderPath, $truth);
+
+                return $truth;
+            }
+
+            return $session;
         }
 
         $indexUnread = self::countUnseenInIndex($folderPath);

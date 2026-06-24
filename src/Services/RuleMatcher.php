@@ -42,15 +42,18 @@ class RuleMatcher
     private static function matchesRecipient(array $headers, string $needle, string $operator): bool
     {
         $toString = (string) ($headers['to'] ?? '');
+        $isEmailNeedle = str_contains($needle, '@');
 
-        // For "contains" also test the visible To/Cc string so display names are
-        // searchable. We deliberately exclude the envelope Delivered-To here —
-        // see recipientAddresses() for why.
-        if ($operator === 'contains' && $toString !== '' && self::compare($toString, $needle, 'contains')) {
+        // Display-name / partial searches on the visible To/Cc line only.
+        if ($operator === 'contains' && !$isEmailNeedle && $toString !== '' && self::compare($toString, $needle, 'contains')) {
             return true;
         }
 
         foreach (self::recipientAddresses($headers) as $address) {
+            if ($isEmailNeedle && $operator === 'contains' && strcasecmp($address, $needle) === 0) {
+                return true;
+            }
+
             if (self::compare($address, $needle, $operator)) {
                 return true;
             }

@@ -129,16 +129,25 @@ class FolderCache
             return;
         }
 
-        foreach ($imap->getFolderUnreadCounts($paths) as $path => $count) {
+        foreach ($imap->getFolderUnreadCounts($paths) as $path => $imapUnread) {
             $path = self::canonicalUnreadPath($path);
             if (!folder_shows_unread_badge($path)) {
                 $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = 0;
                 continue;
             }
-            if (MailCacheService::hasFolderData($path) && MailCacheService::syncBadgeFromIndex($path)) {
-                continue;
+
+            $imapUnread = (int) $imapUnread;
+            $sessionUnread = (int) ($_SESSION[self::SESSION_KEY]['unread_counts'][$path] ?? 0);
+            $indexUnread = 0;
+
+            if (MailCacheService::hasFolderData($path) && !MailCacheService::badgeAheadOfIndex($path)) {
+                MailCacheService::syncBadgeFromIndex($path);
+                $indexUnread = MailCacheService::countUnseenInIndex($path);
+            } elseif (MailCacheService::hasFolderData($path)) {
+                $indexUnread = MailCacheService::countUnseenInIndex($path);
             }
-            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $count;
+
+            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max($imapUnread, $indexUnread, $sessionUnread);
         }
 
         if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {

@@ -124,10 +124,18 @@ class MailController
 
         if ($imapConnected && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null && ($fastOpen || !$forceRefresh) && !MailCacheService::isStale($folderPath)) {
-                $list = $cached;
-                $list['from_cache'] = true;
-                $servedFromCache = true;
+            if ($cached !== null && ($fastOpen || !$forceRefresh)) {
+                if (!MailCacheService::isStale($folderPath)) {
+                    $list = $cached;
+                    $list['from_cache'] = true;
+                    $servedFromCache = true;
+                } elseif ($fastOpen) {
+                    // Instant folder switch: show cached list, let the client poll refresh.
+                    $list = $cached;
+                    $list['from_cache'] = true;
+                    $list['stale'] = true;
+                    $servedFromCache = true;
+                }
             }
         }
 
@@ -156,8 +164,9 @@ class MailController
 
         if ($imapConnected && $query === '') {
             $folderUnread = MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
-            MailCacheService::reconcileAllIndexedBadges();
-            $folderData = FolderCache::load(skipUnreadRefresh: true);
+            if (!isset($folderData['unread_counts']) || !is_array($folderData['unread_counts'])) {
+                $folderData['unread_counts'] = [];
+            }
             $folderData['unread_counts'][$folderPath] = $folderUnread;
         }
 
@@ -338,12 +347,12 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $perPage = mail_per_page();
 
-        // Lightweight poll: MySQL cache when fresh — re-sync when stale so moves
-        // into Trash (and other folders) appear without a manual refresh.
+        // Lightweight poll: MySQL cache only — no IMAP (keeps polling fast).
         if ($light && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null && !MailCacheService::isStale($folderPath)) {
+            if ($cached !== null) {
                 $this->echoFolderSyncJson($folderPath, $cached);
+
                 return;
             }
         }
@@ -366,8 +375,8 @@ class MailController
 
         $list = null;
 
-        if ($query === '' && $page === 1 && !$light) {
-            if ($forceFilter || MailCacheService::isStale($folderPath)) {
+        if ($query === '' && $page === 1 && (!$light || MailCacheService::badgeAheadOfIndex($folderPath))) {
+            if ($forceFilter || MailCacheService::isStale($folderPath) || MailCacheService::badgeAheadOfIndex($folderPath)) {
                 MailCacheService::syncFolderHeaders($imap, $folderPath);
                 $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
             }
@@ -385,7 +394,7 @@ class MailController
 
         if (!$light || $forceFilter) {
             $sessionBadge = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
-            if ($forceFilter || $sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath)) {
+            if ($forceFilter && ($sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath))) {
                 MailCacheService::reconcileFolderBadge($imap, $folderPath);
             }
         }
@@ -406,7 +415,9 @@ class MailController
     {
         if (trim($_GET['q'] ?? '') === '') {
             MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
-            MailCacheService::reconcileAllIndexedBadges();
+            if (($_GET['force'] ?? '') === '1') {
+                MailCacheService::reconcileAllIndexedBadges();
+            }
         }
 
         $messages = [];
@@ -443,19 +454,23 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        FilterService::runBackground(false);
+        if (($_GET['filter'] ?? '') === '1') {
+            FilterService::runBackground(false);
+        }
+
         $folderData = FolderCache::load(skipUnreadRefresh: true);
+        $counts = $folderData['unread_counts'] ?? [];
 
         foreach ($folderData['folders'] ?? [] as $folder) {
             $path = (string) ($folder['path'] ?? '');
             if ($path === '') {
                 continue;
             }
-            if (MailCacheService::hasFolderData($path)) {
-                MailCacheService::reconcileBadgeFromIndex($path);
-            } else {
-                MailCacheService::syncBadgeFromIndex($path);
+            $badge = (int) ($counts[$path] ?? 0);
+            if ($badge <= 0 && !MailCacheService::badgeAheadOfIndex($path)) {
+                continue;
             }
+            MailCacheService::reconcileBadgeFromIndex($path);
         }
 
         echo json_encode(['unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? []]);

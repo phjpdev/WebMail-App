@@ -75,24 +75,31 @@ class FilterService
             } while ((microtime(true) - $start) < $maxRuntime);
 
             if ($pathsToRefresh !== []) {
-                FolderCache::refreshPaths(array_keys($pathsToRefresh));
+                $pathList = array_keys($pathsToRefresh);
 
                 if ($totals['moved'] > 0) {
                     $imap = new ImapService();
                     if ($imap->connect()) {
-                        foreach (array_keys($pathsToRefresh) as $path) {
+                        foreach ($pathList as $path) {
                             try {
                                 MailCacheService::syncFolderHeaders($imap, $path);
+                                MailCacheService::reconcileBadgeFromIndex($path);
                             } catch (\Throwable $e) {
                                 app_log('Mail cache sync after filter failed for ' . $path . ': ' . $e->getMessage());
                             }
                         }
                     }
                 }
+
+                // Per-folder header sync + reconcile already updated badges; skip
+                // a second IMAP STATUS sweep here.
             }
 
             $totals['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
             $totals['done'] = true;
+            if ($pathsToRefresh !== []) {
+                $totals['refresh_paths'] = array_keys($pathsToRefresh);
+            }
 
             self::writeState($totals);
 
@@ -282,37 +289,71 @@ class FilterService
             }
 
             $body = null;
-            $matchedRule = null;
+            $matchedRules = $this->matchRules($imap, $sourceFolder, $uid, $headers, $rules, $needsBody, $body);
 
-            foreach ($rules as $rule) {
-                if (($rule['condition_field'] ?? '') === 'body' && $needsBody && $body === null) {
-                    $body = $imap->fetchFilterBody($sourceFolder, $uid);
+            if ($matchedRules !== []) {
+                $targetPaths = [];
+                foreach ($matchedRules as $rule) {
+                    $path = (string) ($rule['imap_path'] ?? '');
+                    if ($path !== '') {
+                        $targetPaths[$path] = $rule;
+                    }
                 }
+                $targetPaths = array_values($targetPaths);
 
-                if (RuleMatcher::matches($headers, $body, $rule)) {
-                    $matchedRule = $rule;
-                    break;
-                }
-            }
-
-            if ($matchedRule !== null) {
-                $targetPath = $matchedRule['imap_path'];
-                if ($imap->moveMessage($sourceFolder, $uid, $targetPath)) {
-                    $result['moved']++;
-                    $refreshUnreadPaths[$sourceFolder] = true;
-                    $refreshUnreadPaths[$targetPath] = true;
-                    $this->logFilterMove($userId, $uid, $targetPath, $matchedRule['name']);
-                    // Only record as processed once the move actually succeeded.
+                if ($targetPaths === []) {
                     $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
+                    $result['processed']++;
+                    continue;
+                }
+
+                $primaryRule = $targetPaths[0];
+                $primaryPath = (string) $primaryRule['imap_path'];
+                $extraPaths = array_slice($targetPaths, 1);
+
+                if ($extraPaths === []) {
+                    if ($imap->moveMessage($sourceFolder, $uid, $primaryPath)) {
+                        $result['moved']++;
+                        $refreshUnreadPaths[$sourceFolder] = true;
+                        $refreshUnreadPaths[$primaryPath] = true;
+                        $this->logFilterMove($userId, $uid, $primaryPath, (string) ($primaryRule['name'] ?? ''));
+                        $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
+                    } else {
+                        $result['errors'][] = 'UID ' . $uid . ': ' . $imap->getLastError();
+                    }
                 } else {
-                    // Move failed (transient IMAP error): leave the UID unprocessed
-                    // so it is retried on the next filter pass instead of being lost.
-                    $result['errors'][] = 'UID ' . $uid . ': ' . $imap->getLastError();
+                    $raw = $imap->fetchRawMessage($sourceFolder, $uid);
+                    if ($raw === null) {
+                        $result['errors'][] = 'UID ' . $uid . ': could not read message for multi-folder routing';
+                    } else {
+                        $delivered = 0;
+                        foreach ($targetPaths as $rule) {
+                            $destPath = (string) ($rule['imap_path'] ?? '');
+                            if ($destPath === '') {
+                                continue;
+                            }
+                            if ($imap->appendMessage($destPath, $raw)) {
+                                $delivered++;
+                                $refreshUnreadPaths[$destPath] = true;
+                                FolderCache::bumpUnread($destPath, 1);
+                                $this->logFilterMove($userId, $uid, $destPath, (string) ($rule['name'] ?? ''));
+                            } else {
+                                $result['errors'][] = 'Deliver to ' . $destPath . ': ' . $imap->getLastError();
+                                app_log('Filter deliver to ' . $destPath . ' failed: ' . $imap->getLastError());
+                            }
+                        }
+
+                        if ($delivered > 0) {
+                            if ($imap->deleteMessage($sourceFolder, $uid)) {
+                                MailCacheService::removeMessage($sourceFolder, $uid);
+                                $refreshUnreadPaths[$sourceFolder] = true;
+                            }
+                            $result['moved'] += $delivered;
+                            $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
+                        }
+                    }
                 }
             } else {
-                // No rule matched: mark processed so we don't rescan it every pass.
-                // clearProcessed() is called when rules/users/aliases change so this
-                // mail is re-evaluated against the new rule set.
                 $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
             }
 
@@ -326,6 +367,55 @@ class FilterService
         $result['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
 
         return $result;
+    }
+
+    /**
+     * Resolve filter rules for one message. Recipient (To) rules may match
+     * multiple folders when several aliases appear on the same message; all
+     * other rule types keep first-match-wins behaviour.
+     *
+     * @param list<array<string, mixed>> $rules
+     * @return list<array<string, mixed>>
+     */
+    private function matchRules(
+        ImapService $imap,
+        string $sourceFolder,
+        int $uid,
+        array $headers,
+        array $rules,
+        bool $needsBody,
+        ?string &$body,
+    ): array {
+        $toMatches = [];
+
+        foreach ($rules as $rule) {
+            if (($rule['condition_field'] ?? '') === 'body' && $needsBody && $body === null) {
+                $body = $imap->fetchFilterBody($sourceFolder, $uid);
+            }
+
+            if (!RuleMatcher::matches($headers, $body, $rule)) {
+                continue;
+            }
+
+            $type = (string) ($rule['rule_type'] ?? '');
+            $field = (string) ($rule['condition_field'] ?? '');
+
+            if ($type === 'spam') {
+                return [$rule];
+            }
+
+            if ($field === 'to') {
+                $path = (string) ($rule['imap_path'] ?? '');
+                if ($path !== '' && !isset($toMatches[$path])) {
+                    $toMatches[$path] = $rule;
+                }
+                continue;
+            }
+
+            return [$rule];
+        }
+
+        return array_values($toMatches);
     }
 
     /**
