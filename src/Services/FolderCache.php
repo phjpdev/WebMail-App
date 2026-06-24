@@ -49,12 +49,17 @@ class FolderCache
             'unread_counts' => self::sanitizeUnreadCounts($unreadCounts),
             'unread_expires' => time() + self::UNREAD_TTL,
         ];
+        self::$pathResolveCache = null;
     }
+
+    /** @var array<string, string>|null uppercase path => canonical IMAP path */
+    private static ?array $pathResolveCache = null;
 
     public function clear(): void
     {
         unset($_SESSION[self::SESSION_KEY]);
         self::$registryCache = null;
+        self::$pathResolveCache = null;
     }
 
     /** @var array<string, array{path: string, display_name: string}>|null */
@@ -69,17 +74,22 @@ class FolderCache
      */
     public static function bumpUnread(string $path, int $delta): array
     {
+        self::ensureCache();
         $key = self::SESSION_KEY;
+        $path = self::canonicalUnreadPath($path);
+
         if (!isset($_SESSION[$key]['unread_counts']) || !is_array($_SESSION[$key]['unread_counts'])) {
-            return [];
+            $_SESSION[$key]['unread_counts'] = [];
         }
 
         if (!folder_shows_unread_badge($path)) {
             $_SESSION[$key]['unread_counts'][$path] = 0;
-        } else {
+        } elseif ($delta !== 0) {
             $current = (int) ($_SESSION[$key]['unread_counts'][$path] ?? 0);
             $_SESSION[$key]['unread_counts'][$path] = max(0, $current + $delta);
         }
+
+        $_SESSION[$key]['unread_counts'] = self::normalizeUnreadCounts($_SESSION[$key]['unread_counts']);
 
         return self::sanitizeUnreadCounts($_SESSION[$key]['unread_counts']);
     }
@@ -120,9 +130,21 @@ class FolderCache
         }
 
         foreach ($imap->getFolderUnreadCounts($paths) as $path => $count) {
-            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = folder_shows_unread_badge($path)
-                ? $count
-                : 0;
+            $path = self::canonicalUnreadPath($path);
+            if (!folder_shows_unread_badge($path)) {
+                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = 0;
+                continue;
+            }
+            if (MailCacheService::hasFolderData($path) && MailCacheService::syncBadgeFromIndex($path)) {
+                continue;
+            }
+            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $count;
+        }
+
+        if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
+                $_SESSION[self::SESSION_KEY]['unread_counts']
+            );
         }
     }
 
@@ -135,12 +157,45 @@ class FolderCache
             return;
         }
 
+        $path = self::canonicalUnreadPath($path);
         self::ensureCache();
         if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
             $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = folder_shows_unread_badge($path)
                 ? max(0, $count)
                 : 0;
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
+                $_SESSION[self::SESSION_KEY]['unread_counts']
+            );
         }
+    }
+
+    private static function canonicalUnreadPath(string $path): string
+    {
+        return self::resolvePath($path);
+    }
+
+    /**
+     * Collapse duplicate unread-count keys that differ only by mailbox path casing.
+     *
+     * @param array<string, int> $counts
+     * @return array<string, int>
+     */
+    private static function normalizeUnreadCounts(array $counts): array
+    {
+        self::warmPathResolveCache();
+        $normalized = [];
+
+        foreach ($counts as $path => $count) {
+            $canonical = self::resolvePath((string) $path);
+            if ($canonical === '' || !folder_shows_unread_badge($canonical)) {
+                continue;
+            }
+            if ($path === $canonical || !array_key_exists($canonical, $normalized)) {
+                $normalized[$canonical] = (int) $count;
+            }
+        }
+
+        return $normalized;
     }
 
     /**
@@ -245,6 +300,7 @@ class FolderCache
      */
     private static function sanitizeUnreadCounts(array $counts): array
     {
+        $counts = self::normalizeUnreadCounts($counts);
         foreach ($counts as $path => $count) {
             if (!folder_shows_unread_badge($path)) {
                 $counts[$path] = 0;
@@ -413,6 +469,90 @@ class FolderCache
     }
 
     /**
+     * Map a folder path (from URL, registry, or sidebar) to the exact path
+     * returned by the IMAP server. Case-insensitive — fixes e.g. INBOX.Spam vs INBOX.spam.
+     * Uses the session folder list (no extra IMAP round-trip on normal navigation).
+     */
+    public static function resolvePath(string $path): string
+    {
+        if ($path === '') {
+            return '';
+        }
+
+        $upper = strtoupper($path);
+        self::warmPathResolveCache();
+
+        if (isset(self::$pathResolveCache[$upper])) {
+            return self::$pathResolveCache[$upper];
+        }
+
+        // Unknown path — return as-is (open will fail gracefully).
+        self::$pathResolveCache[$upper] = $path;
+
+        return $path;
+    }
+
+    private static function warmPathResolveCache(): void
+    {
+        if (self::$pathResolveCache !== null) {
+            return;
+        }
+
+        self::$pathResolveCache = [];
+
+        $cache = new self();
+        $cached = $cache->get();
+        if ($cached !== null) {
+            self::indexFolderPaths($cached['folders']);
+
+            return;
+        }
+
+        $data = $cache->load(skipUnreadRefresh: true);
+        self::indexFolderPaths($data['folders']);
+    }
+
+    /**
+     * @param list<array{path: string, name?: string, delimiter?: string}> $folders
+     */
+    private static function indexFolderPaths(array $folders): void
+    {
+        foreach ($folders as $folder) {
+            $imapPath = (string) ($folder['path'] ?? '');
+            if ($imapPath === '') {
+                continue;
+            }
+            self::$pathResolveCache ??= [];
+            self::$pathResolveCache[strtoupper($imapPath)] = $imapPath;
+        }
+
+        // Registry aliases (e.g. INBOX.Spam in DB → INBOX.spam on server).
+        try {
+            $rows = Database::query(
+                'SELECT imap_path FROM folders WHERE active = 1'
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $registryPath = (string) ($row['imap_path'] ?? '');
+                if ($registryPath === '') {
+                    continue;
+                }
+                $key = strtoupper($registryPath);
+                if (isset(self::$pathResolveCache[$key])) {
+                    continue;
+                }
+                foreach (self::$pathResolveCache as $canonical) {
+                    if (strtoupper($canonical) === $key) {
+                        self::$pathResolveCache[$key] = $canonical;
+                        break;
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+    }
+
+    /**
      * Keep only mailboxes that exist in the admin folder registry and still
      * exist on the IMAP server. Orphan IMAP folders (e.g. after admin delete)
      * must not appear in the sidebar.
@@ -441,10 +581,9 @@ class FolderCache
             }
 
             $entry = $registry[$key];
-            $folder['path'] = $entry['path'];
             $folder['name'] = $entry['display_name'];
             $filtered[] = $folder;
-            $counts[$entry['path']] = (int) (
+            $counts[$imapPath] = (int) (
                 $data['unread_counts'][$imapPath]
                 ?? $data['unread_counts'][$entry['path']]
                 ?? 0

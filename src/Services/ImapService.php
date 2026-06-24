@@ -96,6 +96,8 @@ class ImapService
     public static function closeShared(): void
     {
         if (self::$sharedConnection !== null) {
+            imap_errors();
+            imap_alerts();
             @imap_close(self::$sharedConnection);
             self::$sharedConnection = null;
         }
@@ -150,6 +152,7 @@ class ImapService
 
         if (!$reopened) {
             $errors = imap_errors() ?: [];
+            imap_alerts();
             $this->lastError = 'Failed to open folder: ' . implode('; ', $errors);
 
             return false;
@@ -1200,6 +1203,42 @@ class ImapService
 
         $errors = imap_errors() ?: [];
         $this->lastError = 'Failed to create folder: ' . implode('; ', $errors);
+        app_log($this->lastError);
+
+        return false;
+    }
+
+    public function renameFolder(string $oldPath, string $newPath): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        if ($oldPath === $newPath) {
+            return true;
+        }
+
+        if (!$this->folderExistsOnServer($oldPath)) {
+            $this->lastError = 'Source folder does not exist on the mail server.';
+
+            return false;
+        }
+
+        if ($this->folderExistsOnServer($newPath)) {
+            $this->lastError = 'A folder with that name already exists on the mail server.';
+
+            return false;
+        }
+
+        $oldMailbox = $this->getMailboxString() . $this->encodeFolderPath($oldPath);
+        $newMailbox = $this->getMailboxString() . $this->encodeFolderPath($newPath);
+
+        if (@imap_renamemailbox($this->connection, $oldMailbox, $newMailbox)) {
+            return true;
+        }
+
+        $errors = imap_errors() ?: [];
+        $this->lastError = 'Failed to rename folder: ' . implode('; ', $errors);
         app_log($this->lastError);
 
         return false;

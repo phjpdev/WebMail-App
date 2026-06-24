@@ -220,6 +220,12 @@ class AdminController
                 [$id]
             );
             $user['alias_email'] = $alias['email'] ?? '';
+
+            $folder = Database::fetchOne(
+                "SELECT display_name FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' ORDER BY id LIMIT 1",
+                [$id]
+            );
+            $user['folder_name'] = $folder['display_name'] ?? '';
         }
 
         $this->render('admin/users/form', [
@@ -255,6 +261,24 @@ class AdminController
         if (($data['role'] ?? 'employee') === 'employee') {
             if (($data['alias_email'] ?? '') === '' || !filter_var($data['alias_email'], FILTER_VALIDATE_EMAIL)) {
                 flash('error', 'A valid email address is required for employee accounts.');
+                redirect('admin/users/' . $id . '/edit');
+            }
+            $folderName = trim($data['folder_name'] ?? '');
+            if ($folderName === '') {
+                flash('error', 'A folder name is required for employee accounts.');
+                redirect('admin/users/' . $id . '/edit');
+            }
+            if (!preg_match('/^[a-zA-Z0-9_-]+$/', $folderName)) {
+                flash('error', 'Folder name may only contain letters, numbers, hyphens, and underscores.');
+                redirect('admin/users/' . $id . '/edit');
+            }
+            $imapPath = 'INBOX.' . $folderName;
+            $folderConflict = Database::fetchOne(
+                'SELECT id FROM folders WHERE imap_path = ? AND (linked_user_id IS NULL OR linked_user_id != ?) LIMIT 1',
+                [$imapPath, $id]
+            );
+            if ($folderConflict !== null) {
+                flash('error', 'A folder with that name already exists. Choose a different folder name.');
                 redirect('admin/users/' . $id . '/edit');
             }
         }

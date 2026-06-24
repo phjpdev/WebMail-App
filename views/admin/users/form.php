@@ -69,6 +69,14 @@ ob_start();
                    value="<?= e($editUser['alias_email'] ?? '') ?>" required>
             <small class="form-hint">Send-as address (any valid email). Changing it updates the alias and routing rule.</small>
         </div>
+        <div class="form-group">
+            <label for="folder_name">Folder name <span class="text-required">*</span></label>
+            <input type="text" id="folder_name" name="folder_name" required
+                   pattern="[A-Za-z0-9_-]+" title="Letters, numbers, hyphens, and underscores only"
+                   value="<?= e($editUser['folder_name'] ?? '') ?>"
+                   placeholder="e.g. ankesh or support">
+            <small class="form-hint">Employee IMAP folder (INBOX.<em>name</em>). Changing it renames the folder on the mail server and updates the sidebar.</small>
+        </div>
         <div class="form-group form-check">
             <label class="form-check-label">
                 <input type="checkbox" class="form-check-input" name="active" value="1"<?= (int) ($editUser['active'] ?? 1) ? ' checked' : '' ?>>

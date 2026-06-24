@@ -287,11 +287,26 @@ function wants_json(): bool
 /**
  * @param array<string, mixed> $data
  */
+function json_encode_safe(array $data): string
+{
+    $json = json_encode($data, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        app_log('json_encode failed: ' . json_last_error_msg());
+
+        return '{"ok":false,"error":"Could not encode response."}';
+    }
+
+    return $json;
+}
+
+/**
+ * @param array<string, mixed> $data
+ */
 function json_response(array $data, int $status = 200): never
 {
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($data);
+    echo json_encode_safe($data);
     exit;
 }
 
@@ -305,7 +320,7 @@ function json_response_then(array $data, callable $after, int $status = 200): ne
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Connection: close');
-    $body = json_encode($data);
+    $body = json_encode_safe($data);
     header('Content-Length: ' . (string) strlen($body));
     echo $body;
     finish_background($after);
@@ -488,6 +503,12 @@ function decode_folder_path(string $encoded): string
     $decoded = base64_decode($padded, true);
 
     return $decoded === false ? '' : $decoded;
+}
+
+/** Decode a URL folder token and map it to the exact IMAP mailbox path. */
+function mail_folder_path(string $encoded): string
+{
+    return \App\Services\FolderCache::resolvePath(decode_folder_path($encoded));
 }
 
 function folder_url(string $folderPath, string $suffix = ''): string

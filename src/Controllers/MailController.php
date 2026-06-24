@@ -27,7 +27,7 @@ class MailController
     {
         requireAuth();
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
             error_page(404, 'Folder not found.');
         }
@@ -53,26 +53,26 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
             http_response_code(404);
-            echo json_encode(['ok' => false, 'error' => 'Folder not found']);
-            return;
+            echo json_encode_safe(['ok' => false, 'error' => 'Folder not found']);
+            exit;
         }
         if (!FolderCache::canAccess($folderPath)) {
             http_response_code(403);
-            echo json_encode(['ok' => false, 'error' => 'Access denied']);
-            return;
+            echo json_encode_safe(['ok' => false, 'error' => 'Access denied']);
+            exit;
         }
 
         $context = $this->buildFolderListContext($folderPath, $params, ajaxFast: true);
         if ($context === null) {
             http_response_code(404);
-            echo json_encode(['ok' => false, 'error' => 'Folder not found']);
-            return;
+            echo json_encode_safe(['ok' => false, 'error' => 'Folder not found']);
+            exit;
         }
 
-        echo json_encode([
+        echo json_encode_safe([
             'ok' => true,
             'folder_path' => $folderPath,
             'folder_b64' => $context['folderB64'],
@@ -81,6 +81,7 @@ class MailController
             'html' => view_string('mail/list-column', $context),
             'unread_counts' => $context['unreadCounts'] ?? [],
         ]);
+        exit;
     }
 
     /**
@@ -89,6 +90,10 @@ class MailController
      */
     private function buildFolderListContext(string $folderPath, array $params, bool $ajaxFast = false): ?array
     {
+        if ($folderPath === '') {
+            return null;
+        }
+
         $forceRefresh = ($params['refresh'] ?? $_GET['refresh'] ?? '') === '1';
         $fastOpen = $ajaxFast && !$forceRefresh;
 
@@ -151,6 +156,7 @@ class MailController
 
         if ($imapConnected && $query === '') {
             $folderUnread = MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+            MailCacheService::reconcileAllIndexedBadges();
             $folderData = FolderCache::load(skipUnreadRefresh: true);
             $folderData['unread_counts'][$folderPath] = $folderUnread;
         }
@@ -313,7 +319,7 @@ class MailController
 
         header('Content-Type: application/json; charset=utf-8');
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
             http_response_code(404);
             echo json_encode(['error' => 'Folder not found']);
@@ -400,6 +406,7 @@ class MailController
     {
         if (trim($_GET['q'] ?? '') === '') {
             MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+            MailCacheService::reconcileAllIndexedBadges();
         }
 
         $messages = [];
@@ -440,7 +447,15 @@ class MailController
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
         foreach ($folderData['folders'] ?? [] as $folder) {
-            MailCacheService::syncBadgeFromIndex($folder['path']);
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '') {
+                continue;
+            }
+            if (MailCacheService::hasFolderData($path)) {
+                MailCacheService::reconcileBadgeFromIndex($path);
+            } else {
+                MailCacheService::syncBadgeFromIndex($path);
+            }
         }
 
         echo json_encode(['unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? []]);
@@ -455,7 +470,7 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         $uid = (int) ($params['uid'] ?? 0);
 
         if ($folderPath === '' || $uid <= 0) {
@@ -490,7 +505,7 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '' || !FolderCache::canAccess($folderPath)) {
             http_response_code(403);
             echo json_encode(['ok' => false, 'error' => 'Access denied']);
@@ -528,7 +543,7 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         $uid = (int) ($params['uid'] ?? 0);
 
         if ($folderPath === '' || $uid <= 0) {
@@ -574,7 +589,7 @@ class MailController
     {
         requireAuth();
 
-        $folderPath = decode_folder_path($params['folderB64'] ?? '');
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
         $uid = (int) ($params['uid'] ?? 0);
 
         if ($folderPath === '' || $uid <= 0) {
@@ -741,7 +756,7 @@ class MailController
         requireAuth();
         releaseSessionLock();
 
-        $folderPath = decode_folder_path($_GET['folder'] ?? '');
+        $folderPath = mail_folder_path($_GET['folder'] ?? '');
         $uid = (int) ($_GET['uid'] ?? 0);
         $partId = $_GET['part'] ?? '';
         $inline = ($_GET['disposition'] ?? '') === 'inline';
@@ -848,7 +863,7 @@ class MailController
         verify_csrf_or_fail();
         releaseSessionLock();
 
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
         $targetPath = $_POST['target_folder'] ?? '';
 
@@ -867,7 +882,7 @@ class MailController
         verify_csrf_or_fail();
         releaseSessionLock();
 
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
 
         if ($folderPath === '' || $uid <= 0) {
@@ -889,7 +904,7 @@ class MailController
         verify_csrf_or_fail();
         releaseSessionLock();
 
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $targetPath = $_POST['target_folder'] ?? '';
         $uids = $this->resolveBulkUids($folderPath);
 
@@ -909,7 +924,7 @@ class MailController
         verify_csrf_or_fail();
         releaseSessionLock();
 
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uids = $this->resolveBulkUids($folderPath);
 
         if ($folderPath === '' || $uids === []) {
@@ -964,7 +979,7 @@ class MailController
         verify_csrf_or_fail();
         releaseSessionLock();
 
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
 
         if ($folderPath === '' || $uid <= 0) {
@@ -1241,7 +1256,7 @@ class MailController
 
     private function setSeenFlag(bool $seen): void
     {
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
         $redirect = $_POST['redirect'] ?? ('folder/' . encode_folder_path($folderPath));
 
@@ -1260,7 +1275,7 @@ class MailController
         } elseif (!$seen && $alreadySeen === true) {
             $delta = 1;
         }
-        $counts = $this->unreadCountsAfterSeenChange($folderPath, $delta);
+        $counts = FolderCache::bumpUnread($folderPath, $delta);
 
         if (wants_json()) {
             json_response_then([
@@ -1298,7 +1313,7 @@ class MailController
 
     private function setFlaggedFlag(bool $flagged): void
     {
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
         $redirect = $_POST['redirect'] ?? ('folder/' . encode_folder_path($folderPath));
 
@@ -1345,7 +1360,7 @@ class MailController
 
     private function setSeenFlagBulk(bool $seen): void
     {
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uids = $this->resolveBulkUids($folderPath);
         $redirect = 'folder/' . encode_folder_path($folderPath ?: 'INBOX');
 
@@ -1397,7 +1412,7 @@ class MailController
 
     private function setFlaggedFlagBulk(bool $flagged): void
     {
-        $folderPath = decode_folder_path($_POST['folder'] ?? '');
+        $folderPath = mail_folder_path($_POST['folder'] ?? '');
         $uids = $this->resolveBulkUids($folderPath);
         $redirect = 'folder/' . encode_folder_path($folderPath ?: 'INBOX');
 

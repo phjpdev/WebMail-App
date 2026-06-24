@@ -240,7 +240,7 @@ class AdminUserService
     }
 
     /**
-     * @param array{name?: string, username?: string, password?: string, role?: string, active?: int, alias_email?: string} $data
+     * @param array{name?: string, username?: string, password?: string, role?: string, active?: int, alias_email?: string, folder_name?: string} $data
      */
     public function update(int $id, array $data): void
     {
@@ -293,6 +293,94 @@ class AdminUserService
         if (($data['role'] ?? '') === 'employee' && !empty($data['alias_email'])) {
             $this->syncEmployeeAlias($id, $data['name'], $data['username'], trim($data['alias_email']));
         }
+
+        if (($data['role'] ?? '') === 'employee' && ($data['folder_name'] ?? '') !== '') {
+            $this->syncEmployeeFolder($id, trim($data['folder_name']));
+        }
+    }
+
+    /**
+     * Keep the employee's linked folder in sync when renamed from the user edit form.
+     */
+    private function syncEmployeeFolder(int $userId, string $folderName): void
+    {
+        $folderName = trim($folderName);
+        if ($folderName === '') {
+            throw new \RuntimeException('Folder name is required for employee accounts.');
+        }
+
+        $safeFolder = preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+        if ($safeFolder === '') {
+            throw new \RuntimeException('Invalid folder name.');
+        }
+        $newImapPath = 'INBOX.' . $safeFolder;
+
+        $folder = Database::fetchOne(
+            "SELECT id, imap_path, display_name FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' ORDER BY id LIMIT 1",
+            [$userId]
+        );
+
+        if ($folder === null) {
+            $user = $this->find($userId);
+            if ($user === null) {
+                throw new \RuntimeException('User not found.');
+            }
+            $alias = Database::fetchOne(
+                'SELECT email FROM aliases WHERE user_id = ? ORDER BY id LIMIT 1',
+                [$userId]
+            );
+            $aliasEmail = (string) ($alias['email'] ?? '');
+            if ($aliasEmail === '') {
+                throw new \RuntimeException('Employee has no email alias; cannot create folder.');
+            }
+            $this->provisionEmployeeMailbox($userId, $user['name'], $aliasEmail, $folderName, $user['username']);
+
+            return;
+        }
+
+        $folderId = (int) $folder['id'];
+        $oldImapPath = (string) $folder['imap_path'];
+        $oldDisplayName = (string) $folder['display_name'];
+
+        if ($oldImapPath === $newImapPath && $oldDisplayName === $folderName) {
+            return;
+        }
+
+        $conflict = Database::fetchOne(
+            'SELECT id FROM folders WHERE imap_path = ? AND id != ? LIMIT 1',
+            [$newImapPath, $folderId]
+        );
+        if ($conflict !== null) {
+            throw new \RuntimeException('A folder with that name already exists. Choose a different folder name.');
+        }
+
+        Database::transaction(function () use ($folderId, $oldImapPath, $newImapPath, $folderName): void {
+            if ($oldImapPath !== $newImapPath) {
+                $imap = new ImapService();
+                if (!$imap->connect()) {
+                    throw new \RuntimeException('Could not connect to the mail server to rename the folder.');
+                }
+                if ($imap->folderExistsOnServer($oldImapPath)) {
+                    if (!$imap->renameFolder($oldImapPath, $newImapPath)) {
+                        throw new \RuntimeException(
+                            'Could not rename the folder on the mail server: ' . $imap->getLastError()
+                        );
+                    }
+                } elseif (!$imap->folderExistsOnServer($newImapPath) && !$imap->createFolder($newImapPath)) {
+                    throw new \RuntimeException(
+                        'Could not create the folder on the mail server: ' . $imap->getLastError()
+                    );
+                }
+                MailCacheService::renameFolderPath($oldImapPath, $newImapPath);
+            }
+
+            Database::query(
+                'UPDATE folders SET imap_path = ?, display_name = ? WHERE id = ?',
+                [$newImapPath, $folderName, $folderId]
+            );
+        });
+
+        (new FolderCache())->clear();
     }
 
     /**

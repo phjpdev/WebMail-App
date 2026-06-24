@@ -333,8 +333,10 @@
                     if (data.was_unread) {
                         setRowSeen(uid, true);
                     }
-                    if (data.unread_counts) {
+                    if (data.unread_counts && Object.keys(data.unread_counts).length) {
                         applyUnreadCounts(data.unread_counts);
+                    } else if (data.was_unread) {
+                        bumpFolderUnread(-1);
                     } else if (typeof data.folder_unread === 'number') {
                         var countLabel = document.getElementById('mail-count-label');
                         var totalMsgs = countLabel
@@ -361,8 +363,10 @@
                 syncReadSeenButton(readCard);
             }
         }
-        if (data.unread_counts) {
+        if (data.unread_counts && Object.keys(data.unread_counts).length) {
             applyUnreadCounts(data.unread_counts);
+        } else if (data.was_unread) {
+            bumpFolderUnread(-1);
         }
         if (typeof data.folder_unread === 'number') {
             var countLabel = document.getElementById('mail-count-label');
@@ -1830,14 +1834,12 @@
     function applyUnreadCounts(counts) {
         if (!counts) return;
         lastUnreadCounts = Object.assign({}, lastUnreadCounts, counts);
-        Object.keys(counts).forEach(function (path) {
-            if (!folderShowsUnreadBadge(path)) {
-                counts[path] = 0;
-            }
-            var link = document.querySelector('.sidebar-link[data-folder-path="' + (window.CSS && CSS.escape ? CSS.escape(path) : path) + '"]');
-            if (!link) return;
+
+        document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
+            var path = link.getAttribute('data-folder-path');
+            if (!path) return;
+            var n = folderShowsUnreadBadge(path) ? (lastUnreadCounts[path] || 0) : 0;
             var badge = link.querySelector('.folder-badge');
-            var n = counts[path];
             if (n > 0) {
                 if (!badge) {
                     badge = document.createElement('span');
@@ -1926,14 +1928,6 @@
                     var folderUnread = (data.unread_counts && plainPath)
                         ? (folderShowsUnreadBadge(plainPath) ? (data.unread_counts[plainPath] || 0) : 0)
                         : 0;
-                    if (page === 1 && plainPath && data.messages.length) {
-                        var pageUnread = unreadCountFromMessages(data.messages);
-                        if (pageUnread > folderUnread) {
-                            folderUnread = pageUnread;
-                            data.unread_counts = data.unread_counts || {};
-                            data.unread_counts[plainPath] = pageUnread;
-                        }
-                    }
                     updateMailCount(data.total, folderUnread);
                     if (data.unread_counts) {
                         applyUnreadCounts(data.unread_counts);

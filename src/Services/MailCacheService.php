@@ -85,6 +85,18 @@ class MailCacheService
         Database::query('DELETE FROM mail_sync_state WHERE folder_path = ?', [$folderPath]);
     }
 
+    /** Move cached mail rows when an IMAP folder is renamed. */
+    public static function renameFolderPath(string $oldPath, string $newPath): void
+    {
+        if ($oldPath === '' || $newPath === '' || $oldPath === $newPath) {
+            return;
+        }
+
+        Database::query('UPDATE mail_index SET folder_path = ? WHERE folder_path = ?', [$newPath, $oldPath]);
+        Database::query('UPDATE mail_bodies SET folder_path = ? WHERE folder_path = ?', [$newPath, $oldPath]);
+        Database::query('UPDATE mail_sync_state SET folder_path = ? WHERE folder_path = ?', [$newPath, $oldPath]);
+    }
+
     public static function invalidateFolder(string $folderPath): void
     {
         if ($folderPath === '') {
@@ -215,8 +227,8 @@ class MailCacheService
                 from_addr = VALUES(from_addr),
                 subject = VALUES(subject),
                 msg_date = VALUES(msg_date),
-                seen = VALUES(seen),
-                flagged = VALUES(flagged),
+                seen = GREATEST(seen, VALUES(seen)),
+                flagged = GREATEST(flagged, VALUES(flagged)),
                 has_attachment = VALUES(has_attachment),
                 size = VALUES(size),
                 synced_at = NOW()',
@@ -439,6 +451,8 @@ class MailCacheService
      */
     public static function reconcileBadgeFromIndex(string $folderPath, ?array $pageMessages = null): int
     {
+        $folderPath = FolderCache::resolvePath($folderPath);
+
         if (!folder_shows_unread_badge($folderPath)) {
             FolderCache::setUnreadCount($folderPath, 0);
 
@@ -457,6 +471,12 @@ class MailCacheService
         }
 
         if (!self::hasFolderData($folderPath)) {
+            if ($pageMessages !== null && $pageUnread === 0 && $session > 0) {
+                FolderCache::setUnreadCount($folderPath, 0);
+
+                return 0;
+            }
+
             return $session;
         }
 
@@ -465,27 +485,29 @@ class MailCacheService
         }
 
         $indexUnread = self::countUnseenInIndex($folderPath);
-
-        if ($pageUnread === 0 && $indexUnread === 0 && $session > 0) {
-            FolderCache::setUnreadCount($folderPath, 0);
-
-            return 0;
-        }
-
         $truth = max($indexUnread, $pageUnread);
-        if ($truth > $session) {
+
+        if ($truth !== $session) {
             FolderCache::setUnreadCount($folderPath, $truth);
 
             return $truth;
         }
 
-        if ($session > 0 && $truth === 0 && $pageMessages !== null) {
-            FolderCache::setUnreadCount($folderPath, 0);
-
-            return 0;
-        }
-
         return $session;
+    }
+
+    /**
+     * Clear phantom sidebar badges for every folder we have indexed locally.
+     */
+    public static function reconcileAllIndexedBadges(): void
+    {
+        foreach (FolderCache::load(skipUnreadRefresh: true)['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '' || !self::hasFolderData($path)) {
+                continue;
+            }
+            self::reconcileBadgeFromIndex($path);
+        }
     }
 
     /**
