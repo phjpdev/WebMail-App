@@ -54,7 +54,11 @@ class FolderCache
     public function clear(): void
     {
         unset($_SESSION[self::SESSION_KEY]);
+        self::$registryCache = null;
     }
+
+    /** @var array<string, array{path: string, display_name: string}>|null */
+    private static ?array $registryCache = null;
 
     /**
      * Adjust a single folder's cached unread count in place, without throwing
@@ -250,8 +254,8 @@ class FolderCache
 
     /**
      * Authorization check for direct folder access (read, attachment, move, etc.).
-     * Admins may access any folder; employees may only access INBOX, the standard
-     * shared folders (Sent/Drafts/Trash/Spam), and their own linked folder.
+     * Only folders in the admin registry may be opened. Employees may additionally
+     * only access INBOX, standard shared folders, and their own linked folder.
      */
     public static function canAccess(string $path): bool
     {
@@ -264,13 +268,18 @@ class FolderCache
             return false;
         }
 
+        $cache = new self();
+        if (!$cache->isRegisteredActivePath($path)) {
+            return false;
+        }
+
         if (($user['role'] ?? '') === 'admin') {
             return true;
         }
 
-        $allowedPaths = (new self())->employeeAllowedPaths((int) $user['id']);
+        $allowedPaths = $cache->employeeAllowedPaths((int) $user['id']);
 
-        return (new self())->isEmployeeFolderAllowed($path, $allowedPaths);
+        return $cache->isEmployeeFolderAllowed($path, $allowedPaths);
     }
 
     /**
@@ -279,6 +288,8 @@ class FolderCache
      */
     private function filterForUser(array $data): array
     {
+        $data = $this->filterByRegistry($data);
+
         $user = Auth::user();
         if ($user === null || $user['role'] === 'admin') {
             return $data;
@@ -339,5 +350,87 @@ class FolderCache
         }
 
         return false;
+    }
+
+    /**
+     * Active folders from the admin registry (source of truth for the sidebar).
+     *
+     * @return array<string, array{path: string, display_name: string}>
+     */
+    private function registeredActiveFolders(): array
+    {
+        if (self::$registryCache !== null) {
+            return self::$registryCache;
+        }
+
+        $registry = [];
+        try {
+            $rows = Database::query(
+                'SELECT imap_path, display_name FROM folders WHERE active = 1'
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $path = (string) $row['imap_path'];
+                $registry[strtoupper($path)] = [
+                    'path' => $path,
+                    'display_name' => (string) $row['display_name'],
+                ];
+            }
+        } catch (\Throwable $e) {
+            app_log('Folder registry load failed: ' . $e->getMessage());
+        }
+
+        self::$registryCache = $registry;
+
+        return $registry;
+    }
+
+    private function isRegisteredActivePath(string $path): bool
+    {
+        return isset($this->registeredActiveFolders()[strtoupper($path)]);
+    }
+
+    /**
+     * Keep only mailboxes that exist in the admin folder registry and still
+     * exist on the IMAP server. Orphan IMAP folders (e.g. after admin delete)
+     * must not appear in the sidebar.
+     *
+     * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
+     * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
+     */
+    private function filterByRegistry(array $data): array
+    {
+        $registry = $this->registeredActiveFolders();
+        if ($registry === []) {
+            $data['folders'] = [];
+            $data['unread_counts'] = [];
+
+            return $data;
+        }
+
+        $filtered = [];
+        $counts = [];
+
+        foreach ($data['folders'] as $folder) {
+            $imapPath = (string) $folder['path'];
+            $key = strtoupper($imapPath);
+            if (!isset($registry[$key])) {
+                continue;
+            }
+
+            $entry = $registry[$key];
+            $folder['path'] = $entry['path'];
+            $folder['name'] = $entry['display_name'];
+            $filtered[] = $folder;
+            $counts[$entry['path']] = (int) (
+                $data['unread_counts'][$imapPath]
+                ?? $data['unread_counts'][$entry['path']]
+                ?? 0
+            );
+        }
+
+        $data['folders'] = $filtered;
+        $data['unread_counts'] = $counts;
+
+        return $data;
     }
 }
