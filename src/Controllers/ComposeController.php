@@ -599,9 +599,12 @@ class ComposeController
      */
     private function buildQuotedBody(array $message): string
     {
-        $plain = $message['plain'] ?? strip_tags($message['html'] ?? '');
+        $plain = rtrim($message['plain'] ?? strip_tags($message['html'] ?? ''));
         $lines = explode("\n", $plain);
         $quoted = array_map(fn ($line) => '> ' . $line, $lines);
+        while ($quoted !== [] && trim($quoted[array_key_last($quoted)], '> ') === '') {
+            array_pop($quoted);
+        }
 
         return sprintf(
             "On %s, %s wrote:\n%s",

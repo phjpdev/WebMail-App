@@ -100,6 +100,7 @@ html {
 .mail-list-desktop,
 .reading-pane-body,
 .compose-panel-body,
+.compose-panel-inner,
 .context-submenu-scroll,
 .mail-body-html,
 .table-wrap,
@@ -4258,30 +4259,91 @@ body:has(.mail-workspace) {
 .compose-panel-body {
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
-    padding: 0.75rem 1rem 1rem;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 0.75rem 1rem 0;
+}
+
+.compose-panel-inner {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 .compose-panel-inner .compose-form {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    flex: 1;
+    min-height: 0;
+    gap: 0.65rem;
+}
+
+.compose-panel-inner .form-group {
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+/* Message editor fills remaining height and scrolls inside (Gmail-style). */
+.compose-panel-inner .compose-form > .form-group:has(.rich-editor) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.compose-panel-inner .compose-form > .form-group:has(.rich-editor) > label {
+    flex-shrink: 0;
+    margin-bottom: 0.35rem;
+}
+
+.compose-panel-inner .rich-toolbar {
+    flex-shrink: 0;
 }
 
 .compose-panel-inner .rich-editor {
-    min-height: 10rem;
-    max-height: 28vh;
+    flex: 1;
+    min-height: 7rem;
+    max-height: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    padding-bottom: 1rem;
+    -webkit-overflow-scrolling: touch;
+}
+
+.compose-panel-inner .file-upload-label {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 0.6rem 0.75rem;
+    gap: 0.45rem;
+}
+
+.compose-panel-inner .file-upload-icon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.compose-panel-inner .file-upload-text {
+    font-size: 0.8125rem;
+}
+
+.compose-panel-inner .file-upload-hint {
+    font-size: 0.75rem;
+    width: 100%;
+    text-align: center;
 }
 
 .compose-panel-inner .compose-form-actions {
-    position: sticky;
-    bottom: 0;
+    position: static;
+    flex-shrink: 0;
     z-index: 2;
-    margin: 0 -1rem -1rem;
-    padding: 0.75rem 1rem;
-    background: linear-gradient(to top, var(--color-surface) 70%, transparent);
+    margin: 0;
+    padding: 0.65rem 0 1rem;
+    background: var(--color-surface);
     border-top: 1px solid var(--color-border-subtle);
 }
 
