@@ -85,6 +85,18 @@ class MailCacheService
         Database::query('DELETE FROM mail_sync_state WHERE folder_path = ?', [$folderPath]);
     }
 
+    public static function invalidateFolder(string $folderPath): void
+    {
+        if ($folderPath === '') {
+            return;
+        }
+
+        Database::query(
+            'UPDATE mail_sync_state SET last_sync_at = NULL WHERE folder_path = ?',
+            [$folderPath]
+        );
+    }
+
     public static function isStale(string $folderPath): bool
     {
         $state = self::getSyncState($folderPath);
@@ -427,6 +439,12 @@ class MailCacheService
      */
     public static function reconcileBadgeFromIndex(string $folderPath, ?array $pageMessages = null): int
     {
+        if (!folder_shows_unread_badge($folderPath)) {
+            FolderCache::setUnreadCount($folderPath, 0);
+
+            return 0;
+        }
+
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
 
         $pageUnread = 0;

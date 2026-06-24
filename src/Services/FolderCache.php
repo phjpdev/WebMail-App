@@ -46,7 +46,7 @@ class FolderCache
         $_SESSION[self::SESSION_KEY] = [
             'expires' => time() + self::TTL,
             'folders' => $folders,
-            'unread_counts' => $unreadCounts,
+            'unread_counts' => self::sanitizeUnreadCounts($unreadCounts),
             'unread_expires' => time() + self::UNREAD_TTL,
         ];
     }
@@ -74,10 +74,14 @@ class FolderCache
             return [];
         }
 
-        $current = (int) ($_SESSION[$key]['unread_counts'][$path] ?? 0);
-        $_SESSION[$key]['unread_counts'][$path] = max(0, $current + $delta);
+        if (!folder_shows_unread_badge($path)) {
+            $_SESSION[$key]['unread_counts'][$path] = 0;
+        } else {
+            $current = (int) ($_SESSION[$key]['unread_counts'][$path] ?? 0);
+            $_SESSION[$key]['unread_counts'][$path] = max(0, $current + $delta);
+        }
 
-        return $_SESSION[$key]['unread_counts'];
+        return self::sanitizeUnreadCounts($_SESSION[$key]['unread_counts']);
     }
 
     /**
@@ -116,7 +120,9 @@ class FolderCache
         }
 
         foreach ($imap->getFolderUnreadCounts($paths) as $path => $count) {
-            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $count;
+            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = folder_shows_unread_badge($path)
+                ? $count
+                : 0;
         }
     }
 
@@ -131,7 +137,9 @@ class FolderCache
 
         self::ensureCache();
         if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
-            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max(0, $count);
+            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = folder_shows_unread_badge($path)
+                ? max(0, $count)
+                : 0;
         }
     }
 
@@ -224,11 +232,26 @@ class FolderCache
         );
 
         if (isset($_SESSION[self::SESSION_KEY])) {
-            $_SESSION[self::SESSION_KEY]['unread_counts'] = $data['unread_counts'];
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::sanitizeUnreadCounts($data['unread_counts']);
             $_SESSION[self::SESSION_KEY]['unread_expires'] = time() + self::UNREAD_TTL;
         }
 
         return $data;
+    }
+
+    /**
+     * @param array<string, int> $counts
+     * @return array<string, int>
+     */
+    private static function sanitizeUnreadCounts(array $counts): array
+    {
+        foreach ($counts as $path => $count) {
+            if (!folder_shows_unread_badge($path)) {
+                $counts[$path] = 0;
+            }
+        }
+
+        return $counts;
     }
 
     /**
@@ -429,7 +452,7 @@ class FolderCache
         }
 
         $data['folders'] = $filtered;
-        $data['unread_counts'] = $counts;
+        $data['unread_counts'] = self::sanitizeUnreadCounts($counts);
 
         return $data;
     }

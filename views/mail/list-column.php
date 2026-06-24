@@ -22,7 +22,9 @@
     <div class="page-title-row">
         <h2><?= e($title ?? 'Mail') ?></h2>
         <?php
-        $headerUnread = (int) ($unreadCount ?? 0);
+        $headerUnread = folder_shows_unread_badge($folderPath)
+            ? (int) ($unreadCount ?? 0)
+            : 0;
         $headerTitle = $headerUnread > 0
             ? $headerUnread . ' unread'
             : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's');

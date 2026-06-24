@@ -1119,9 +1119,15 @@
         return div.innerHTML;
     }
 
+    function folderShowsUnreadBadge(path) {
+        if (!path) return false;
+        return path.toLowerCase().indexOf('trash') < 0;
+    }
+
     function updateMailCount(total, unread) {
         var label = document.getElementById('mail-count-label');
         if (!label) return;
+        if (isTrashFolder()) unread = 0;
         var u = typeof unread === 'number' ? unread : 0;
         label.setAttribute('data-total', String(typeof total === 'number' ? total : 0));
         label.setAttribute('data-unread', String(u));
@@ -1825,6 +1831,9 @@
         if (!counts) return;
         lastUnreadCounts = Object.assign({}, lastUnreadCounts, counts);
         Object.keys(counts).forEach(function (path) {
+            if (!folderShowsUnreadBadge(path)) {
+                counts[path] = 0;
+            }
             var link = document.querySelector('.sidebar-link[data-folder-path="' + (window.CSS && CSS.escape ? CSS.escape(path) : path) + '"]');
             if (!link) return;
             var badge = link.querySelector('.folder-badge');
@@ -1845,7 +1854,7 @@
             var total = 0;
             group.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
                 var p = link.getAttribute('data-folder-path');
-                if (p && counts[p]) total += counts[p];
+                if (p && folderShowsUnreadBadge(p) && counts[p]) total += counts[p];
             });
             var toggle = group.querySelector('.sidebar-group-toggle');
             if (!toggle) return;
@@ -1915,7 +1924,7 @@
                     if (!data || !Array.isArray(data.messages)) return;
                     var plainPath = card.getAttribute('data-folder-plain') || '';
                     var folderUnread = (data.unread_counts && plainPath)
-                        ? (data.unread_counts[plainPath] || 0)
+                        ? (folderShowsUnreadBadge(plainPath) ? (data.unread_counts[plainPath] || 0) : 0)
                         : 0;
                     if (page === 1 && plainPath && data.messages.length) {
                         var pageUnread = unreadCountFromMessages(data.messages);

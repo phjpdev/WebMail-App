@@ -119,7 +119,7 @@ class MailController
 
         if ($imapConnected && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null && ($fastOpen || !$forceRefresh)) {
+            if ($cached !== null && ($fastOpen || !$forceRefresh) && !MailCacheService::isStale($folderPath)) {
                 $list = $cached;
                 $list['from_cache'] = true;
                 $servedFromCache = true;
@@ -163,7 +163,9 @@ class MailController
             'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
             'unreadCounts' => $folderData['unread_counts'] ?? [],
-            'unreadCount' => (int) ($folderData['unread_counts'][$folderPath] ?? 0),
+            'unreadCount' => folder_shows_unread_badge($folderPath)
+                ? (int) ($folderData['unread_counts'][$folderPath] ?? 0)
+                : 0,
             'activeFolder' => $folderPath,
             'messages' => $list['messages'],
             'page' => $list['page'],
@@ -216,7 +218,7 @@ class MailController
     ): array {
         if ($query === '' && !$forceRefresh) {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null) {
+            if ($cached !== null && !MailCacheService::isStale($folderPath)) {
                 $cached['from_cache'] = true;
 
                 return $cached;
@@ -330,11 +332,11 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $perPage = mail_per_page();
 
-        // Lightweight poll: MySQL cache only — never hit IMAP here or deleted
-        // messages reappear while background move/delete is still running.
+        // Lightweight poll: MySQL cache when fresh — re-sync when stale so moves
+        // into Trash (and other folders) appear without a manual refresh.
         if ($light && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null) {
+            if ($cached !== null && !MailCacheService::isStale($folderPath)) {
                 $this->echoFolderSyncJson($folderPath, $cached);
                 return;
             }
@@ -1017,9 +1019,15 @@ class MailController
 
         if (wants_json()) {
             MailCacheService::removeMessages($folderPath, $uids);
+            MailCacheService::invalidateFolder($targetPath);
             if ($unreadDelta > 0) {
                 FolderCache::bumpUnread($folderPath, -$unreadDelta);
-                $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
+                if (folder_shows_unread_badge($targetPath)) {
+                    $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
+                } else {
+                    FolderCache::setUnreadCount($targetPath, 0);
+                    $counts = FolderCache::bumpUnread($folderPath, 0);
+                }
             } else {
                 $counts = FolderCache::bumpUnread($folderPath, 0);
             }
@@ -1097,6 +1105,16 @@ class MailController
         }
 
         $imap->moveMessages($folderPath, $uids, $targetPath);
+
+        try {
+            MailCacheService::syncFolderHeaders($imap, $targetPath);
+            if (!folder_shows_unread_badge($targetPath)) {
+                FolderCache::setUnreadCount($targetPath, 0);
+            }
+        } catch (\Throwable $e) {
+            app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
+            MailCacheService::invalidateFolder($targetPath);
+        }
     }
 
     /**

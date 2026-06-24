@@ -752,6 +752,12 @@ function is_trash_folder(string $path): bool
     return folder_icon_type($path) === 'trash';
 }
 
+/** Trash is a holding area — never show an unread badge in the sidebar or header. */
+function folder_shows_unread_badge(string $path): bool
+{
+    return !is_trash_folder($path);
+}
+
 function normalize_email_token(string $token): string
 {
     $token = trim($token);

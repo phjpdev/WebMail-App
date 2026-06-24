@@ -62,7 +62,9 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
             <?php
             $groupUnread = 0;
             foreach ($grouped[$group] as $folder) {
-                $groupUnread += (int) ($unreadCounts[$folder['path']] ?? 0);
+                if (folder_shows_unread_badge($folder['path'])) {
+                    $groupUnread += (int) ($unreadCounts[$folder['path']] ?? 0);
+                }
             }
             $isCollapsible = !in_array($group, $fixedGroups, true);
             $isOpen = $isCollapsible ? false : true;
@@ -99,7 +101,9 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
                         $displayName = $folder['path'] === 'INBOX' ? 'Inbox' : preg_replace('/^INBOX\./', '', $folder['name']);
                         $isActive = ($activeFolder ?? '') === $folder['path'];
                         $icon = folder_icon_type($folder['path']);
-                        $unread = (int) ($unreadCounts[$folder['path']] ?? 0);
+                        $unread = folder_shows_unread_badge($folder['path'])
+                            ? (int) ($unreadCounts[$folder['path']] ?? 0)
+                            : 0;
                         ?>
                         <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
                            href="<?= e(folder_url($folder['path'])) ?>"
