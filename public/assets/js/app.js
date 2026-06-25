@@ -1700,6 +1700,13 @@
         return '3' + folder.name.toLowerCase();
     }
 
+    function isSpamFolderPath(path) {
+        if (!path) return false;
+        var lower = String(path).toLowerCase();
+        if (lower.indexOf('junk') >= 0) return false;
+        return lower.indexOf('spam') >= 0;
+    }
+
     function collectMoveFoldersFromSidebar() {
         var out = [];
         var active = document.querySelector('.sidebar-link.active[data-folder-path]');
@@ -2544,9 +2551,8 @@
         var uids = selectedMailUids();
         if (!selectAllInFolder && !uids.length) return;
 
-        var listCard = document.querySelector('.mail-list-card[data-folder-path]');
-        if (!listCard) return;
-        var folderEnc = listCard.getAttribute('data-folder-path');
+        var folderEnc = currentMailFolderEnc();
+        if (!folderEnc) return;
         var selectionCount = effectiveSelectionCount();
 
         if (action === 'delete') {
@@ -2580,6 +2586,29 @@
                 action = 'flag';
             } else {
                 action = uids.every(function (uid) { return isUidFlagged(uid); }) ? 'unflag' : 'flag';
+            }
+        }
+
+        if (action === 'move') {
+            var moveTargetEl = document.getElementById('cmd-move-target');
+            var moveTargetPath = moveTargetEl ? moveTargetEl.value : '';
+            if (!moveTargetPath) {
+                showToast('error', 'Choose a folder to move to.');
+                return;
+            }
+            if (isSpamFolderPath(moveTargetPath)) {
+                var spamCount = effectiveSelectionCount();
+                showConfirm({
+                    title: spamCount === 1 ? 'Move to Spam?' : 'Move ' + spamCount + ' messages to Spam?',
+                    message: spamCount === 1
+                        ? 'This message will be moved to the Spam folder.'
+                        : 'These messages will be moved to the Spam folder.',
+                    confirmLabel: 'Move to Spam',
+                    danger: false
+                }).then(function (ok) {
+                    if (ok) runBulkCommandExecute(action, uids, folderEnc, triggerBtn);
+                });
+                return;
             }
         }
 
@@ -2741,9 +2770,6 @@
             actionPath = 'message/bulk-trash';
             if (!allInFolder) {
                 payload.set('unread_delta', String(countUnreadAmong(uids)));
-                uids.forEach(function (uid) { removeRowByUid(uid); });
-            } else {
-                clearMailListRows();
             }
             successMsg = deleteSuccessMessage(selectionCount);
         } else if (action === 'move') {
@@ -2756,11 +2782,10 @@
             payload.set('target_folder', target.value);
             if (!allInFolder) {
                 payload.set('unread_delta', String(countUnreadAmong(uids)));
-                uids.forEach(function (uid) { removeRowByUid(uid); });
-            } else {
-                clearMailListRows();
             }
-            successMsg = 'Selected messages moved.';
+            successMsg = isSpamFolderPath(target.value)
+                ? (selectionCount === 1 ? 'Message moved to Spam.' : 'Selected messages moved to Spam.')
+                : 'Selected messages moved.';
         } else if (action === 'mark-read') {
             actionPath = 'message/bulk-mark-read';
             seenDelta = -(allInFolder ? folderUnreadCount() : countUnreadAmong(uids));
@@ -2817,14 +2842,56 @@
         var isInstantListAction = instantActions.indexOf(action) >= 0;
         var moveTarget = action === 'move' ? (document.getElementById('cmd-move-target') || {}).value || '' : '';
 
-        if (isInstantListAction) {
-            if (allInFolder && (action === 'delete' || action === 'move')) {
+        if (action === 'delete' || action === 'move') {
+            if (allInFolder) {
                 payload.set('unread_delta', String(folderUnreadCount()));
             }
+
+            var loadingKind = action === 'delete' ? 'trash' : (isSpamFolderPath(moveTarget) ? 'spam' : 'move');
+            if (triggerBtn) setButtonLoading(triggerBtn, true, loadingLabelForAction(loadingKind));
+
+            fetch(apiUrl(actionPath), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    Accept: 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: payload.toString()
+            }).then(function (res) {
+                return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                    if (!res.ok || (data && data.ok === false)) {
+                        throw new Error((data && data.error) || 'Action failed.');
+                    }
+                    return data;
+                });
+            }).then(function (data) {
+                if (allInFolder) {
+                    clearMailListRows();
+                } else {
+                    uids.forEach(function (uid) { removeRowByUid(uid); });
+                }
+
+                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                    applyUnreadCounts(data.unread_counts);
+                } else {
+                    applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
+                }
+
+                showToast('success', successMsg);
+                finishBulkSelectionUi(action, allInFolder, uids);
+            }).catch(function (err) {
+                showToast('error', err.message || 'Action failed.');
+            }).finally(function () {
+                if (triggerBtn) setButtonLoading(triggerBtn, false);
+            });
+            return;
+        }
+
+        if (isInstantListAction) {
             showToast('success', successMsg);
-            if (action === 'delete' || action === 'move') {
-                applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
-            } else if (action === 'mark-read' || action === 'mark-unread') {
+            if (action === 'mark-read' || action === 'mark-unread') {
                 bumpFolderUnread(seenDelta);
             }
             finishBulkSelectionUi(action, allInFolder, uids);
@@ -3011,7 +3078,11 @@
                         showToast('error', 'Choose a folder to move to.');
                         return;
                     }
-                    extra.target_folder = select.value;
+                    if (isSpamFolderPath(select.value)) {
+                        dispatchAction = 'spam';
+                    } else {
+                        extra.target_folder = select.value;
+                    }
                 }
 
                 dispatchMessageAction(dispatchAction, folderEnc, uid, extra, btn).then(function (completed) {
@@ -3608,10 +3679,7 @@
     var openContextMenuFor = null;
 
     function initContextMenu() {
-        var listCard = document.querySelector('.mail-list-card[data-folder-path]');
-        if (!listCard) return;
-
-        var sourceFolderEnc = listCard.getAttribute('data-folder-path');
+        if (!document.getElementById('mail-workspace')) return;
 
         var menu = document.createElement('div');
         menu.className = 'context-menu';
@@ -3652,6 +3720,7 @@
             item.querySelector('.ctx-label').textContent = label;
             item.addEventListener('click', function (e) {
                 e.preventDefault();
+                e.stopPropagation();
                 hide();
                 handler();
             });
@@ -3780,6 +3849,9 @@
         function openFor(row, x, y) {
             var uid = row.getAttribute('data-uid');
             if (!uid) return;
+
+            var sourceFolderEnc = currentMailFolderEnc();
+            if (!sourceFolderEnc) return;
 
             var seen = row.getAttribute('data-seen') === '1';
             var flagged = row.getAttribute('data-flagged') === '1';
