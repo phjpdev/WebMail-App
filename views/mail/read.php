@@ -1,6 +1,6 @@
 <?php ob_start(); ?>
 
-<section class="page-header page-header--read">
+<section class="page-header page-header--read no-print">
     <nav class="breadcrumb" aria-label="Back">
         <?php
         $href = folder_url($folderPath);

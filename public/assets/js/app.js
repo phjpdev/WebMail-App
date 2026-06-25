@@ -2938,6 +2938,48 @@
         btn.setAttribute('aria-label', btn.title);
     }
 
+    function printMailMessage() {
+        var source = document.querySelector('#reading-pane-body .print-area')
+            || document.querySelector('.mail-read-card.print-area');
+        if (!source) {
+            window.print();
+            return;
+        }
+
+        var existing = document.getElementById('print-message-root');
+        if (existing) {
+            existing.remove();
+        }
+
+        var root = document.createElement('div');
+        root.id = 'print-message-root';
+
+        var clone = source.cloneNode(true);
+        clone.querySelectorAll('.no-print').forEach(function (el) {
+            el.remove();
+        });
+
+        root.appendChild(clone);
+        document.body.appendChild(root);
+        document.body.classList.add('is-printing-message');
+
+        var cleaned = false;
+        var cleanup = function () {
+            if (cleaned) return;
+            cleaned = true;
+            document.body.classList.remove('is-printing-message');
+            var node = document.getElementById('print-message-root');
+            if (node) {
+                node.remove();
+            }
+            window.removeEventListener('afterprint', cleanup);
+        };
+
+        window.addEventListener('afterprint', cleanup);
+        window.setTimeout(cleanup, 2000);
+        window.print();
+    }
+
     function bindReadViewCard(card) {
         if (!card || card.dataset.actionsBound) return;
         card.dataset.actionsBound = '1';
@@ -2951,6 +2993,11 @@
             btn.addEventListener('click', function () {
                 var action = btn.getAttribute('data-mail-action');
                 if (!action) return;
+
+                if (action === 'print') {
+                    printMailMessage();
+                    return;
+                }
 
                 var dispatchAction = action;
                 if (action === 'flag-toggle') {

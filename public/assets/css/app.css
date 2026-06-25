@@ -2791,11 +2791,6 @@ body.modal-open {
     .main-content {
         padding: 0;
     }
-
-    .print-area {
-        box-shadow: none;
-        border: none;
-    }
 }
 
 /* Styled select */
@@ -4712,5 +4707,172 @@ body:has(.mail-workspace) {
 
     .mail-cmd-move {
         display: none;
+    }
+}
+
+/* Print — must stay last so it overrides reading-pane layout rules above */
+#print-message-root {
+    display: none;
+}
+
+@media print {
+    .site-header,
+    .sidebar,
+    .sidebar-backdrop,
+    .mail-actions,
+    .breadcrumb,
+    .no-print,
+    .flash-messages,
+    .mail-list-column,
+    .compose-panel,
+    .reading-pane-empty,
+    .reading-pane-loading,
+    .reading-pane-skeleton,
+    .page-header--read,
+    .page-header--mail,
+    .mail-toolbar,
+    .mail-select-all-banner,
+    .pagination,
+    #toast-stack,
+    #confirm-modal,
+    #folder-picker-modal,
+    .menu-toggle {
+        display: none !important;
+    }
+
+    body.is-printing-message > *:not(#print-message-root) {
+        display: none !important;
+    }
+
+    body.is-printing-message #print-message-root {
+        display: block !important;
+        position: static !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    body.is-printing-message #print-message-root,
+    body.is-printing-message #print-message-root * {
+        visibility: visible !important;
+        opacity: 1 !important;
+        overflow: visible !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        position: static !important;
+        inset: auto !important;
+        flex: none !important;
+        color: #000 !important;
+        box-shadow: none !important;
+        border-color: #ccc !important;
+    }
+
+    body.is-printing-message #print-message-root {
+        background: #fff !important;
+    }
+
+    body.is-printing-message #print-message-root .reading-pane-subject {
+        font-size: 1.125rem !important;
+        margin: 0 0 0.75rem !important;
+    }
+
+    html,
+    html:has(.mail-workspace),
+    body,
+    body:has(.mail-workspace) {
+        overflow: visible !important;
+        height: auto !important;
+        min-height: 0 !important;
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    .app-shell,
+    .app-shell:has(.mail-workspace) {
+        display: block !important;
+        grid-template-columns: none !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        overflow: visible !important;
+    }
+
+    .main-content,
+    .main-content:has(.mail-workspace),
+    .mail-workspace,
+    .reading-pane,
+    .reading-pane-viewport,
+    .reading-pane-body,
+    .reading-pane-inner,
+    .mail-read-card,
+    .mail-body,
+    .mail-body-html,
+    .mail-body-plain,
+    .print-area {
+        display: block !important;
+        position: static !important;
+        inset: auto !important;
+        overflow: visible !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        width: 100% !important;
+        max-width: none !important;
+        flex: none !important;
+        background: #fff !important;
+        color: #000 !important;
+        box-shadow: none !important;
+        border: none !important;
+    }
+
+    .reading-pane-body[hidden] {
+        display: none !important;
+    }
+
+    .reading-pane-subject-bar {
+        position: static !important;
+        border-bottom: 1px solid #ccc !important;
+    }
+
+    .reading-pane-subject,
+    .detail-list,
+    .detail-list dt,
+    .detail-list dd,
+    .mail-body,
+    .mail-body-html,
+    .mail-body-plain,
+    .mail-body-html * {
+        color: #000 !important;
+    }
+
+    .mail-body-html img,
+    .attachments .attachment-preview img {
+        max-width: 100% !important;
+        height: auto !important;
+        page-break-inside: avoid;
+    }
+
+    .mail-body,
+    .detail-list,
+    .attachments {
+        page-break-inside: auto;
+    }
+
+    a {
+        color: #000 !important;
+        text-decoration: underline;
+    }
+
+    * {
+        scrollbar-width: none !important;
+    }
+
+    *::-webkit-scrollbar {
+        display: none !important;
+        width: 0 !important;
+        height: 0 !important;
     }
 }
