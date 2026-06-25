@@ -1201,16 +1201,6 @@ class MailController
             }
             MailCacheService::invalidateFolder($targetPath);
 
-            try {
-                MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
-                if (folder_shows_unread_badge($targetPath)) {
-                    MailCacheService::reconcileBadgeFromIndex($targetPath);
-                }
-            } catch (\Throwable $e) {
-                app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
-                MailCacheService::invalidateFolder($targetPath);
-            }
-
             if ($unreadDelta > 0) {
                 FolderCache::bumpUnread($folderPath, -$unreadDelta);
                 if (folder_shows_unread_badge($targetPath)) {
@@ -1223,14 +1213,32 @@ class MailController
                 $counts = FolderCache::bumpUnread($folderPath, 0);
             }
 
-            json_response([
+            json_response_then([
                 'ok' => true,
                 'moved' => $moveResult['moved'],
                 'errors' => $moveResult['errors'],
                 'uids' => array_values($uids),
                 'target' => $targetPath,
                 'unread_counts' => $counts,
-            ]);
+            ], function () use ($imap, $targetPath, $purgeSiblingCopies): void {
+                if ($purgeSiblingCopies) {
+                    try {
+                        $imap->removeDuplicateDeliveries($targetPath, 20);
+                    } catch (\Throwable $e) {
+                        app_log('Post-spam dedupe failed: ' . $e->getMessage());
+                    }
+                }
+
+                try {
+                    MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
+                    if (folder_shows_unread_badge($targetPath)) {
+                        MailCacheService::reconcileBadgeFromIndex($targetPath);
+                    }
+                } catch (\Throwable $e) {
+                    app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
+                    MailCacheService::invalidateFolder($targetPath);
+                }
+            });
         }
 
         $imap = new ImapService();
@@ -1318,7 +1326,6 @@ class MailController
 
         if ($purgeSiblingCopies && $movedTotal > 0) {
             $this->purgeSiblingCopies($imap, $folderPath, $uids, $targetPath);
-            $imap->removeDuplicateDeliveries($targetPath, 20);
         }
 
         return [

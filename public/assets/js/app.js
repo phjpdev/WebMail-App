@@ -296,6 +296,23 @@
         clearMailRowSelection();
     }
 
+    function clearReadingPaneIfShowingUids(uids) {
+        if (!uids || !uids.length) return;
+        var paneHost = document.getElementById('reading-pane-body');
+        if (!paneHost) return;
+        var lookup = {};
+        uids.forEach(function (u) { lookup[String(u)] = true; });
+        var paneCard = paneHost.querySelector('.mail-read-card[data-uid]');
+        if (!paneCard) return;
+        if (!lookup[String(paneCard.getAttribute('data-uid'))]) return;
+        clearReadingPane();
+        var listCard = getListCard();
+        var folderOnly = listCard ? listCard.getAttribute('data-folder-url') : null;
+        if (folderOnly && window.history && window.history.replaceState) {
+            window.history.replaceState({}, '', folderOnly);
+        }
+    }
+
     function showPanePreviewFromRow(uid) {
         var skeleton = document.getElementById('reading-pane-skeleton');
         var bodyEl = document.getElementById('reading-pane-body');
@@ -2721,6 +2738,36 @@
         });
     }
 
+    /** List mutations (move/delete/spam): refresh folder if server rejects optimistic UI. */
+    function fireListMutation(actionPath, payload) {
+        return fetch(apiUrl(actionPath), {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                Accept: 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: payload.toString()
+        }).then(function (res) {
+            return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                if (!res.ok || (data && data.ok === false)) {
+                    throw new Error((data && data.error) || 'Action failed.');
+                }
+                return data;
+            });
+        }).then(function (data) {
+            if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                applyUnreadCounts(data.unread_counts);
+            }
+            return data;
+        }).catch(function (err) {
+            showToast('error', err.message || 'Action failed.');
+            scheduleMailPoll(true);
+            return null;
+        });
+    }
+
     function countReadAmong(uids) {
         var n = 0;
         uids.forEach(function (uid) {
@@ -2847,45 +2894,17 @@
                 payload.set('unread_delta', String(folderUnreadCount()));
             }
 
-            var loadingKind = action === 'delete' ? 'trash' : (isSpamFolderPath(moveTarget) ? 'spam' : 'move');
-            if (triggerBtn) setButtonLoading(triggerBtn, true, loadingLabelForAction(loadingKind));
-
-            fetch(apiUrl(actionPath), {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    Accept: 'application/json',
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: payload.toString()
-            }).then(function (res) {
-                return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
-                    if (!res.ok || (data && data.ok === false)) {
-                        throw new Error((data && data.error) || 'Action failed.');
-                    }
-                    return data;
-                });
-            }).then(function (data) {
-                if (allInFolder) {
-                    clearMailListRows();
-                } else {
-                    uids.forEach(function (uid) { removeRowByUid(uid); });
-                }
-
-                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                    applyUnreadCounts(data.unread_counts);
-                } else {
-                    applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
-                }
-
-                showToast('success', successMsg);
-                finishBulkSelectionUi(action, allInFolder, uids);
-            }).catch(function (err) {
-                showToast('error', err.message || 'Action failed.');
-            }).finally(function () {
-                if (triggerBtn) setButtonLoading(triggerBtn, false);
-            });
+            markUidsPendingRemoval(uids);
+            if (allInFolder) {
+                clearMailListRows();
+            } else {
+                uids.forEach(function (uid) { removeRowByUid(uid); });
+            }
+            applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
+            showToast('success', successMsg);
+            finishBulkSelectionUi(action, allInFolder, uids);
+            clearReadingPaneIfShowingUids(uids);
+            fireListMutation(actionPath, payload);
             return;
         }
 
@@ -3613,64 +3632,28 @@
             movePayload.set('_csrf', csrf);
             Object.keys(fields).forEach(function (k) { movePayload.set(k, fields[k]); });
 
-            if (triggerBtn) setButtonLoading(triggerBtn, true, loadingLabelForAction(kind));
-
-            return fetch(apiUrl('message/' + kind), {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    Accept: 'application/json',
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: movePayload.toString()
-            }).then(function (res) {
-                return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
-                    if (!res.ok || (data && data.ok === false)) {
-                        throw new Error((data && data.error) || 'Action failed.');
-                    }
-                    return data;
-                });
-            }).then(function (data) {
-                removeRowByUid(uid);
-
-                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                    applyUnreadCounts(data.unread_counts);
-                } else if (wasUnread) {
-                    bumpFolderUnread(-1);
-                    if (kind === 'move' && extra.target_folder) {
-                        var moveCounts = Object.assign({}, lastUnreadCounts);
-                        moveCounts[extra.target_folder] = (moveCounts[extra.target_folder] || 0) + 1;
-                        applyUnreadCounts(moveCounts);
-                    }
+            markUidsPendingRemoval([uid]);
+            removeRowByUid(uid);
+            if (wasUnread) {
+                bumpFolderUnread(-1);
+                if (kind === 'move' && extra.target_folder) {
+                    var moveCounts = Object.assign({}, lastUnreadCounts);
+                    moveCounts[extra.target_folder] = (moveCounts[extra.target_folder] || 0) + 1;
+                    applyUnreadCounts(moveCounts);
                 }
+            }
 
-                if (kind === 'trash') {
-                    showToast('success', deleteSuccessMessage(1));
-                } else if (kind === 'spam') {
-                    showToast('success', 'Message moved to Spam.');
-                } else if (kind === 'move') {
-                    showToast('success', 'Message moved.');
-                }
+            if (kind === 'trash') {
+                showToast('success', deleteSuccessMessage(1));
+            } else if (kind === 'spam') {
+                showToast('success', 'Message moved to Spam.');
+            } else if (kind === 'move') {
+                showToast('success', 'Message moved.');
+            }
 
-                var paneHost = document.getElementById('reading-pane-body');
-                var inPane = paneHost && paneHost.querySelector('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]');
-                if (inPane) {
-                    clearReadingPane();
-                    var listCardUrl = getListCard();
-                    var folderOnly = listCardUrl ? listCardUrl.getAttribute('data-folder-url') : null;
-                    if (folderOnly && window.history && window.history.replaceState) {
-                        window.history.replaceState({}, '', folderOnly);
-                    }
-                }
-
-                return true;
-            }).catch(function (err) {
-                showToast('error', err.message || 'Action failed.');
-                return false;
-            }).finally(function () {
-                if (triggerBtn) setButtonLoading(triggerBtn, false);
-            });
+            clearReadingPaneIfShowingUids([uid]);
+            fireListMutation('message/' + kind, movePayload);
+            return Promise.resolve(true);
         }
 
         return Promise.resolve(false);
