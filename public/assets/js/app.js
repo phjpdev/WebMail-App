@@ -2703,6 +2703,8 @@
         applySelectionHighlight();
 
         updateSelectAllBanner();
+
+        toolbar.classList.toggle('mail-command-bar--has-selection', hasSelection);
     }
 
     function runBulkCommand(action, triggerBtn) {
