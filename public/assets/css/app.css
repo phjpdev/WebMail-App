@@ -2696,6 +2696,7 @@ body.modal-open {
 
 .folder-picker-item .ctx-folder-icon {
     width: 18px;
+    min-width: 18px;
     height: 18px;
     flex-shrink: 0;
     opacity: 0.85;
@@ -3409,6 +3410,7 @@ body.modal-open {
 
 .context-submenu .ctx-folder-icon {
     width: 18px;
+    min-width: 18px;
     height: 18px;
     flex-shrink: 0;
     opacity: 0.8;
@@ -3418,14 +3420,16 @@ body.modal-open {
     mask-position: center;
 }
 
+.context-submenu .context-submenu-item .ctx-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 500;
+}
+
 .context-submenu .context-submenu-item:hover .ctx-folder-icon,
 .context-submenu .context-submenu-item:focus-visible .ctx-folder-icon {
     opacity: 1;
     color: var(--color-primary);
-}
-
-.context-submenu .context-submenu-item .ctx-label {
-    font-weight: 500;
 }
 
 .context-submenu .context-submenu-item:hover,

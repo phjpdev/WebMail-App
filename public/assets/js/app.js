@@ -1795,7 +1795,6 @@
                 btn.type = 'button';
                 btn.className = 'folder-picker-item';
                 btn.setAttribute('role', 'option');
-                if (f.depth) btn.style.paddingLeft = (0.75 + f.depth * 1.1) + 'rem';
                 btn.innerHTML = folderIconHtml(f.icon || folderIconTypeFromPath(f.path)) +
                     '<span class="folder-picker-item-label"></span>';
                 btn.querySelector('.folder-picker-item-label').textContent = f.name;
@@ -3755,7 +3754,6 @@
                 var b = document.createElement('button');
                 b.type = 'button';
                 b.className = 'context-menu-item context-submenu-item';
-                if (f.depth) b.style.paddingLeft = (0.6 + f.depth * 1.1) + 'rem';
                 b.innerHTML = folderIconHtml(f.icon || 'folder') + '<span class="ctx-label"></span>';
                 b.querySelector('.ctx-label').textContent = f.name;
                 b.addEventListener('click', function (e) {
