@@ -965,6 +965,28 @@ a:hover {
     cursor: pointer;
 }
 
+.mail-card-check {
+    flex-shrink: 0;
+    width: 1.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mail-card .mail-check {
+    width: 1.0625rem;
+    height: 1.0625rem;
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.mail-card.is-checked,
+.mail-card.is-checked:hover,
+.mail-card.is-checked:focus-visible {
+    background: var(--color-primary-subtle, rgba(0, 120, 212, 0.08));
+}
+
 .mail-card:hover,
 .mail-card:focus-visible {
     background: var(--color-surface-alt);
@@ -1202,12 +1224,28 @@ a:hover {
 
 .pagination-per-page .select-field-compact select,
 .pagination-per-page .per-page-select {
+    width: auto;
+    min-width: 3.25rem;
+    max-width: 4.5rem;
     min-height: 2rem;
     font-size: 0.75rem;
-    padding: 0.2rem 1.5rem 0.2rem 0.5rem;
+    padding: 0.2rem 1.75rem 0.2rem 0.5rem;
     border-radius: var(--radius-sm);
-    border-color: var(--color-border-subtle);
+    border: 1px solid var(--color-border-subtle);
     background-color: var(--color-surface);
+    text-align: center;
+    text-align-last: center;
+}
+
+.pagination-per-page .select-field-inline,
+.pagination-per-page .select-field-compact {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+}
+
+.pagination-per-page .select-field {
+    width: auto;
 }
 
 .select-field-compact {
@@ -1389,21 +1427,27 @@ a:hover {
     pointer-events: none;
 }
 
+.mail-cmd-move-select,
 .mail-action-move-select {
-    max-width: 5.5rem;
     width: 100%;
+    min-width: 7.5rem;
+    max-width: 13rem;
     font-size: 0.75rem;
-    padding: 0.35rem 1.25rem 0.35rem 0.35rem;
+    padding: 0.35rem 1.5rem 0.35rem 0.5rem;
     border: none;
     border-right: 1px solid var(--color-border-subtle);
     border-radius: 0;
     background: var(--color-surface-alt, var(--color-surface));
     color: var(--color-text);
-    min-height: 2.25rem;
+    text-overflow: ellipsis;
     font-family: inherit;
     appearance: none;
     -webkit-appearance: none;
     cursor: pointer;
+}
+
+.mail-action-move-select {
+    min-height: 2.25rem;
 }
 
 .mail-action-btn--move {
@@ -1411,6 +1455,8 @@ a:hover {
     border-radius: 0;
     min-width: 2.25rem;
     height: 2.25rem;
+    justify-content: center;
+    padding: 0;
 }
 
 .mail-action-btn--flag[aria-pressed="true"] {
@@ -1438,10 +1484,6 @@ a:hover {
         min-width: auto;
         height: 2rem;
         padding: 0 0.55rem;
-    }
-
-    .mail-action-move-select {
-        max-width: 7rem;
     }
 }
 
@@ -2230,7 +2272,6 @@ a:hover {
     }
 
     .mail-action-move-select {
-        max-width: 4.5rem;
         min-height: 2.75rem;
     }
 
@@ -3245,6 +3286,17 @@ body.modal-open {
 }
 
 /* Right-click context menu */
+.context-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1999;
+    background: rgba(15, 23, 42, 0.42);
+}
+
+.context-menu-backdrop[hidden] {
+    display: none !important;
+}
+
 .context-menu {
     position: fixed;
     z-index: 2000;
@@ -3326,6 +3378,35 @@ body.modal-open {
     height: 1px;
     margin: 0.35rem 0.3rem;
     background: var(--color-border-subtle);
+}
+
+.context-menu-item--cancel {
+    justify-content: center;
+    color: var(--color-text-muted);
+    font-weight: 500;
+}
+
+.context-menu-item--cancel:hover,
+.context-menu-item--cancel:focus-visible {
+    background: var(--color-surface-alt);
+    color: var(--color-text);
+}
+
+.context-menu-item--cancel .ctx-ico {
+    display: none;
+}
+
+@media (max-width: 900px) {
+    body.context-menu-open {
+        overflow: hidden;
+    }
+
+    .context-menu {
+        min-width: min(280px, calc(100vw - 24px));
+        max-height: min(70vh, calc(100vh - 2rem));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
 }
 
 .context-menu-header {
@@ -3547,6 +3628,11 @@ body.modal-open {
     .mail-kebab {
         opacity: 0.7;
     }
+
+    .mail-row,
+    .mail-card {
+        -webkit-touch-callout: none;
+    }
 }
 
 /* Logout button styled as a header nav link */
@@ -3720,6 +3806,118 @@ body:has(.mail-workspace) {
 
 .mail-list-column .pagination-per-page {
     margin-left: auto;
+    flex-shrink: 0;
+}
+
+.mail-list-column .pagination-per-page .select-field::after {
+    right: 0.55rem;
+}
+
+@media (max-width: 899px) {
+    .mail-list-column .pagination {
+        flex-wrap: nowrap;
+        gap: 0.35rem 0.5rem;
+        padding: 0.5rem 0.65rem;
+    }
+
+    .mail-list-column .pagination-summary {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+    }
+
+    .mail-list-column .pagination-range {
+        font-size: 0.75rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .mail-list-column .pagination-per-page {
+        margin-left: 0;
+        flex: 0 0 auto;
+    }
+
+    .mail-list-column .pagination-per-page .per-page-select {
+        min-width: 3rem;
+        max-width: 3.75rem;
+        min-height: 2.25rem;
+        padding: 0.25rem 1.5rem 0.25rem 0.4rem;
+    }
+
+    .pagination-per-page .per-page-select--native-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .pagination-per-page .per-page-trigger {
+        width: auto;
+        min-width: 3rem;
+        max-width: 3.75rem;
+        min-height: 2.25rem;
+        font-size: 0.75rem;
+        padding: 0.25rem 1.5rem 0.25rem 0.4rem;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--color-border-subtle);
+        background-color: var(--color-surface);
+        color: var(--color-text);
+        text-align: center;
+        cursor: pointer;
+        font-family: inherit;
+        font-weight: 500;
+        line-height: 1.2;
+    }
+
+    .pagination-per-page .per-page-trigger:focus-visible {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 2px;
+    }
+}
+
+.per-page-menu {
+    position: fixed;
+    z-index: 9700;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+    padding: 0.35rem 0;
+    min-width: 3.5rem;
+}
+
+.per-page-menu-item {
+    display: block;
+    width: 100%;
+    padding: 0.5rem 1.25rem;
+    border: none;
+    background: transparent;
+    color: var(--color-text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-align: center;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.per-page-menu-item.is-selected {
+    color: var(--color-primary);
+    font-weight: 600;
+}
+
+.per-page-menu-item:hover,
+.per-page-menu-item:focus-visible {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+    outline: none;
 }
 
 .mail-list-column .search-field-input {
@@ -3868,22 +4066,7 @@ body:has(.mail-workspace) {
 }
 
 .mail-cmd-move-select {
-    width: 100%;
-    min-width: 7.5rem;
-    max-width: 13rem;
-    font-size: 0.75rem;
-    padding: 0.35rem 1.5rem 0.35rem 0.5rem;
-    border: none;
-    border-right: 1px solid var(--color-border-subtle);
-    border-radius: 0;
-    background: var(--color-surface-alt, var(--color-surface));
-    color: var(--color-text);
     min-height: 2rem;
-    text-overflow: ellipsis;
-    appearance: none;
-    -webkit-appearance: none;
-    cursor: pointer;
-    font-family: inherit;
 }
 
 .mail-cmd-move-select:disabled {
@@ -4059,6 +4242,11 @@ body:has(.mail-workspace) {
 }
 
 .mail-row--outlook.is-checked {
+    background: var(--color-primary-subtle, rgba(0, 120, 212, 0.08));
+}
+
+.mail-row--outlook.is-checked:hover,
+.mail-row--outlook.is-checked:focus-within {
     background: var(--color-primary-subtle, rgba(0, 120, 212, 0.08));
 }
 
@@ -4475,6 +4663,15 @@ body:has(.mail-workspace) {
 .mail-card.is-selected {
     background: var(--color-primary-light);
     border-left-color: var(--color-primary);
+}
+
+.mail-row.is-selected.is-checked,
+.mail-card.is-selected.is-checked,
+.mail-row.is-selected.is-checked:hover,
+.mail-card.is-selected.is-checked:hover,
+.mail-row.is-selected.is-checked:focus-within,
+.mail-card.is-selected.is-checked:focus-visible {
+    background: var(--color-primary-light);
 }
 
 .mail-row.is-selected:hover,

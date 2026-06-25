@@ -78,9 +78,8 @@ $isFlagged = !empty($message['flagged']);
                 <?php endforeach; ?>
             </select>
         </div>
-        <button type="button" class="mail-action-btn mail-action-btn--move" data-mail-action="move" title="Move" aria-label="Move to folder">
+        <button type="button" class="mail-action-btn mail-action-btn--move" data-mail-action="move" title="Move to folder" aria-label="Move to folder">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h5l2 3h11v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7z"/><path d="M9 12h7"/><path d="M13 9l3 3-3 3"/></svg>
-            <span class="mail-action-label">Move</span>
         </button>
     </form>
     <?php endif; ?>

@@ -1256,13 +1256,13 @@
         if (!row || row.dataset.bound) return;
         row.dataset.bound = '1';
         row.addEventListener('click', function (e) {
-            if (e.target.closest('.mail-row-check') || e.target.closest('.col-check') || e.target.closest('.mail-kebab')) return;
+            if (e.target.closest('.mail-row-check') || e.target.closest('.mail-card-check') || e.target.closest('.col-check') || e.target.closest('.mail-kebab')) return;
             var uid = parseInt(row.getAttribute('data-uid'), 10);
             if (e.ctrlKey || e.metaKey) {
                 var cb = row.querySelector('.mail-check');
                 if (cb) {
                     cb.checked = !cb.checked;
-                    lastCheckedRowIndex = outlookRows().indexOf(row);
+                    lastCheckedRowIndex = selectableMailRows().indexOf(row);
                     updateCommandBar();
                 }
                 if (useReadingPane() && uid) openMessageInPane(uid, true);
@@ -1279,7 +1279,7 @@
         if (row.getAttribute('role') === 'link' || row.getAttribute('role') === 'option') {
             row.addEventListener('keydown', function (e) {
                 if (e.key === 'Enter' || e.key === ' ') {
-                    if (e.target.closest('.mail-kebab')) return;
+                    if (e.target.closest('.mail-kebab') || e.target.closest('.mail-card-check') || e.target.closest('.mail-row-check')) return;
                     e.preventDefault();
                     showLoading();
                     window.location = row.getAttribute('data-href');
@@ -1899,12 +1899,128 @@
         });
     }
 
+    function teardownMobilePerPage(wrap) {
+        if (!wrap) return;
+        var trigger = wrap.querySelector('.per-page-trigger');
+        if (trigger) trigger.remove();
+        var select = wrap.querySelector('.per-page-select');
+        if (select) select.classList.remove('per-page-select--native-hidden');
+        var menu = document.querySelector('.per-page-menu[data-for-select="per-page-select"]');
+        if (menu) menu.remove();
+        delete wrap.dataset.perPageMobileBound;
+    }
+
     function initPerPageSelect() {
+        document.querySelectorAll('.per-page-menu[data-for-select]').forEach(function (menu) {
+            var selectId = menu.getAttribute('data-for-select');
+            if (!selectId || !document.getElementById(selectId)) menu.remove();
+        });
+
         var select = document.getElementById('per-page-select');
         if (!select) return;
-        select.addEventListener('change', function () {
-            if (select.value) window.location = select.value;
+
+        var wrap = select.closest('.pagination-per-page');
+        if (!wrap) return;
+
+        if (!select.dataset.perPageBound) {
+            select.dataset.perPageBound = '1';
+            select.addEventListener('change', function () {
+                if (select.value) window.location = select.value;
+            });
+        }
+
+        if (!isMobileUi()) {
+            teardownMobilePerPage(wrap);
+            return;
+        }
+
+        if (wrap.dataset.perPageMobileBound) return;
+        wrap.dataset.perPageMobileBound = '1';
+
+        select.classList.add('per-page-select--native-hidden');
+
+        var field = select.closest('.select-field');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'per-page-trigger';
+        btn.setAttribute('aria-haspopup', 'listbox');
+        btn.setAttribute('aria-expanded', 'false');
+        btn.setAttribute('aria-label', 'Messages per page');
+
+        var menu = document.createElement('div');
+        menu.className = 'per-page-menu';
+        menu.hidden = true;
+        menu.setAttribute('role', 'listbox');
+        menu.setAttribute('data-for-select', 'per-page-select');
+
+        Array.prototype.forEach.call(select.options, function (opt) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'per-page-menu-item';
+            item.setAttribute('role', 'option');
+            item.textContent = opt.textContent;
+            item.dataset.url = opt.value;
+            if (opt.selected) {
+                item.classList.add('is-selected');
+                item.setAttribute('aria-selected', 'true');
+                btn.textContent = opt.textContent;
+            }
+            item.addEventListener('click', function () {
+                if (item.dataset.url) window.location = item.dataset.url;
+            });
+            menu.appendChild(item);
         });
+
+        field.insertBefore(btn, select);
+        document.body.appendChild(menu);
+
+        var label = wrap.querySelector('.pagination-per-page-label');
+        if (label) {
+            label.addEventListener('click', function (e) {
+                e.preventDefault();
+                btn.click();
+            });
+        }
+
+        function closeMenu() {
+            if (menu.hidden) return;
+            menu.hidden = true;
+            btn.setAttribute('aria-expanded', 'false');
+        }
+
+        function positionMenu() {
+            var rect = btn.getBoundingClientRect();
+            var menuWidth = menu.offsetWidth;
+            var left = rect.left + rect.width / 2 - menuWidth / 2;
+            left = Math.max(8, Math.min(left, window.innerWidth - menuWidth - 8));
+            menu.style.left = left + 'px';
+            menu.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+            menu.style.top = 'auto';
+        }
+
+        function openMenu() {
+            menu.hidden = false;
+            menu.style.visibility = 'hidden';
+            requestAnimationFrame(function () {
+                positionMenu();
+                menu.style.visibility = '';
+            });
+            btn.setAttribute('aria-expanded', 'true');
+        }
+
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (menu.hidden) openMenu();
+            else closeMenu();
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!menu.hidden && !menu.contains(e.target) && e.target !== btn) closeMenu();
+        });
+
+        window.addEventListener('scroll', closeMenu, true);
+        window.addEventListener('resize', closeMenu);
     }
 
     function playNewMailSound() {
@@ -2008,6 +2124,9 @@
         var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
 
         a.innerHTML =
+            '<div class="mail-card-check mail-row-check" onclick="event.stopPropagation()">' +
+                '<input type="checkbox" class="mail-check" value="' + msg.uid + '" aria-label="Select message">' +
+            '</div>' +
             '<div class="mail-card-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
             '<div class="mail-card-body">' +
                 '<div class="mail-card-line1">' +
@@ -2335,7 +2454,9 @@
     }
 
     function pageMessageCount() {
-        return document.querySelectorAll('.mail-check').length;
+        var rows = selectableMailRows();
+        if (rows.length) return rows.length;
+        return outlookRows().length;
     }
 
     function currentSearchQuery() {
@@ -2369,7 +2490,7 @@
 
         var total = folderMessageTotal();
         var pageCount = pageMessageCount();
-        var checkedOnPage = document.querySelectorAll('.mail-check:checked').length;
+        var checkedOnPage = selectedMailUids().length;
         var allOnPageSelected = pageCount > 0 && checkedOnPage === pageCount;
         var scope = selectionScopeLabel();
 
@@ -2457,19 +2578,53 @@
         return Array.prototype.slice.call(document.querySelectorAll('.mail-row--outlook'));
     }
 
+    function selectableMailRows() {
+        var mobile = document.getElementById('mail-list-mobile');
+        if (mobile && !mobile.hidden && mobile.offsetParent !== null) {
+            return Array.prototype.slice.call(mobile.querySelectorAll('.mail-card'));
+        }
+        return outlookRows();
+    }
+
+    function syncMailCheckForUid(uid, checked) {
+        if (!uid) return;
+        rowsForUid(uid).forEach(function (el) {
+            var cb = el.querySelector('.mail-check');
+            if (cb) cb.checked = checked;
+        });
+    }
+
+    function applySelectionHighlight() {
+        var selected = {};
+        if (selectAllInFolder) {
+            selectableMailRows().forEach(function (row) {
+                var uid = row.getAttribute('data-uid');
+                if (uid) selected[uid] = true;
+            });
+        } else {
+            selectedMailUids().forEach(function (uid) { selected[uid] = true; });
+        }
+        document.querySelectorAll('.mail-row--outlook, .mail-card[data-uid]').forEach(function (row) {
+            var uid = row.getAttribute('data-uid');
+            row.classList.toggle('is-checked', !!(uid && selected[uid]));
+        });
+    }
+
     function onMailCheckClick(e) {
         if (!e.shiftKey || lastCheckedRowIndex < 0) return;
-        var row = e.target.closest('.mail-row--outlook');
+        var row = e.target.closest('.mail-row--outlook, .mail-card');
         if (!row) return;
-        var rows = outlookRows();
+        var rows = selectableMailRows();
         var idx = rows.indexOf(row);
         if (idx < 0) return;
         var start = Math.min(lastCheckedRowIndex, idx);
         var end = Math.max(lastCheckedRowIndex, idx);
         var checked = e.target.checked;
         for (var i = start; i <= end; i++) {
-            var cb = rows[i].querySelector('.mail-check');
+            var rangeRow = rows[i];
+            var cb = rangeRow.querySelector('.mail-check');
             if (cb) cb.checked = checked;
+            syncMailCheckForUid(rangeRow.getAttribute('data-uid'), checked);
         }
         updateCommandBar();
     }
@@ -2478,9 +2633,10 @@
         if (selectAllInFolder && !e.target.checked) {
             selectAllInFolder = false;
         }
-        var row = e.target.closest('.mail-row--outlook');
+        var row = e.target.closest('.mail-row--outlook, .mail-card');
         if (row) {
-            lastCheckedRowIndex = outlookRows().indexOf(row);
+            lastCheckedRowIndex = selectableMailRows().indexOf(row);
+            syncMailCheckForUid(row.getAttribute('data-uid'), e.target.checked);
         }
         updateCommandBar();
     }
@@ -2532,22 +2688,19 @@
         }
 
         var selectAll = document.getElementById('select-all');
-        var checks = document.querySelectorAll('.mail-check');
-        if (selectAll && checks.length) {
+        if (selectAll) {
             if (selectAllInFolder) {
                 selectAll.checked = true;
                 selectAll.indeterminate = false;
             } else {
-                var checkedCount = document.querySelectorAll('.mail-check:checked').length;
-                selectAll.checked = checkedCount > 0 && checkedCount === checks.length;
-                selectAll.indeterminate = checkedCount > 0 && checkedCount < checks.length;
+                var pageCount = pageMessageCount();
+                var checkedCount = selectedMailUids().length;
+                selectAll.checked = checkedCount > 0 && checkedCount === pageCount;
+                selectAll.indeterminate = checkedCount > 0 && checkedCount < pageCount;
             }
         }
 
-        outlookRows().forEach(function (row) {
-            var cb = row.querySelector('.mail-check');
-            row.classList.toggle('is-checked', !!(cb && cb.checked) || selectAllInFolder);
-        });
+        applySelectionHighlight();
 
         updateSelectAllBanner();
     }
@@ -2918,9 +3071,15 @@
     }
 
     function selectedMailUids() {
-        var checked = Array.prototype.slice.call(document.querySelectorAll('.mail-check:checked'))
-            .map(function (cb) { return cb.value; });
-        if (checked.length) return checked;
+        var seen = {};
+        var uids = [];
+        document.querySelectorAll('.mail-check:checked').forEach(function (cb) {
+            var uid = cb.value;
+            if (!uid || seen[uid]) return;
+            seen[uid] = true;
+            uids.push(uid);
+        });
+        if (uids.length) return uids;
 
         var active = document.querySelector(
             '.mail-row.is-selected, .mail-row.is-focused, .mail-card.is-selected, .mail-card.is-focused'
@@ -3668,10 +3827,35 @@
         menu.hidden = true;
         document.body.appendChild(menu);
 
+        var backdrop = document.createElement('div');
+        backdrop.className = 'context-menu-backdrop';
+        backdrop.hidden = true;
+        backdrop.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(backdrop);
+
+        var activeKebab = null;
+
         function hide() {
             menu.hidden = true;
             menu.innerHTML = '';
+            backdrop.hidden = true;
+            backdrop.setAttribute('aria-hidden', 'true');
+            activeKebab = null;
+            document.body.classList.remove('context-menu-open');
         }
+
+        function showMobileShell() {
+            if (!isMobileUi()) return;
+            backdrop.hidden = false;
+            backdrop.setAttribute('aria-hidden', 'false');
+            document.body.classList.add('context-menu-open');
+        }
+
+        backdrop.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            hide();
+        });
 
         var ICONS = {
             open: '<path d="M3 8.5l9 5.5 9-5.5"/><path d="M5 6h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/>',
@@ -3897,11 +4081,30 @@
             addSep();
             addItem(isTrashFolder() ? 'Delete permanently' : 'Delete', ICONS.trash, function () { dispatchMessageAction('trash', sourceFolderEnc, uid); }, true);
 
+            if (isMobileUi()) {
+                addSep();
+                var cancelItem = document.createElement('button');
+                cancelItem.type = 'button';
+                cancelItem.className = 'context-menu-item context-menu-item--cancel';
+                cancelItem.innerHTML = iconSvg('<path d="M18 6L6 18M6 6l12 12"/>') + '<span class="ctx-label">Cancel</span>';
+                cancelItem.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    hide();
+                });
+                menu.appendChild(cancelItem);
+            }
+
             menu.hidden = false;
             var mw = menu.offsetWidth;
             var mh = menu.offsetHeight;
             var left = (x + mw > window.innerWidth) ? x - mw : x;
             var top = (y + mh > window.innerHeight) ? y - mh : y;
+            if (isMobileUi()) {
+                left = Math.max(12, (window.innerWidth - mw) / 2);
+                top = Math.max(12, Math.min(top, window.innerHeight - mh - 12));
+                showMobileShell();
+            }
             menu.style.left = Math.max(4, left) + 'px';
             menu.style.top = Math.max(4, top) + 'px';
         }
@@ -3912,6 +4115,7 @@
             var row = e.target.closest('.mail-row, .mail-card');
             if (!row) return;
             e.preventDefault();
+            if (isMobileUi()) return;
             openFor(row, e.clientX, e.clientY);
         });
 
@@ -3922,6 +4126,11 @@
                 e.stopPropagation();
                 var row = kebab.closest('.mail-row, .mail-card');
                 if (row) {
+                    if (!menu.hidden && activeKebab === kebab) {
+                        hide();
+                        return;
+                    }
+                    activeKebab = kebab;
                     var rect = kebab.getBoundingClientRect();
                     openFor(row, rect.right, rect.bottom);
                 }
