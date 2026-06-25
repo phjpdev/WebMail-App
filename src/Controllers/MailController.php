@@ -357,9 +357,10 @@ class MailController
             }
         }
 
-        $forceFilter = ($_GET['force'] ?? '') === '1';
+        $forceFilter = ($_GET['filter'] ?? '') === '1';
+        $forceRefresh = ($_GET['force'] ?? '') === '1';
 
-        if (!$light || $forceFilter) {
+        if ($forceFilter || (!$light && !$forceRefresh)) {
             $filterResult = $this->maybeRunFilter($folderPath, $forceFilter);
             if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
                 FolderCache::syncUnreadBadges($folderPath);
@@ -375,14 +376,18 @@ class MailController
 
         $list = null;
 
-        if ($query === '' && $page === 1 && (!$light || MailCacheService::badgeAheadOfIndex($folderPath))) {
-            if ($forceFilter || MailCacheService::isStale($folderPath) || MailCacheService::badgeAheadOfIndex($folderPath)) {
+        if ($query === '' && $page === 1) {
+            $needsHeaderSync = $forceRefresh
+                || $forceFilter
+                || MailCacheService::isStale($folderPath)
+                || MailCacheService::badgeAheadOfIndex($folderPath);
+            if ($needsHeaderSync) {
                 MailCacheService::syncFolderHeaders($imap, $folderPath);
                 $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
             }
         }
 
-        if ($list === null || $forceFilter) {
+        if ($list === null && ($forceFilter || (!$light && !$forceRefresh))) {
             $list = $query !== ''
                 ? $imap->searchMessages($folderPath, $query, $page, $perPage)
                 : $imap->listMessages($folderPath, $page, $perPage);
@@ -392,13 +397,16 @@ class MailController
             }
         }
 
-        if (!$light || $forceFilter) {
+        if ($list === null) {
+            $list = MailCacheService::listFromCache($folderPath, $page, $perPage)
+                ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+        }
+
+        if ($forceFilter) {
             $sessionBadge = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
-            if ($forceFilter && ($sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath))) {
+            if ($sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath)) {
                 MailCacheService::reconcileFolderBadge($imap, $folderPath);
             }
-        }
-        if ($query === '') {
             $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
             if ($refreshed !== null) {
                 $list = $refreshed;
@@ -415,7 +423,7 @@ class MailController
     {
         if (trim($_GET['q'] ?? '') === '') {
             MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
-            if (($_GET['force'] ?? '') === '1') {
+            if (($_GET['filter'] ?? '') === '1') {
                 MailCacheService::reconcileAllIndexedBadges();
             }
         }
@@ -453,6 +461,47 @@ class MailController
         requireAuth();
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
+
+        $afterSend = ($_GET['after_send'] ?? '') === '1';
+
+        if ($afterSend) {
+            ensure_session_writable();
+
+            $pendingPaths = FolderCache::getPendingBadgePaths();
+            $postSendAt = (int) ($_SESSION['_post_send_at'] ?? 0);
+
+            if ($pendingPaths === [] && $postSendAt > 0 && $postSendAt + 90 > time()) {
+                FilterService::runBackground(true, 8);
+                $pendingPaths = FolderCache::getPendingBadgePaths();
+            }
+
+            if ($pendingPaths !== []) {
+                FolderCache::refreshPaths($pendingPaths);
+            }
+
+            $counts = FolderCache::sidebarUnreadCounts();
+
+            if ($pendingPaths !== []) {
+                $allSet = true;
+                foreach ($pendingPaths as $path) {
+                    if ((int) ($counts[$path] ?? 0) <= 0) {
+                        $allSet = false;
+                        break;
+                    }
+                }
+                if ($allSet) {
+                    FolderCache::clearPendingBadgePaths();
+                    unset($_SESSION['_post_send_at']);
+                }
+            } elseif ($postSendAt > 0 && $postSendAt + 90 < time()) {
+                unset($_SESSION['_post_send_at']);
+            }
+
+            flush_session_for_poll();
+            echo json_encode(['unread_counts' => $counts]);
+
+            return;
+        }
 
         if (($_GET['filter'] ?? '') === '1') {
             FilterService::runBackground(false);

@@ -10,6 +10,7 @@ use App\Database;
 class FolderCache
 {
     private const SESSION_KEY = '_folder_cache';
+    private const PENDING_BADGE_PATHS_KEY = '_pending_badge_paths';
     private const TTL = 300;
     private const UNREAD_TTL = 60;
 
@@ -74,6 +75,7 @@ class FolderCache
      */
     public static function bumpUnread(string $path, int $delta): array
     {
+        ensure_session_writable();
         self::ensureCache();
         $key = self::SESSION_KEY;
         $path = self::canonicalUnreadPath($path);
@@ -87,6 +89,9 @@ class FolderCache
         } elseif ($delta !== 0) {
             $current = (int) ($_SESSION[$key]['unread_counts'][$path] ?? 0);
             $_SESSION[$key]['unread_counts'][$path] = max(0, $current + $delta);
+            if ($delta > 0) {
+                self::queuePendingBadgePath($path);
+            }
         }
 
         $_SESSION[$key]['unread_counts'] = self::normalizeUnreadCounts($_SESSION[$key]['unread_counts']);
@@ -119,6 +124,7 @@ class FolderCache
             return;
         }
 
+        ensure_session_writable();
         self::ensureCache();
         if (!isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
             return;
@@ -166,6 +172,7 @@ class FolderCache
             return;
         }
 
+        ensure_session_writable();
         $path = self::canonicalUnreadPath($path);
         self::ensureCache();
         if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
@@ -176,6 +183,91 @@ class FolderCache
                 $_SESSION[self::SESSION_KEY]['unread_counts']
             );
         }
+    }
+
+    /**
+     * Folders that should show badges soon after a send/filter delivery.
+     *
+     * @param list<string> $paths
+     */
+    public static function setPendingBadgePaths(array $paths): void
+    {
+        $paths = array_values(array_unique(array_filter($paths, static fn (string $p): bool => $p !== '' && folder_shows_unread_badge($p))));
+        if ($paths === []) {
+            return;
+        }
+
+        ensure_session_writable();
+        $_SESSION[self::PENDING_BADGE_PATHS_KEY] = [
+            'paths' => $paths,
+            'until' => time() + 120,
+        ];
+    }
+
+    public static function queuePendingBadgePath(string $path): void
+    {
+        $path = self::canonicalUnreadPath($path);
+        if ($path === '' || !folder_shows_unread_badge($path)) {
+            return;
+        }
+
+        ensure_session_writable();
+        $pending = $_SESSION[self::PENDING_BADGE_PATHS_KEY] ?? null;
+        $paths = is_array($pending) ? (array) ($pending['paths'] ?? []) : [];
+        $paths[] = $path;
+        $_SESSION[self::PENDING_BADGE_PATHS_KEY] = [
+            'paths' => array_values(array_unique($paths)),
+            'until' => time() + 120,
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function getPendingBadgePaths(): array
+    {
+        $pending = $_SESSION[self::PENDING_BADGE_PATHS_KEY] ?? null;
+        if (!is_array($pending)) {
+            return [];
+        }
+
+        if (time() > (int) ($pending['until'] ?? 0)) {
+            unset($_SESSION[self::PENDING_BADGE_PATHS_KEY]);
+
+            return [];
+        }
+
+        return array_values(array_filter(
+            (array) ($pending['paths'] ?? []),
+            static fn (string $p): bool => $p !== '' && folder_shows_unread_badge($p)
+        ));
+    }
+
+    public static function clearPendingBadgePaths(): void
+    {
+        ensure_session_writable();
+        unset($_SESSION[self::PENDING_BADGE_PATHS_KEY]);
+    }
+
+    /**
+     * Unread counts for every sidebar folder (including zeros).
+     *
+     * @return array<string, int>
+     */
+    public static function sidebarUnreadCounts(): array
+    {
+        $folderData = self::load(skipUnreadRefresh: true);
+        $session = $folderData['unread_counts'] ?? [];
+        $result = [];
+
+        foreach ($folderData['folders'] ?? [] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path !== '' && folder_shows_unread_badge($path)) {
+                $result[$path] = (int) ($session[$path] ?? 0);
+            }
+        }
+
+        return $result;
     }
 
     private static function canonicalUnreadPath(string $path): string

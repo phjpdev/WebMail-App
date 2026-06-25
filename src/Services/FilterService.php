@@ -12,6 +12,86 @@ class FilterService
     private const SESSION_STATS_KEY = '_last_filter_stats';
 
     /**
+     * Guess destination folders from outgoing To/Cc/Bcc using active "to" rules.
+     * Used to show sidebar badges immediately after compose send.
+     *
+     * @return list<string>
+     */
+    public static function predictDestinationPaths(string $to, string $cc = '', string $bcc = ''): array
+    {
+        $emails = [];
+        foreach ([$to, $cc, $bcc] as $list) {
+            foreach (parse_email_list($list)['valid'] as $email) {
+                $emails[strtolower($email)] = true;
+            }
+        }
+
+        if ($emails === []) {
+            return [];
+        }
+
+        $rules = Database::query(
+            "SELECT r.condition_operator, r.condition_value, f.imap_path
+             FROM filter_rules r
+             INNER JOIN folders f ON r.target_folder_id = f.id
+             WHERE r.active = 1 AND f.active = 1 AND r.condition_field = 'to'
+             ORDER BY FIELD(r.rule_type, 'spam', 'company', 'employee', 'client'), r.priority ASC, r.id ASC"
+        )->fetchAll();
+
+        $paths = [];
+        foreach ($rules as $rule) {
+            $path = (string) ($rule['imap_path'] ?? '');
+            if ($path === '' || isset($paths[$path])) {
+                continue;
+            }
+
+            $needle = (string) ($rule['condition_value'] ?? '');
+            $operator = (string) ($rule['condition_operator'] ?? 'contains');
+            $needleLower = strtolower($needle);
+            $isEmail = str_contains($needle, '@');
+
+            foreach (array_keys($emails) as $email) {
+                $matched = ($isEmail && $operator === 'contains' && strcasecmp($email, $needle) === 0)
+                    || match ($operator) {
+                        'equals' => strcasecmp($email, $needle) === 0,
+                        'contains' => str_contains($email, $needleLower),
+                        'starts_with' => str_starts_with($email, $needleLower),
+                        'ends_with' => str_ends_with($email, $needleLower),
+                        default => false,
+                    };
+
+                if ($matched) {
+                    $paths[$path] = true;
+                    break;
+                }
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    private static function bumpUnreadIfNotPending(string $path): void
+    {
+        $path = FolderCache::resolvePath($path);
+        if ($path === '') {
+            return;
+        }
+
+        $pendingResolved = array_map(
+            static fn (string $p): string => FolderCache::resolvePath($p),
+            FolderCache::getPendingBadgePaths()
+        );
+        if (in_array($path, $pendingResolved, true)) {
+            flush_session_for_poll();
+
+            return;
+        }
+
+        FolderCache::bumpUnread($path, 1);
+        flush_session_for_poll();
+    }
+
+    /**
      * Run filter immediately before listing mail (skips the 60s throttle) so
      * routed messages are moved out of INBOX before the user sees them.
      *
@@ -106,6 +186,8 @@ class FilterService
             if (session_status() === PHP_SESSION_ACTIVE) {
                 $_SESSION[self::SESSION_STATS_KEY] = $totals;
             }
+
+            flush_session_for_poll();
 
             if (
                 session_status() === PHP_SESSION_ACTIVE
@@ -316,6 +398,7 @@ class FilterService
                         $result['moved']++;
                         $refreshUnreadPaths[$sourceFolder] = true;
                         $refreshUnreadPaths[$primaryPath] = true;
+                        self::bumpUnreadIfNotPending($primaryPath);
                         $this->logFilterMove($userId, $uid, $primaryPath, (string) ($primaryRule['name'] ?? ''));
                         $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
                     } else {
@@ -335,7 +418,7 @@ class FilterService
                             if ($imap->appendMessage($destPath, $raw)) {
                                 $delivered++;
                                 $refreshUnreadPaths[$destPath] = true;
-                                FolderCache::bumpUnread($destPath, 1);
+                                self::bumpUnreadIfNotPending($destPath);
                                 $this->logFilterMove($userId, $uid, $destPath, (string) ($rule['name'] ?? ''));
                             } else {
                                 $result['errors'][] = 'Deliver to ' . $destPath . ': ' . $imap->getLastError();

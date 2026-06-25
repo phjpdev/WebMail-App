@@ -349,9 +349,14 @@ function finish_background(callable $after): void
     @set_time_limit(120);
 
     try {
+        ensure_session_writable();
         $after();
     } catch (\Throwable $e) {
         app_log('Background task failed: ' . $e->getMessage());
+    } finally {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
     }
 }
 
@@ -378,6 +383,26 @@ function requireAuth(): void
  * Call after requireAuth() on JSON/API handlers that do not write session data.
  */
 function releaseSessionLock(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+}
+
+/**
+ * Re-open the session for writes after releaseSessionLock() (e.g. post-send background work).
+ */
+function ensure_session_writable(): void
+{
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+}
+
+/**
+ * Persist session badge updates and release the lock so badge polls can run in parallel.
+ */
+function flush_session_for_poll(): void
 {
     if (session_status() === PHP_SESSION_ACTIVE) {
         session_write_close();

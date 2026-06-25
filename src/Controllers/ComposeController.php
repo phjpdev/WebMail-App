@@ -188,7 +188,19 @@ class ComposeController
             $sentFolder = $this->resolveSentFolder();
             $sentMime = $smtp->getLastMime();
             $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
-            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+            ensure_session_writable();
+            $_SESSION['_post_send_at'] = time();
+
+            $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc);
+            foreach ($destPaths as $path) {
+                FolderCache::bumpUnread($path, 1);
+            }
+            if ($destPaths !== []) {
+                FolderCache::setPendingBadgePaths($destPaths);
+            }
+
+            $unreadCounts = FolderCache::sidebarUnreadCounts();
+            flush_session_for_poll();
 
             $afterSend = function () use ($fromEmail, $returnFolder, $folderPath, $sentFolder, $sentMime): void {
                 $this->deleteSourceDraftIfRequested();
@@ -816,6 +828,8 @@ class ComposeController
      */
     private function syncMailboxAfterSend(string $fromEmail, string $returnFolder, string $folderPath, string $sentFolder): array
     {
+        ensure_session_writable();
+
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
         $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
@@ -824,6 +838,10 @@ class ComposeController
         $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
             ? $filterResult['refresh_paths']
             : [];
+
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
 
         $imap = new ImapService();
         if ($imap->connect()) {
@@ -854,11 +872,25 @@ class ComposeController
                 }
                 try {
                     MailCacheService::syncFolderHeaders($imap, $path, $headerLimit);
-                    MailCacheService::reconcileBadgeFromIndex($path);
                 } catch (\Throwable $e) {
                     app_log('Post-send cache sync failed for ' . $path . ': ' . $e->getMessage());
                 }
             }
+        }
+
+        ensure_session_writable();
+        $badgePaths = array_values(array_filter(
+            $routedPaths,
+            static fn (string $p): bool => folder_shows_unread_badge($p)
+        ));
+        if ($badgePaths === []) {
+            $badgePaths = FolderCache::getPendingBadgePaths();
+        }
+        if ($badgePaths !== []) {
+            foreach ($badgePaths as $path) {
+                MailCacheService::reconcileBadgeFromIndex($path);
+            }
+            FolderCache::refreshPaths($badgePaths);
         }
 
         return [
