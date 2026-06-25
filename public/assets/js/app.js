@@ -3537,41 +3537,69 @@
             return Promise.resolve(true);
         } else if (kind === 'spam' || kind === 'trash' || kind === 'move') {
             fields.unread_delta = wasUnread ? 1 : 0;
-            removeRowByUid(uid);
-
-            if (wasUnread) {
-                bumpFolderUnread(-1);
-                if (kind === 'move' && extra.target_folder) {
-                    var moveCounts = Object.assign({}, lastUnreadCounts);
-                    moveCounts[extra.target_folder] = (moveCounts[extra.target_folder] || 0) + 1;
-                    applyUnreadCounts(moveCounts);
-                }
-            }
-
-            if (kind === 'trash') {
-                showToast('success', deleteSuccessMessage(1));
-            } else if (kind === 'spam') {
-                showToast('success', 'Message moved to Spam.');
-            } else if (kind === 'move') {
-                showToast('success', 'Message moved.');
-            }
-
-            var paneHost = document.getElementById('reading-pane-body');
-            var inPane = paneHost && paneHost.querySelector('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]');
-            if (inPane) {
-                clearReadingPane();
-                var listCardUrl = getListCard();
-                var folderOnly = listCardUrl ? listCardUrl.getAttribute('data-folder-url') : null;
-                if (folderOnly && window.history && window.history.replaceState) {
-                    window.history.replaceState({}, '', folderOnly);
-                }
-            }
 
             var movePayload = new URLSearchParams();
             movePayload.set('_csrf', csrf);
             Object.keys(fields).forEach(function (k) { movePayload.set(k, fields[k]); });
-            fireAndForgetAction('message/' + kind, movePayload);
-            return Promise.resolve(true);
+
+            if (triggerBtn) setButtonLoading(triggerBtn, true, loadingLabelForAction(kind));
+
+            return fetch(apiUrl('message/' + kind), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    Accept: 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: movePayload.toString()
+            }).then(function (res) {
+                return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                    if (!res.ok || (data && data.ok === false)) {
+                        throw new Error((data && data.error) || 'Action failed.');
+                    }
+                    return data;
+                });
+            }).then(function (data) {
+                removeRowByUid(uid);
+
+                if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
+                    applyUnreadCounts(data.unread_counts);
+                } else if (wasUnread) {
+                    bumpFolderUnread(-1);
+                    if (kind === 'move' && extra.target_folder) {
+                        var moveCounts = Object.assign({}, lastUnreadCounts);
+                        moveCounts[extra.target_folder] = (moveCounts[extra.target_folder] || 0) + 1;
+                        applyUnreadCounts(moveCounts);
+                    }
+                }
+
+                if (kind === 'trash') {
+                    showToast('success', deleteSuccessMessage(1));
+                } else if (kind === 'spam') {
+                    showToast('success', 'Message moved to Spam.');
+                } else if (kind === 'move') {
+                    showToast('success', 'Message moved.');
+                }
+
+                var paneHost = document.getElementById('reading-pane-body');
+                var inPane = paneHost && paneHost.querySelector('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]');
+                if (inPane) {
+                    clearReadingPane();
+                    var listCardUrl = getListCard();
+                    var folderOnly = listCardUrl ? listCardUrl.getAttribute('data-folder-url') : null;
+                    if (folderOnly && window.history && window.history.replaceState) {
+                        window.history.replaceState({}, '', folderOnly);
+                    }
+                }
+
+                return true;
+            }).catch(function (err) {
+                showToast('error', err.message || 'Action failed.');
+                return false;
+            }).finally(function () {
+                if (triggerBtn) setButtonLoading(triggerBtn, false);
+            });
         }
 
         return Promise.resolve(false);

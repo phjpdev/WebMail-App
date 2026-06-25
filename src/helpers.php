@@ -638,7 +638,9 @@ function trash_folder_path(): string
 
 function spam_folder_path(): string
 {
-    return resolve_system_folder(['spam', 'junk'], 'INBOX.spam');
+    return \App\Services\FolderCache::resolvePath(
+        resolve_system_folder(['spam'], 'INBOX.Spam')
+    );
 }
 
 /**
@@ -650,11 +652,12 @@ function spam_folder_path(): string
 function resolve_system_folder(array $keywords, string $default): string
 {
     try {
-        foreach (\App\Services\FolderCache::load()['folders'] as $folder) {
-            $lower = strtolower($folder['path']);
-            foreach ($keywords as $keyword) {
-                if (str_contains($lower, $keyword)) {
-                    return $folder['path'];
+        $folders = \App\Services\FolderCache::load(skipUnreadRefresh: true)['folders'];
+        foreach ($keywords as $keyword) {
+            foreach ($folders as $folder) {
+                $path = (string) ($folder['path'] ?? '');
+                if ($path !== '' && str_contains(strtolower($path), $keyword)) {
+                    return $path;
                 }
             }
         }

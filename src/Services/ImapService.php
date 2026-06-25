@@ -406,11 +406,17 @@ class ImapService
 
     public function moveMessage(string $fromPath, int $uid, string $toPath): bool
     {
+        $fromPath = FolderCache::resolvePath($fromPath);
+        $toPath = FolderCache::resolvePath($toPath);
+
         if (!$this->openFolder($fromPath)) {
             return false;
         }
 
         $wasSeen = $this->isSeen($fromPath, $uid);
+
+        imap_errors();
+        imap_alerts();
 
         $mailboxString = $this->getMailboxString();
         $target = $mailboxString . $this->encodeFolderPath($toPath);
@@ -418,18 +424,20 @@ class ImapService
         $moved = @imap_mail_move($this->connection, (string) $uid, $target, CP_UID);
 
         if (!$moved) {
+            imap_errors();
+            imap_alerts();
             $moved = $this->moveMessageCopyDelete($fromPath, $uid, $toPath, $wasSeen);
         } else {
             imap_expunge($this->connection);
             if ($wasSeen) {
-                $this->markSeen($toPath, $uid);
+                $this->markLastMessageSeen($toPath);
             }
         }
 
         if (!$moved) {
             $errors = imap_errors() ?: [];
             $this->lastError = 'Failed to move message: ' . implode('; ', $errors);
-            app_log($this->lastError);
+            app_log($this->lastError . ' (' . $fromPath . ' → ' . $toPath . ')');
 
             return false;
         }
@@ -1438,8 +1446,11 @@ class ImapService
 
     public function folderExistsOnServer(string $path): bool
     {
+        $resolved = FolderCache::resolvePath($path);
+
         foreach ($this->listFolders() as $folder) {
-            if ($folder['path'] === $path) {
+            $serverPath = (string) ($folder['path'] ?? '');
+            if ($serverPath === $resolved || strcasecmp($serverPath, $path) === 0) {
                 return true;
             }
         }
@@ -1515,7 +1526,14 @@ class ImapService
         $raw = $header . $body;
         $target = $this->getMailboxString() . $this->encodeFolderPath($toPath);
 
+        imap_errors();
+        imap_alerts();
+
         if (!@imap_append($this->connection, $target, $raw)) {
+            $errors = imap_errors() ?: [];
+            $this->lastError = 'Failed to append message to ' . $toPath . ': ' . implode('; ', $errors);
+            app_log($this->lastError);
+
             return false;
         }
 

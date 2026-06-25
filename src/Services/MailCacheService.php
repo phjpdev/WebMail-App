@@ -609,6 +609,57 @@ class MailCacheService
         );
     }
 
+    public static function messageIdForUid(string $folderPath, int $uid): ?string
+    {
+        if ($folderPath === '' || $uid <= 0) {
+            return null;
+        }
+
+        try {
+            $row = Database::query(
+                'SELECT message_id FROM mail_bodies WHERE folder_path = ? AND imap_uid = ? LIMIT 1',
+                [$folderPath, $uid]
+            )->fetch();
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $id = trim((string) ($row['message_id'] ?? ''));
+
+        return $id !== '' ? $id : null;
+    }
+
+    /**
+     * @return list<array{folder_path: string, imap_uid: int}>
+     */
+    public static function copiesByMessageId(string $messageId): array
+    {
+        $messageId = trim($messageId);
+        if ($messageId === '') {
+            return [];
+        }
+
+        try {
+            $rows = Database::fetchAll(
+                'SELECT folder_path, imap_uid FROM mail_bodies WHERE message_id = ?',
+                [$messageId]
+            );
+        } catch (\Throwable) {
+            return [];
+        }
+
+        $copies = [];
+        foreach ($rows as $row) {
+            $path = (string) ($row['folder_path'] ?? '');
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($path !== '' && $uid > 0) {
+                $copies[] = ['folder_path' => $path, 'imap_uid' => $uid];
+            }
+        }
+
+        return $copies;
+    }
+
     /**
      * UIDs from the local header cache (fast path for bulk select-all).
      *
