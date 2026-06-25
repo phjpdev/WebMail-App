@@ -21,6 +21,11 @@
     --color-danger-hover: #a4262c;
     --color-unread-accent: #0078d4;
 
+    /* Mail list — read vs unread text */
+    --color-mail-read-from: var(--color-text-secondary);
+    --color-mail-read-subject: var(--color-text-muted);
+    --color-mail-read-date: var(--color-text-muted);
+
     /* Chrome */
     --color-header: #ffffff;
     --color-header-text: #242424;
@@ -917,6 +922,12 @@ a:hover {
     color: var(--color-text);
 }
 
+.mail-unread .mail-card-date,
+.mail-unread .mail-row-date {
+    color: var(--color-text-secondary);
+    font-weight: 500;
+}
+
 .unread-dot {
     display: inline-block;
     width: 7px;
@@ -1035,7 +1046,8 @@ a:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--color-text);
+    color: var(--color-mail-read-from, var(--color-text-secondary));
+    font-weight: 400;
 }
 
 .mail-card-date {
@@ -1050,11 +1062,16 @@ a:hover {
 
 .mail-card-subject {
     font-size: 0.8125rem;
-    color: var(--color-text-secondary);
+    color: var(--color-mail-read-subject, var(--color-text-muted));
+    font-weight: 400;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     line-height: 1.35;
+}
+
+.mail-card:not(.mail-unread) .mail-card-date {
+    color: var(--color-mail-read-date, var(--color-text-muted));
 }
 
 .mail-card .mail-kebab {
@@ -2330,6 +2347,9 @@ a:hover {
     --color-danger: #f1707b;
     --color-danger-hover: #ff99a4;
     --color-unread-accent: #479ef5;
+    --color-mail-read-from: #f3f2f1;
+    --color-mail-read-subject: #edebe9;
+    --color-mail-read-date: #d6d4d1;
     --color-header: #252423;
     --color-header-text: #ffffff;
     --shadow-xs: none;
@@ -4252,6 +4272,11 @@ body:has(.mail-workspace) {
     color: var(--color-text);
 }
 
+.mail-row--outlook.mail-unread .mail-row-date {
+    color: var(--color-text-secondary);
+    font-weight: 500;
+}
+
 .mail-row-check {
     flex-shrink: 0;
     width: 1.75rem;
@@ -4330,7 +4355,12 @@ body:has(.mail-workspace) {
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 0.8125rem;
-    color: var(--color-text);
+    color: var(--color-mail-read-from, var(--color-text-secondary));
+    font-weight: 400;
+}
+
+.mail-row--outlook:not(.mail-unread) .mail-row-date {
+    color: var(--color-mail-read-date, var(--color-text-muted));
 }
 
 .mail-row-meta {
@@ -4378,7 +4408,8 @@ body:has(.mail-workspace) {
 .mail-row-subject {
     margin-top: 0.125rem;
     font-size: 0.8125rem;
-    color: var(--color-text-secondary);
+    color: var(--color-mail-read-subject, var(--color-text-secondary));
+    font-weight: 400;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
