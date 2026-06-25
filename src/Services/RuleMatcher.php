@@ -33,9 +33,9 @@ class RuleMatcher
 
     /**
      * Recipient rules must be evaluated against each individual address across
-     * To / Cc / Delivered-To / X-Original-To. Combining them into one string
-     * would break equals/starts_with/ends_with when a mail has multiple
-     * recipients.
+     * To / Cc / Bcc / envelope headers (Delivered-To, X-Original-To, etc.).
+     * Combining them into one string would break equals/starts_with/ends_with
+     * when a mail has multiple recipients.
      *
      * @param array<string, string|null> $headers
      */
@@ -80,8 +80,13 @@ class RuleMatcher
         $shared = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
 
         $addresses = self::extractEmails((string) ($headers['to'] ?? ''));
+        $addresses = array_merge($addresses, self::extractEmails((string) ($headers['bcc'] ?? '')));
+        $addresses = array_merge(
+            $addresses,
+            self::extractEmails((string) ($headers['envelope_recipients'] ?? ''))
+        );
 
-        foreach (['delivered_to', 'x_original_to'] as $key) {
+        foreach (['delivered_to', 'x_original_to', 'envelope_to'] as $key) {
             foreach (self::extractEmails((string) ($headers[$key] ?? '')) as $addr) {
                 if ($shared === '' || strcasecmp($addr, $shared) !== 0) {
                     $addresses[] = $addr;

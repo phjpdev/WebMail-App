@@ -193,20 +193,29 @@ class ComposeController
             unset($_SESSION['_after_send_filter_ran']);
 
             $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc);
+            $_SESSION['_post_send_dest_paths'] = $destPaths;
+            $_SESSION['_post_send_from'] = $fromEmail;
+            $_SESSION['_post_send_message_id'] = extract_message_id_from_mime($sentMime);
             foreach ($destPaths as $path) {
                 FolderCache::bumpUnread($path, 1);
             }
             if ($destPaths !== []) {
                 FolderCache::setPendingBadgePaths($destPaths);
             }
+            if (count($destPaths) > 1) {
+                $sentMessageId = extract_message_id_from_mime($sentMime);
+                if ($sentMessageId !== null) {
+                    FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
+                }
+            }
 
             $unreadCounts = FolderCache::sidebarUnreadCounts();
             flush_session_for_poll();
 
-            $afterSend = function () use ($fromEmail, $returnFolder, $folderPath, $sentFolder, $sentMime): void {
+            $afterSend = function () use ($fromEmail, $returnFolder, $folderPath, $sentFolder, $sentMime, $destPaths): void {
                 $this->deleteSourceDraftIfRequested();
                 $this->saveToSent($sentFolder, $sentMime);
-                $this->syncMailboxAfterSend($fromEmail, $returnFolder, $folderPath, $sentFolder);
+                $this->syncMailboxAfterSend($fromEmail, $returnFolder, $folderPath, $sentFolder, $destPaths, $sentMime);
             };
 
             if (wants_json()) {
@@ -827,13 +836,20 @@ class ComposeController
      *
      * @return array{context_folder: string, sent_folder: string, unread_counts: array<string, int>}
      */
-    private function syncMailboxAfterSend(string $fromEmail, string $returnFolder, string $folderPath, string $sentFolder): array
-    {
+    private function syncMailboxAfterSend(
+        string $fromEmail,
+        string $returnFolder,
+        string $folderPath,
+        string $sentFolder,
+        array $destPaths = [],
+        string $sentMime = '',
+    ): array {
         ensure_session_writable();
 
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
         $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
+        $sentMessageId = $sentMime !== '' ? extract_message_id_from_mime($sentMime) : null;
 
         $filterResult = FilterService::runBackground(true, 15);
         $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
@@ -846,9 +862,13 @@ class ComposeController
 
         $imap = new ImapService();
         if ($imap->connect()) {
-            // Only clear self-sent copies from the filter inbox — not employee
-            // folders where routed mail should stay unread for the recipient.
-            $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
+            if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
+                $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+                FilterService::runBackground(true, 8);
+                $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+            } else {
+                $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
+            }
 
             $replyUid = (int) ($_POST['uid'] ?? 0);
             $mode = (string) ($_POST['mode'] ?? '');
@@ -892,6 +912,11 @@ class ComposeController
                 MailCacheService::reconcileBadgeFromIndex($path);
             }
             FolderCache::refreshPaths($badgePaths);
+        }
+
+        if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
+            MailCacheService::reconcileBadgeFromIndex($inbox);
+            FolderCache::refreshPaths([$inbox]);
         }
 
         return [

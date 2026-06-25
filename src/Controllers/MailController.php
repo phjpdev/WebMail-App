@@ -481,6 +481,17 @@ class MailController
                 FolderCache::refreshPaths($pendingPaths);
             }
 
+            $destPaths = is_array($_SESSION['_post_send_dest_paths'] ?? null)
+                ? $_SESSION['_post_send_dest_paths']
+                : [];
+            $postSendFrom = (string) ($_SESSION['_post_send_from'] ?? config('mail')['mailbox_email'] ?? '');
+            $postSendMessageId = isset($_SESSION['_post_send_message_id'])
+                ? (string) $_SESSION['_post_send_message_id']
+                : null;
+            if ($destPaths !== [] && $postSendFrom !== '') {
+                reconcile_inbox_after_outbound_send($destPaths, $postSendFrom, $postSendMessageId);
+            }
+
             $counts = FolderCache::sidebarUnreadCounts();
 
             if ($pendingPaths !== []) {
@@ -493,10 +504,22 @@ class MailController
                 }
                 if ($allSet) {
                     FolderCache::clearPendingBadgePaths();
-                    unset($_SESSION['_post_send_at'], $_SESSION['_after_send_filter_ran']);
+                    unset(
+                        $_SESSION['_post_send_at'],
+                        $_SESSION['_after_send_filter_ran'],
+                        $_SESSION['_post_send_dest_paths'],
+                        $_SESSION['_post_send_from'],
+                        $_SESSION['_post_send_message_id']
+                    );
                 }
             } elseif ($postSendAt > 0 && $postSendAt + 90 < time()) {
-                unset($_SESSION['_post_send_at'], $_SESSION['_after_send_filter_ran']);
+                unset(
+                    $_SESSION['_post_send_at'],
+                    $_SESSION['_after_send_filter_ran'],
+                    $_SESSION['_post_send_dest_paths'],
+                    $_SESSION['_post_send_from'],
+                    $_SESSION['_post_send_message_id']
+                );
             }
 
             flush_session_for_poll();

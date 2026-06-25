@@ -999,34 +999,84 @@ class ImapService
      * unread. Mark those as read so sidebar badges stay accurate.
      *
      * @param list<string> $paths
+     * @param string|list<string> $fromEmails
      */
-    public function clearRecentSelfSentCopies(array $paths, string $fromEmail, int $limit = 12): void
+    public function clearRecentSelfSentCopies(array $paths, string|array $fromEmails, int $limit = 12): void
     {
-        if ($fromEmail === '') {
+        foreach (array_values(array_unique(array_filter($paths))) as $path) {
+            $this->suppressInboundEchoOfSentMessage($path, $fromEmails, $limit);
+        }
+    }
+
+    /**
+     * Outbound mail often echoes into the filter inbox as an unread copy. After
+     * send/reply the filter routes real mail to employee folders — this clears
+     * the leftover inbox echo so Inbox badges stay at zero.
+     *
+     * @param string|list<string> $fromEmails
+     */
+    public function suppressInboundEchoOfSentMessage(
+        string $inboxPath,
+        string|array $fromEmails,
+        int $limit = 20,
+        ?string $sentMessageId = null,
+    ): void {
+        if ($inboxPath === '' || !$this->openFolder($inboxPath)) {
             return;
         }
 
-        $needle = strtolower($fromEmail);
-        foreach (array_values(array_unique(array_filter($paths))) as $path) {
-            if (!$this->openFolder($path)) {
+        $normalizedId = normalize_message_id($sentMessageId);
+
+        $needles = [];
+        foreach ((array) $fromEmails as $email) {
+            $email = strtolower(trim($email));
+            if ($email !== '') {
+                $needles[] = $email;
+            }
+        }
+
+        $mailbox = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
+        if ($mailbox !== '' && !in_array($mailbox, $needles, true)) {
+            $needles[] = $mailbox;
+        }
+
+        if ($needles === [] && $normalizedId === '') {
+            return;
+        }
+
+        foreach (array_reverse($this->getFolderUids($inboxPath, $limit)) as $uid) {
+            $uid = (int) $uid;
+            if ($this->isSeen($inboxPath, $uid)) {
                 continue;
             }
 
-            foreach (array_reverse($this->getFolderUids($path, $limit)) as $uid) {
-                if ($this->isSeen($path, $uid)) {
-                    continue;
-                }
+            $headers = $this->fetchFilterHeaders($inboxPath, $uid);
+            if ($headers === null) {
+                continue;
+            }
 
-                $headers = $this->fetchFilterHeaders($path, $uid);
-                if ($headers === null) {
-                    continue;
-                }
-
+            $msgId = normalize_message_id($headers['message_id'] ?? '');
+            $fromMatch = false;
+            foreach ($needles as $needle) {
                 if (str_contains(strtolower($headers['from'] ?? ''), $needle)) {
-                    $this->markSeen($path, $uid);
-                    MailCacheService::updateIndexSeen($path, $uid, true);
+                    $fromMatch = true;
+                    break;
                 }
             }
+
+            $idMatch = $normalizedId !== '' && $msgId !== '' && $msgId === $normalizedId;
+
+            if (!$idMatch && !$fromMatch) {
+                continue;
+            }
+
+            if ($idMatch && $this->deleteMessage($inboxPath, $uid)) {
+                MailCacheService::removeMessage($inboxPath, $uid);
+                continue;
+            }
+
+            $this->markSeen($inboxPath, $uid);
+            MailCacheService::updateIndexSeen($inboxPath, $uid, true);
         }
     }
 
@@ -1228,16 +1278,23 @@ class ImapService
             $this->joinAddresses($header->to ?? []) . ' ' . $this->joinAddresses($header->cc ?? [])
         );
 
+        $bcc = trim($this->joinAddresses($header->bcc ?? []));
+        if ($bcc === '') {
+            $bcc = trim((string) ($this->extractHeaderValue($rawHeader, 'Bcc') ?? ''));
+        }
+
         $unseen = (($header->Unseen ?? '') === 'U') || (($header->Recent ?? '') === 'N');
 
         return [
             'from' => $from,
             'to' => $to,
+            'bcc' => $bcc,
             'subject' => isset($header->subject) ? $this->decodeMimeHeader($header->subject) : '',
             'date' => $header->date ?? '',
             'seen' => !$unseen,
             'delivered_to' => $this->extractHeaderValue($rawHeader, 'Delivered-To'),
             'x_original_to' => $this->extractHeaderValue($rawHeader, 'X-Original-To'),
+            'envelope_recipients' => $this->collectEnvelopeRecipients($rawHeader),
             'message_id' => $this->extractHeaderValue($rawHeader, 'Message-ID'),
         ];
     }
@@ -1766,15 +1823,45 @@ class ImapService
 
     private function extractHeaderValue(string $rawHeader, string $headerName): ?string
     {
+        $values = $this->extractAllHeaderValues($rawHeader, $headerName);
+
+        return $values[0] ?? null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function extractAllHeaderValues(string $rawHeader, string $headerName): array
+    {
         // Unfold folded headers first: per RFC 5322 a CRLF (or LF) followed by
         // whitespace is a continuation of the previous header line.
         $unfolded = preg_replace('/\r?\n[ \t]+/', ' ', $rawHeader) ?? $rawHeader;
 
-        if (preg_match('/^' . preg_quote($headerName, '/') . ':\s*(.+)$/im', $unfolded, $matches)) {
-            return trim($matches[1]);
+        if (!preg_match_all('/^' . preg_quote($headerName, '/') . ':\s*(.+)$/im', $unfolded, $matches)) {
+            return [];
         }
 
-        return null;
+        $values = [];
+        foreach ($matches[1] as $value) {
+            $value = trim((string) $value);
+            if ($value !== '') {
+                $values[] = $value;
+            }
+        }
+
+        return $values;
+    }
+
+    private function collectEnvelopeRecipients(string $rawHeader): string
+    {
+        $parts = [];
+        foreach (['Delivered-To', 'X-Original-To', 'Envelope-To', 'X-Envelope-To', 'Apparently-To'] as $name) {
+            foreach ($this->extractAllHeaderValues($rawHeader, $name) as $value) {
+                $parts[] = $value;
+            }
+        }
+
+        return implode(' ', $parts);
     }
 
     /**

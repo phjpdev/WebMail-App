@@ -11,6 +11,7 @@ class FolderCache
 {
     private const SESSION_KEY = '_folder_cache';
     private const PENDING_BADGE_PATHS_KEY = '_pending_badge_paths';
+    private const PENDING_FILTER_ROUTES_KEY = '_pending_filter_routes';
     private const TTL = 300;
     private const UNREAD_TTL = 60;
 
@@ -247,6 +248,87 @@ class FolderCache
     {
         ensure_session_writable();
         unset($_SESSION[self::PENDING_BADGE_PATHS_KEY]);
+    }
+
+    /**
+     * Queue multi-folder delivery for a just-sent message when Bcc recipients
+     * are stripped from the inbox copy but compose already knows all targets.
+     *
+     * @param list<string> $paths
+     */
+    public static function queuePendingFilterRoute(string $messageId, array $paths): void
+    {
+        $messageId = normalize_message_id($messageId);
+        $paths = array_values(array_unique(array_filter(array_map(
+            static fn (string $p): string => self::resolvePath($p),
+            $paths
+        ), static fn (string $p): bool => $p !== '')));
+
+        if ($messageId === '' || count($paths) < 2) {
+            return;
+        }
+
+        ensure_session_writable();
+        $routes = $_SESSION[self::PENDING_FILTER_ROUTES_KEY] ?? [];
+        if (!is_array($routes)) {
+            $routes = [];
+        }
+
+        $routes[] = [
+            'message_id' => $messageId,
+            'paths' => $paths,
+            'until' => time() + 300,
+        ];
+        $_SESSION[self::PENDING_FILTER_ROUTES_KEY] = $routes;
+    }
+
+    /**
+     * @return list<string>|null
+     */
+    public static function claimPendingFilterRoute(?string $messageId): ?array
+    {
+        $messageId = normalize_message_id($messageId);
+        if ($messageId === '') {
+            return null;
+        }
+
+        $pending = $_SESSION[self::PENDING_FILTER_ROUTES_KEY] ?? null;
+        if (!is_array($pending)) {
+            return null;
+        }
+
+        $now = time();
+        $remaining = [];
+        $claimed = null;
+
+        foreach ($pending as $entry) {
+            if (!is_array($entry) || $now > (int) ($entry['until'] ?? 0)) {
+                continue;
+            }
+
+            if (normalize_message_id((string) ($entry['message_id'] ?? '')) === $messageId) {
+                $claimed = array_values(array_filter(
+                    (array) ($entry['paths'] ?? []),
+                    static fn (string $p): bool => $p !== ''
+                ));
+                continue;
+            }
+
+            $remaining[] = $entry;
+        }
+
+        if ($claimed === null || count($claimed) < 2) {
+            return null;
+        }
+
+        ensure_session_writable();
+        if ($remaining === []) {
+            unset($_SESSION[self::PENDING_FILTER_ROUTES_KEY]);
+        } else {
+            $_SESSION[self::PENDING_FILTER_ROUTES_KEY] = $remaining;
+        }
+
+        return $claimed;
     }
 
     /**

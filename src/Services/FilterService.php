@@ -372,23 +372,10 @@ class FilterService
 
             $body = null;
             $matchedRules = $this->matchRules($imap, $sourceFolder, $uid, $headers, $rules, $needsBody, $body);
+            $pendingPaths = FolderCache::claimPendingFilterRoute($headers['message_id'] ?? null);
+            $targetPaths = $this->resolveTargetPaths($matchedRules, $pendingPaths);
 
-            if ($matchedRules !== []) {
-                $targetPaths = [];
-                foreach ($matchedRules as $rule) {
-                    $path = (string) ($rule['imap_path'] ?? '');
-                    if ($path !== '') {
-                        $targetPaths[$path] = $rule;
-                    }
-                }
-                $targetPaths = array_values($targetPaths);
-
-                if ($targetPaths === []) {
-                    $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
-                    $result['processed']++;
-                    continue;
-                }
-
+            if ($targetPaths !== []) {
                 $primaryRule = $targetPaths[0];
                 $primaryPath = (string) $primaryRule['imap_path'];
                 $extraPaths = array_slice($targetPaths, 1);
@@ -450,6 +437,40 @@ class FilterService
         $result['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
 
         return $result;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $matchedRules
+     * @param list<string>|null $pendingPaths
+     * @return list<array<string, mixed>>
+     */
+    private function resolveTargetPaths(array $matchedRules, ?array $pendingPaths): array
+    {
+        if ($pendingPaths !== null && count($pendingPaths) > 1) {
+            $paths = [];
+            foreach ($pendingPaths as $path) {
+                $path = (string) $path;
+                if ($path !== '') {
+                    $paths[$path] = ['imap_path' => $path, 'name' => 'compose-route'];
+                }
+            }
+
+            return array_values($paths);
+        }
+
+        if ($matchedRules === []) {
+            return [];
+        }
+
+        $targetPaths = [];
+        foreach ($matchedRules as $rule) {
+            $path = (string) ($rule['imap_path'] ?? '');
+            if ($path !== '') {
+                $targetPaths[$path] = $rule;
+            }
+        }
+
+        return array_values($targetPaths);
     }
 
     /**

@@ -840,6 +840,75 @@ function parse_email_list(string $input): array
     return ['valid' => $valid, 'invalid' => $invalid];
 }
 
+function normalize_message_id(?string $messageId): string
+{
+    return strtolower(trim(trim((string) $messageId), '<>'));
+}
+
+function extract_message_id_from_mime(string $mime): ?string
+{
+    if (!preg_match('/^Message-ID:\s*(.+)$/im', $mime, $matches)) {
+        return null;
+    }
+
+    $id = trim((string) ($matches[1] ?? ''));
+
+    return $id !== '' ? trim($id, '<>') : null;
+}
+
+/**
+ * True when outbound mail is routed to custom folders only (not the filter inbox).
+ *
+ * @param list<string> $destPaths
+ */
+function outbound_send_skips_inbox_badge(array $destPaths, string $inbox = ''): bool
+{
+    if ($destPaths === []) {
+        return false;
+    }
+
+    $inbox = $inbox !== '' ? $inbox : (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+
+    foreach ($destPaths as $path) {
+        $path = (string) $path;
+        if ($path === $inbox || strtoupper($path) === 'INBOX') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Clear unread inbox echoes after send/reply when mail routes to other folders.
+ *
+ * @param list<string> $destPaths
+ */
+function reconcile_inbox_after_outbound_send(
+    array $destPaths,
+    string $fromEmail,
+    ?string $sentMessageId = null,
+    bool $runFilter = false,
+): void {
+    $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+    if (!outbound_send_skips_inbox_badge($destPaths, $inbox)) {
+        return;
+    }
+
+    $imap = new App\Services\ImapService();
+    if (!$imap->connect()) {
+        return;
+    }
+
+    $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+    if ($runFilter) {
+        App\Services\FilterService::runBackground(true, 8);
+        $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+    }
+    App\Services\MailCacheService::reconcileBadgeFromIndex($inbox);
+    App\Services\FolderCache::refreshPaths([$inbox]);
+}
+
 /**
  * @return list<int>
  */
