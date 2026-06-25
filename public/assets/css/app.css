@@ -25,6 +25,8 @@
     --color-mail-read-from: var(--color-text-secondary);
     --color-mail-read-subject: var(--color-text-muted);
     --color-mail-read-date: var(--color-text-muted);
+    --color-mail-unread-bg: #f3f2f1;
+    --color-mail-unread-bg-hover: #edebe9;
 
     /* Chrome */
     --color-header: #ffffff;
@@ -998,6 +1000,12 @@ a:hover {
     background: var(--color-primary-subtle, rgba(0, 120, 212, 0.08));
 }
 
+.mail-card.mail-unread.is-checked,
+.mail-card.mail-unread.is-checked:hover,
+.mail-card.mail-unread.is-checked:focus-visible {
+    background: var(--color-primary-subtle, rgba(0, 120, 212, 0.08));
+}
+
 .mail-card:hover,
 .mail-card:focus-visible {
     background: var(--color-surface-alt);
@@ -1005,7 +1013,13 @@ a:hover {
 }
 
 .mail-card.mail-unread {
+    background: var(--color-mail-unread-bg);
     border-left-color: var(--color-unread-accent);
+}
+
+.mail-card.mail-unread:hover,
+.mail-card.mail-unread:focus-visible {
+    background: var(--color-mail-unread-bg-hover);
 }
 
 .mail-card:last-child {
@@ -2350,6 +2364,8 @@ a:hover {
     --color-mail-read-from: #f3f2f1;
     --color-mail-read-subject: #edebe9;
     --color-mail-read-date: #d6d4d1;
+    --color-mail-unread-bg: #1f1e1d;
+    --color-mail-unread-bg-hover: #2a2928;
     --color-header: #252423;
     --color-header-text: #ffffff;
     --shadow-xs: none;
@@ -3972,8 +3988,13 @@ body:has(.mail-workspace) {
     display: contents;
 }
 
-.mail-cmd-btn--compose-action {
+.mail-cmd-btn--compose-action,
+.mail-cmd-btn--refresh-mobile {
     display: none;
+}
+
+.mail-cmd-btn--refresh-desktop {
+    display: inline-flex;
 }
 
 .mail-command-bar-primary {
@@ -4089,17 +4110,40 @@ body:has(.mail-workspace) {
 }
 
 @media (min-width: 1024px) {
-    .mail-command-bar-actions {
-        order: 1;
+    .mail-command-bar {
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 0.35rem 0.5rem;
+        padding: 0.35rem 0.75rem;
     }
 
-    .mail-cmd-btn--main-row {
-        order: 2;
-        flex-shrink: 0;
+    .mail-command-bar-row--main,
+    .mail-command-bar-row--selection,
+    .mail-command-bar-main-end {
+        display: contents;
+    }
+
+    .mail-command-bar-primary,
+    .mail-cmd-btn--refresh-mobile,
+    .mail-cmd-btn--compose-action {
+        display: none !important;
+    }
+
+    .mail-cmd-btn--refresh-desktop {
+        display: inline-flex !important;
+    }
+
+    .mail-command-bar-actions {
+        order: 1;
+        flex: 1 1 auto;
+        min-width: 0;
     }
 
     .mail-command-bar-meta {
-        order: 3;
+        order: 2;
+        margin-left: auto;
+        flex-shrink: 0;
     }
 
     .mail-command-bar:not(.mail-command-bar--has-selection) .mail-command-bar-actions .mail-cmd-btn:disabled,
@@ -4263,7 +4307,19 @@ body:has(.mail-workspace) {
 }
 
 .mail-row--outlook.mail-unread {
+    background: var(--color-mail-unread-bg);
     border-left-color: var(--color-unread-accent);
+}
+
+.mail-row--outlook.mail-unread:hover,
+.mail-row--outlook.mail-unread:focus-within {
+    background: var(--color-mail-unread-bg-hover);
+}
+
+.mail-row--outlook.mail-unread.is-checked,
+.mail-row--outlook.mail-unread.is-checked:hover,
+.mail-row--outlook.mail-unread.is-checked:focus-within {
+    background: var(--color-primary-subtle, rgba(0, 120, 212, 0.08));
 }
 
 .mail-row--outlook.mail-unread .mail-row-from,
@@ -4974,6 +5030,27 @@ body:has(.mail-workspace) {
     .btn-compose {
         min-height: 2.75rem;
     }
+
+    .mail-cmd-btn--refresh-mobile {
+        display: inline-flex;
+    }
+
+    .mail-cmd-btn--refresh-desktop {
+        display: none !important;
+    }
+
+    .mail-command-divider--desktop {
+        display: none;
+    }
+
+    .mail-command-bar-actions [data-cmd="reply"] { order: 1; }
+    .mail-command-bar-actions [data-cmd="reply-all"] { order: 2; }
+    .mail-command-bar-actions [data-cmd="forward"] { order: 3; }
+    .mail-command-bar-actions [data-cmd="mark-read"] { order: 4; }
+    .mail-command-bar-actions [data-cmd="mark-unread"] { order: 5; }
+    .mail-command-bar-actions [data-cmd="flag-toggle"] { order: 6; }
+    .mail-command-bar-actions .mail-cmd-move { order: 7; }
+    .mail-command-bar-actions [data-cmd="delete"] { order: 8; }
 
     .mail-command-bar {
         flex-direction: column;
