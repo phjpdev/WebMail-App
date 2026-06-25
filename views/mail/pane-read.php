@@ -24,7 +24,7 @@ $isPane = true;
         data-flagged="<?= !empty($message['flagged']) ? '1' : '0' ?>"
         data-sync-url="<?= e(url('folder/' . $folderB64 . '/message/' . (int) $message['uid'] . '/sync')) ?>"
         data-folder-url="<?= e(folder_url($folderPath)) ?>"
-        data-poll-interval="<?= (int) $pollInterval ?>">
+        data-poll-interval="<?= max(15, (int) ($pollInterval ?? 30)) ?>">
         <?php require base_path('views/partials/mail-read-content.php'); ?>
     </section>
 </div>

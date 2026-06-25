@@ -86,6 +86,9 @@
     var mailPollMinGapMs = 25000;
     var mailSyncHooksBound = false;
     var postSendQuietUntil = 0;
+    var paneMessageSyncTimer = null;
+    var paneMessageSyncInFlight = false;
+    var afterSendBadgePollInFlight = false;
     var attachmentHintsTimer = null;
     var panePrefetchInFlight = {};
     var pendingRemovalUntil = {};
@@ -260,6 +263,7 @@
             if (empty) empty.hidden = false;
             if (bodyEl) bodyEl.hidden = true;
             if (skeleton) skeleton.hidden = true;
+            stopPaneMessageSync();
             return;
         }
 
@@ -284,12 +288,8 @@
     function clearReadingPane() {
         var bodyEl = document.getElementById('reading-pane-body');
         paneLoadSeq++;
+        stopPaneMessageSync();
         if (bodyEl) {
-            var card = bodyEl.querySelector('.mail-read-card[data-uid]');
-            if (card && card._syncTimer) {
-                clearInterval(card._syncTimer);
-                card._syncTimer = null;
-            }
             bodyEl.innerHTML = '';
         }
         setPaneView('empty');
@@ -366,6 +366,7 @@
         var bodyEl = document.getElementById('reading-pane-body');
         if (!bodyEl) return;
 
+        stopPaneMessageSync();
         bodyEl.innerHTML = data.html;
         setPaneView('content');
 
@@ -1190,12 +1191,10 @@
                     if (isDraft) return;
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
                     closeComposePanel(false);
+                    stopPaneMessageSync();
                     setPaneView('empty');
-                    beginPostSendQuiet(12000);
+                    beginPostSendQuiet(30000);
                     afterSendBadgePolls = 0;
-                    if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
-                        applyPostSendUnreadCounts(data.unread_counts);
-                    }
                     window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
                 }).catch(function (err) {
                     showToast('error', err.message || 'Action failed.');
@@ -2081,7 +2080,7 @@
     }
 
     var afterSendBadgePolls = 0;
-    var afterSendBadgeDelays = [800, 2000, 4000, 7000, 12000, 18000];
+    var afterSendBadgeDelays = [5000, 7000, 10000, 15000, 20000, 28000];
 
     function applyPostSendUnreadCounts(counts) {
         if (!counts) return;
@@ -2109,7 +2108,11 @@
         if (afterSendBadgePolls >= afterSendBadgeDelays.length) {
             return;
         }
+        if (afterSendBadgePollInFlight) {
+            return;
+        }
         afterSendBadgePolls++;
+        afterSendBadgePollInFlight = true;
 
         fetch(apiUrl('folders/unread?after_send=1'), {
             credentials: 'same-origin',
@@ -2118,7 +2121,10 @@
             .then(function (data) {
                 if (!data || !data.unread_counts) return;
                 applyPostSendUnreadCounts(data.unread_counts);
-            }).catch(function () {});
+            }).catch(function () {})
+            .finally(function () {
+                afterSendBadgePollInFlight = false;
+            });
 
         if (afterSendBadgePolls < afterSendBadgeDelays.length) {
             var nextDelay = afterSendBadgeDelays[afterSendBadgePolls] - afterSendBadgeDelays[afterSendBadgePolls - 1];
@@ -2140,7 +2146,16 @@
             return;
         }
 
+        var intervalRaw = parseInt(
+            card.getAttribute('data-poll-interval') || body.getAttribute('data-poll-interval') || '30',
+            10
+        );
+        var interval = Math.max(15000, (isNaN(intervalRaw) ? 30 : intervalRaw) * 1000);
+
         if (mailPoll && pollUrl === activeMailPollUrl) {
+            if (!mailPollIntervalId) {
+                mailPollIntervalId = window.setInterval(function () { scheduleMailPoll(false); }, interval);
+            }
             return;
         }
 
@@ -2148,11 +2163,6 @@
         activeMailPollUrl = pollUrl;
 
         var page = parseInt(card.getAttribute('data-page') || '1', 10);
-        var intervalRaw = parseInt(
-            card.getAttribute('data-poll-interval') || body.getAttribute('data-poll-interval') || '30',
-            10
-        );
-        var interval = Math.max(15000, (isNaN(intervalRaw) ? 30 : intervalRaw) * 1000);
         var syncErrorShown = false;
 
         function poll(force, withFilter) {
@@ -2847,19 +2857,43 @@
         return n;
     }
 
+    function stopPaneMessageSync() {
+        if (paneMessageSyncTimer) {
+            window.clearInterval(paneMessageSyncTimer);
+            paneMessageSyncTimer = null;
+        }
+        paneMessageSyncInFlight = false;
+    }
+
     function bindMessageSyncCard(card) {
-        if (!card) return;
-        if (card._syncTimer) {
-            clearInterval(card._syncTimer);
-            card._syncTimer = null;
+        stopPaneMessageSync();
+        if (!card || !document.contains(card)) return;
+
+        var paneBody = document.getElementById('reading-pane-body');
+        if (paneBody && paneBody.contains(card) && paneBody.hidden) {
+            return;
         }
 
         var syncUrl = card.getAttribute('data-sync-url');
         var folderUrl = card.getAttribute('data-folder-url');
-        var interval = parseInt(card.getAttribute('data-poll-interval') || body.getAttribute('data-poll-interval') || '30', 10) * 1000;
+        var intervalRaw = parseInt(card.getAttribute('data-poll-interval') || body.getAttribute('data-poll-interval') || '30', 10);
+        var interval = Math.max(60000, (isNaN(intervalRaw) ? 30 : intervalRaw) * 1000);
         if (!syncUrl) return;
 
         function check() {
+            if (paneMessageSyncInFlight) return;
+            if (!document.contains(card)) {
+                stopPaneMessageSync();
+                return;
+            }
+            var livePaneBody = document.getElementById('reading-pane-body');
+            if (livePaneBody && livePaneBody.contains(card) && livePaneBody.hidden) {
+                stopPaneMessageSync();
+                return;
+            }
+            if (isPostSendQuiet()) return;
+
+            paneMessageSyncInFlight = true;
             fetch(syncUrl, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
@@ -2877,10 +2911,13 @@
                             window.location = folderUrl;
                         }
                     }
-                }).catch(function () {});
+                }).catch(function () {})
+                .finally(function () {
+                    paneMessageSyncInFlight = false;
+                });
         }
 
-        card._syncTimer = window.setInterval(check, interval);
+        paneMessageSyncTimer = window.setInterval(check, interval);
     }
 
     function initMessageSync() {

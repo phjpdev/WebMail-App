@@ -190,6 +190,7 @@ class ComposeController
             $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
             ensure_session_writable();
             $_SESSION['_post_send_at'] = time();
+            unset($_SESSION['_after_send_filter_ran']);
 
             $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc);
             foreach ($destPaths as $path) {

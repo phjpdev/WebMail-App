@@ -470,7 +470,9 @@ class MailController
             $pendingPaths = FolderCache::getPendingBadgePaths();
             $postSendAt = (int) ($_SESSION['_post_send_at'] ?? 0);
 
-            if ($pendingPaths === [] && $postSendAt > 0 && $postSendAt + 90 > time()) {
+            if ($pendingPaths === [] && $postSendAt > 0 && $postSendAt + 90 > time()
+                && empty($_SESSION['_after_send_filter_ran'])) {
+                $_SESSION['_after_send_filter_ran'] = time();
                 FilterService::runBackground(true, 8);
                 $pendingPaths = FolderCache::getPendingBadgePaths();
             }
@@ -491,10 +493,10 @@ class MailController
                 }
                 if ($allSet) {
                     FolderCache::clearPendingBadgePaths();
-                    unset($_SESSION['_post_send_at']);
+                    unset($_SESSION['_post_send_at'], $_SESSION['_after_send_filter_ran']);
                 }
             } elseif ($postSendAt > 0 && $postSendAt + 90 < time()) {
-                unset($_SESSION['_post_send_at']);
+                unset($_SESSION['_post_send_at'], $_SESSION['_after_send_filter_ran']);
             }
 
             flush_session_for_poll();
