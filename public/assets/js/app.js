@@ -1763,6 +1763,18 @@
         return out.length ? out : collectMoveFoldersFromSidebar();
     }
 
+    function selectedPrimaryRow() {
+        if (selectAllInFolder) return null;
+        var uids = selectedMailUids();
+        if (uids.length !== 1) return null;
+        var uid = uids[0];
+        var rows = rowsForUid(uid);
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].offsetParent !== null) return rows[i];
+        }
+        return rows[0] || null;
+    }
+
     var folderPickerKeyHandler = null;
 
     /**
@@ -2656,11 +2668,24 @@
         var uids = selectedMailUids();
         var hasSelection = selectAllInFolder || uids.length > 0;
         var needsSelection = ['delete', 'move', 'mark-read', 'mark-unread', 'flag-toggle'];
+        var singleRow = selectedPrimaryRow();
+        var isSingle = !!singleRow;
 
         needsSelection.forEach(function (cmd) {
             var btn = toolbar.querySelector('[data-cmd="' + cmd + '"]');
             if (btn) btn.disabled = !hasSelection;
         });
+
+        function setMobileCmd(cmd, enabled, visible) {
+            var btn = toolbar.querySelector('[data-cmd="' + cmd + '"]');
+            if (!btn) return;
+            btn.disabled = !enabled;
+            btn.hidden = !visible;
+        }
+
+        setMobileCmd('reply', isSingle && !!(singleRow && singleRow.getAttribute('data-reply-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-reply-url')));
+        setMobileCmd('reply-all', isSingle && !!(singleRow && singleRow.getAttribute('data-reply-all-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-reply-all-url')));
+        setMobileCmd('forward', isSingle && !!(singleRow && singleRow.getAttribute('data-forward-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-forward-url')));
 
         var moveSelect = document.getElementById('cmd-move-target');
         if (moveSelect) moveSelect.disabled = !hasSelection;
@@ -2705,6 +2730,7 @@
         updateSelectAllBanner();
 
         toolbar.classList.toggle('mail-command-bar--has-selection', hasSelection);
+        toolbar.classList.toggle('mail-command-bar--single', isSingle);
     }
 
     function runBulkCommand(action, triggerBtn) {
@@ -2725,6 +2751,24 @@
         var folderEnc = currentMailFolderEnc();
         if (!folderEnc) return;
         var selectionCount = effectiveSelectionCount();
+
+        if (action === 'reply' || action === 'reply-all' || action === 'forward') {
+            var composeRow = selectedPrimaryRow();
+            if (!composeRow) return;
+            var composeAttr = action === 'reply'
+                ? 'data-reply-url'
+                : (action === 'reply-all' ? 'data-reply-all-url' : 'data-forward-url');
+            var composeUrl = composeRow.getAttribute(composeAttr);
+            if (!composeUrl) return;
+            var composeLabel = action === 'reply' ? 'Reply' : (action === 'reply-all' ? 'Reply all' : 'Forward');
+            if (useReadingPane()) {
+                openComposePanel(composeUrl, composeLabel);
+            } else {
+                showLoading();
+                window.location = composeUrl;
+            }
+            return;
+        }
 
         if (action === 'delete') {
             showConfirm(deleteConfirmOptions(selectionCount)).then(function (ok) {
@@ -4124,6 +4168,7 @@
         document.addEventListener('click', function (e) {
             var kebab = e.target.closest('.mail-kebab');
             if (kebab) {
+                if (isMobileUi()) return;
                 e.preventDefault();
                 e.stopPropagation();
                 var row = kebab.closest('.mail-row, .mail-card');
