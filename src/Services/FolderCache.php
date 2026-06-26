@@ -557,8 +557,12 @@ class FolderCache
         $data = $this->filterByRegistry($data);
 
         $user = Auth::user();
-        if ($user === null || $user['role'] === 'admin') {
+        if ($user === null) {
             return $data;
+        }
+
+        if ($user['role'] === 'admin') {
+            return $this->filterAdminFolders($data);
         }
 
         $prefix = $this->employeeMailboxPrefix((int) $user['id']);
@@ -578,7 +582,96 @@ class FolderCache
         return $data;
     }
 
-  /**
+    /**
+     * Admin sidebar: shared system folders + employee inboxes, not per-user Sent/Drafts/etc.
+     *
+     * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
+     * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
+     */
+    private function filterAdminFolders(array $data): array
+    {
+        $employeeRoots = $this->employeeMailboxRoots();
+        $filtered = [];
+        $counts = [];
+
+        foreach ($data['folders'] as $folder) {
+            $path = $folder['path'];
+            if ($this->isEmployeePersonalSubfolder($path, $employeeRoots)) {
+                continue;
+            }
+
+            $filtered[] = $folder;
+            $counts[$path] = $data['unread_counts'][$path] ?? 0;
+        }
+
+        $data['folders'] = $filtered;
+        $data['unread_counts'] = $counts;
+
+        return $data;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function employeeMailboxRoots(): array
+    {
+        static $roots = null;
+        if ($roots !== null) {
+            return $roots;
+        }
+
+        $roots = [];
+        try {
+            $rows = Database::query(
+                "SELECT imap_path FROM folders WHERE folder_type = 'employee' AND linked_user_id IS NOT NULL AND active = 1"
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $path = (string) ($row['imap_path'] ?? '');
+                if ($path !== '') {
+                    $roots[] = $path;
+                }
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+
+        return $roots;
+    }
+
+    /**
+     * @param list<string> $employeeRoots
+     */
+    private function isEmployeePersonalSubfolder(string $path, array $employeeRoots): bool
+    {
+        foreach ($employeeRoots as $root) {
+            if ($this->isWithinEmployeeMailbox($path, $root, subfoldersOnly: true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Case-insensitive mailbox path match (IMAP may use INBOX.user while DB has INBOX.User).
+     */
+    private function isWithinEmployeeMailbox(string $path, string $root, bool $subfoldersOnly = false): bool
+    {
+        if ($path === '' || $root === '') {
+            return false;
+        }
+
+        if (strcasecmp($path, $root) === 0) {
+            return !$subfoldersOnly;
+        }
+
+        $prefix = rtrim($root, '.') . '.';
+
+        return strlen($path) > strlen($prefix)
+            && strncasecmp($path, $prefix, strlen($prefix)) === 0;
+    }
+
+    /**
      * Personal mailbox root for an employee (e.g. INBOX.Jean).
      */
     private function employeeMailboxPrefix(int $userId): ?string
@@ -604,11 +697,7 @@ class FolderCache
             return false;
         }
 
-        if ($path === $mailboxPrefix) {
-            return true;
-        }
-
-        return str_starts_with($path, $mailboxPrefix . '.');
+        return $this->isWithinEmployeeMailbox($path, $mailboxPrefix);
     }
 
     /**
@@ -752,18 +841,21 @@ class FolderCache
 
         $filtered = [];
         $counts = [];
+        $seen = [];
 
         foreach ($data['folders'] as $folder) {
             $imapPath = (string) $folder['path'];
             $key = strtoupper($imapPath);
-            if (!isset($registry[$key])) {
+            if (!isset($registry[$key]) || isset($seen[$key])) {
                 continue;
             }
 
+            $seen[$key] = true;
             $entry = $registry[$key];
+            $folder['path'] = $entry['path'];
             $folder['name'] = $entry['display_name'];
             $filtered[] = $folder;
-            $counts[$imapPath] = (int) (
+            $counts[$entry['path']] = (int) (
                 $data['unread_counts'][$imapPath]
                 ?? $data['unread_counts'][$entry['path']]
                 ?? 0

@@ -1047,7 +1047,7 @@ function folder_icon_type(string $path): string
 function sidebar_folder_bucket(string $path): string
 {
     $employeeInbox = employee_linked_inbox_path();
-    if ($employeeInbox !== null && $path === $employeeInbox) {
+    if ($employeeInbox !== null && strcasecmp($path, $employeeInbox) === 0) {
         return 'inbox';
     }
 
