@@ -4588,8 +4588,49 @@
 
                 updateScrollState();
             }
-            item.addEventListener('mouseenter', place);
-            item.addEventListener('focus', place);
+
+            function wireSubmenuHover() {
+                var closeTimer = null;
+
+                function openSub() {
+                    if (closeTimer) {
+                        clearTimeout(closeTimer);
+                        closeTimer = null;
+                    }
+                    item.classList.add('is-submenu-open');
+                    place();
+                }
+
+                function scheduleClose() {
+                    if (closeTimer) clearTimeout(closeTimer);
+                    closeTimer = setTimeout(function () {
+                        item.classList.remove('is-submenu-open');
+                        closeTimer = null;
+                    }, 160);
+                }
+
+                function within(node, target) {
+                    return !!(target && node && (node === target || node.contains(target)));
+                }
+
+                item.addEventListener('mouseenter', openSub);
+                item.addEventListener('mouseleave', function (e) {
+                    if (within(sub, e.relatedTarget) || within(item, e.relatedTarget)) return;
+                    scheduleClose();
+                });
+                sub.addEventListener('mouseenter', openSub);
+                sub.addEventListener('mouseleave', function (e) {
+                    if (within(item, e.relatedTarget) || within(sub, e.relatedTarget)) return;
+                    scheduleClose();
+                });
+                item.addEventListener('focus', openSub);
+                item.addEventListener('blur', function (e) {
+                    if (within(item, e.relatedTarget)) return;
+                    scheduleClose();
+                });
+            }
+
+            wireSubmenuHover();
             menu.appendChild(item);
             return item;
         }
