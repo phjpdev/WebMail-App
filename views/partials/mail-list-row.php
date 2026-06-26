@@ -34,9 +34,7 @@ $uid = (int) $msg['uid'];
                 <span class="mail-row-from" title="<?= e($fromDisplay) ?>"><?= e($fromDisplay) ?></span>
             </div>
             <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject'] ?? '(no subject)') ?></div>
-            <?php if ($snippet !== ''): ?>
-                <div class="mail-row-snippet" title="<?= e($snippet) ?>"><?= e($snippet) ?></div>
-            <?php endif; ?>
+            <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= $snippet !== '' ? e($snippet) : '' ?></div>
         </div>
         <span class="mail-row-meta">
             <?php if (!empty($msg['has_attachment'])): ?>

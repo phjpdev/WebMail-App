@@ -2121,9 +2121,9 @@
         var draftBadge = msg.is_draft
             ? '<span class="mail-row-draft-badge">[Draft]</span>'
             : '';
-        var snippetHtml = snippet
-            ? '<div class="mail-row-snippet" title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) + '</div>'
-            : '';
+        var snippetHtml = '<div class="mail-row-snippet"' +
+            (snippet ? ' title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) : ' aria-hidden="true">') +
+            '</div>';
         var initial = fromText.trim().charAt(0).toUpperCase() || '?';
         var color = avatarColor(fromText);
         var attachHtml = msg.has_attachment
@@ -2174,9 +2174,9 @@
         var draftBadge = msg.is_draft
             ? '<span class="mail-row-draft-badge">[Draft]</span>'
             : '';
-        var snippetHtml = snippet
-            ? '<div class="mail-row-snippet" title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) + '</div>'
-            : '';
+        var snippetHtml = '<div class="mail-row-snippet"' +
+            (snippet ? ' title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) : ' aria-hidden="true">') +
+            '</div>';
         var initial = fromText.trim().charAt(0).toUpperCase() || '?';
         var color = avatarColor(fromText);
         var attachHtml = msg.has_attachment

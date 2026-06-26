@@ -4475,6 +4475,7 @@ body:has(.mail-workspace) {
 
 .mail-row-snippet {
     margin-top: 0.125rem;
+    min-height: 1.1rem;
     font-size: 0.8125rem;
     color: var(--color-text-muted, var(--color-text-secondary));
     font-weight: 400;
@@ -4482,6 +4483,10 @@ body:has(.mail-workspace) {
     text-overflow: ellipsis;
     white-space: nowrap;
     line-height: 1.35;
+}
+
+.mail-row-snippet:empty {
+    margin-top: 0.125rem;
 }
 
 .mail-row-draft-badge {

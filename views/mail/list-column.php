@@ -143,9 +143,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                         </span>
                     </div>
                     <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject']) ?></div>
-                    <?php if ($snippet !== ''): ?>
-                        <div class="mail-row-snippet" title="<?= e($snippet) ?>"><?= e($snippet) ?></div>
-                    <?php endif; ?>
+                    <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= $snippet !== '' ? e($snippet) : '' ?></div>
                 </div>
                 <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
             </div>
