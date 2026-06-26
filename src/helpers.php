@@ -789,11 +789,79 @@ function folder_icon_type(string $path): string
     if (str_contains($lower, 'trash')) {
         return 'trash';
     }
-    if (str_contains($lower, 'spam') || str_contains($lower, 'junk')) {
+    if (str_contains($lower, 'archive')) {
+        return 'archive';
+    }
+    if (str_contains($lower, 'junk')) {
+        return 'junk';
+    }
+    if (str_contains($lower, 'spam')) {
         return 'spam';
     }
 
     return 'folder';
+}
+
+/**
+ * Sidebar bucket for ordering (primary nav vs custom folders).
+ */
+function sidebar_folder_bucket(string $path): string
+{
+    $lower = strtolower($path);
+    if ($path === 'INBOX') {
+        return 'inbox';
+    }
+    if (str_contains($lower, 'sent')) {
+        return 'sent';
+    }
+    if (str_contains($lower, 'draft')) {
+        return 'drafts';
+    }
+    if (str_contains($lower, 'archive')) {
+        return 'archive';
+    }
+    if (str_contains($lower, 'junk')) {
+        return 'junk';
+    }
+    if (str_contains($lower, 'spam')) {
+        return 'spam';
+    }
+    if (str_contains($lower, 'trash')) {
+        return 'trash';
+    }
+
+    return 'other';
+}
+
+/**
+ * @return list<string>
+ */
+function sidebar_primary_folder_order(): array
+{
+    return ['inbox', 'sent', 'drafts', 'archive', 'junk', 'spam', 'trash'];
+}
+
+function sidebar_folder_label(array $folder, string $bucket): string
+{
+    $labels = [
+        'inbox' => 'Inbox',
+        'sent' => 'Sent',
+        'drafts' => 'Drafts',
+        'archive' => 'Archive',
+        'junk' => 'Junk',
+        'spam' => 'Spam',
+        'trash' => 'Trash',
+    ];
+
+    if (isset($labels[$bucket])) {
+        return $labels[$bucket];
+    }
+
+    if ($folder['path'] === 'INBOX') {
+        return 'Inbox';
+    }
+
+    return preg_replace('/^INBOX\./', '', $folder['name']);
 }
 
 function is_trash_folder(string $path): bool

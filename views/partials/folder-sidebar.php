@@ -6,41 +6,13 @@
  * @var array<string, int> $unreadCounts
  */
 
-$groupOrder = ['inbox', 'sent', 'drafts', 'other', 'trash'];
-$grouped = [
-    'inbox' => [],
-    'sent' => [],
-    'drafts' => [],
-    'trash' => [],
-    'other' => [],
-];
 $unreadCounts = $unreadCounts ?? [];
-$fixedGroups = ['inbox', 'sent', 'drafts', 'trash'];
+$primaryOrder = sidebar_primary_folder_order();
+$grouped = array_fill_keys(array_merge($primaryOrder, ['other']), []);
 
 foreach (($sidebarFolders ?? $folders ?? []) as $folder) {
-    $path = $folder['path'];
-    $lower = strtolower($path);
-
-    if ($path === 'INBOX') {
-        $grouped['inbox'][] = $folder;
-    } elseif (str_contains($lower, 'sent')) {
-        $grouped['sent'][] = $folder;
-    } elseif (str_contains($lower, 'draft')) {
-        $grouped['drafts'][] = $folder;
-    } elseif (str_contains($lower, 'trash')) {
-        $grouped['trash'][] = $folder;
-    } else {
-        $grouped['other'][] = $folder;
-    }
+    $grouped[sidebar_folder_bucket($folder['path'])][] = $folder;
 }
-
-$labels = [
-    'inbox' => 'Inbox',
-    'sent' => 'Sent',
-    'drafts' => 'Drafts',
-    'other' => 'Folders',
-    'trash' => 'Trash',
-];
 
 $composeHref = url('compose');
 $composeActive = $activeFolder ?? '';
@@ -48,102 +20,93 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
     $composeHref = url('compose') . '?return_folder=' . rawurlencode(encode_folder_path($composeActive));
 }
 
+$renderFolderLink = static function (array $folder, string $bucket) use ($activeFolder, $unreadCounts): void {
+    $displayName = sidebar_folder_label($folder, $bucket);
+    $isActive = ($activeFolder ?? '') === $folder['path'];
+    $icon = folder_icon_type($folder['path']);
+    $unread = folder_shows_unread_badge($folder['path'])
+        ? (int) ($unreadCounts[$folder['path']] ?? 0)
+        : 0;
+    ?>
+    <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
+       href="<?= e(folder_url($folder['path'])) ?>"
+       data-folder-path="<?= e($folder['path']) ?>"
+       data-folder-b64="<?= e(encode_folder_path($folder['path'])) ?>"
+       data-ajax-folder="1">
+        <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
+        <span class="sidebar-link-text"><?= e($displayName) ?></span>
+        <?php if ($unread > 0): ?>
+            <span class="folder-badge"><?= $unread > 99 ? '99+' : $unread ?></span>
+        <?php endif; ?>
+    </a>
+    <?php
+};
+
+$otherUnread = 0;
+foreach ($grouped['other'] as $folder) {
+    if (folder_shows_unread_badge($folder['path'])) {
+        $otherUnread += (int) ($unreadCounts[$folder['path']] ?? 0);
+    }
+}
+$foldersOpen = false;
+foreach ($grouped['other'] as $folder) {
+    if (($activeFolder ?? '') === $folder['path']) {
+        $foldersOpen = true;
+        break;
+    }
+}
+
 ?>
 
 <nav class="sidebar-nav">
     <a class="btn btn-primary btn-compose" href="<?= e($composeHref) ?>" id="compose-link">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
         Compose
     </a>
 
     <div class="sidebar-groups" id="folder-sidebar-list">
-        <?php foreach ($groupOrder as $group): ?>
-            <?php if (empty($grouped[$group])) continue; ?>
-            <?php
-            $groupUnread = 0;
-            foreach ($grouped[$group] as $folder) {
-                if (folder_shows_unread_badge($folder['path'])) {
-                    $groupUnread += (int) ($unreadCounts[$folder['path']] ?? 0);
-                }
-            }
-            $isCollapsible = !in_array($group, $fixedGroups, true);
-            $isOpen = $isCollapsible ? false : true;
-            if ($isCollapsible) {
-                foreach ($grouped[$group] as $folder) {
-                    if (($activeFolder ?? '') === $folder['path']) {
-                        $isOpen = true;
-                        break;
-                    }
-                }
-            }
-            ?>
-            <div class="sidebar-group<?= $isOpen ? ' is-open' : '' ?><?= $isCollapsible ? ' is-collapsible' : ' is-fixed' ?>" data-group="<?= e($group) ?>">
-                <?php if ($isCollapsible): ?>
-                    <?php if ($group === 'other'): ?>
-                        <div class="sidebar-divider" aria-hidden="true"></div>
-                    <?php endif; ?>
-                    <button type="button" class="sidebar-group-toggle" aria-expanded="<?= $isOpen ? 'true' : 'false' ?>">
-                        <span class="sidebar-group-chevron-btn" aria-hidden="true">
-                            <svg class="sidebar-group-chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-                        </span>
-                        <?php if ($group === 'other'): ?>
-                            <span class="sidebar-group-icon folder-icon folder-icon-folder" aria-hidden="true"></span>
-                        <?php endif; ?>
-                        <span class="sidebar-group-title"><?= e($labels[$group]) ?></span>
-                        <?php if ($groupUnread > 0): ?>
-                            <span class="folder-badge folder-badge-sm"><?= $groupUnread > 99 ? '99+' : $groupUnread ?></span>
-                        <?php endif; ?>
-                    </button>
-                <?php endif; ?>
-                <div class="sidebar-group-items">
-                    <?php foreach ($grouped[$group] as $folder): ?>
-                        <?php
-                        $displayName = $folder['path'] === 'INBOX' ? 'Inbox' : preg_replace('/^INBOX\./', '', $folder['name']);
-                        $isActive = ($activeFolder ?? '') === $folder['path'];
-                        $icon = folder_icon_type($folder['path']);
-                        $unread = folder_shows_unread_badge($folder['path'])
-                            ? (int) ($unreadCounts[$folder['path']] ?? 0)
-                            : 0;
-                        ?>
-                        <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
-                           href="<?= e(folder_url($folder['path'])) ?>"
-                           data-folder-path="<?= e($folder['path']) ?>"
-                           data-folder-b64="<?= e(encode_folder_path($folder['path'])) ?>"
-                           data-ajax-folder="1">
-                            <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
-                            <span class="sidebar-link-text"><?= e($displayName) ?></span>
-                            <?php if ($unread > 0): ?>
-                                <span class="folder-badge"><?= $unread > 99 ? '99+' : $unread ?></span>
-                            <?php endif; ?>
-                        </a>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        <?php endforeach; ?>
+        <div class="sidebar-primary-folders">
+            <?php foreach ($primaryOrder as $bucket): ?>
+                <?php foreach ($grouped[$bucket] as $folder): ?>
+                    <?php $renderFolderLink($folder, $bucket); ?>
+                <?php endforeach; ?>
+            <?php endforeach; ?>
+        </div>
 
-        <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
+        <?php if ($grouped['other'] !== []): ?>
             <div class="sidebar-divider" aria-hidden="true"></div>
-            <div class="sidebar-group is-open is-collapsible" data-group="admin">
-                <!-- <button type="button" class="sidebar-group-toggle" aria-expanded="true">
+            <div class="sidebar-group<?= $foldersOpen ? ' is-open' : '' ?> is-collapsible" data-group="other">
+                <button type="button" class="sidebar-group-toggle" aria-expanded="<?= $foldersOpen ? 'true' : 'false' ?>">
                     <span class="sidebar-group-chevron-btn" aria-hidden="true">
                         <svg class="sidebar-group-chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
                     </span>
-                    <span class="sidebar-group-icon folder-icon folder-icon-admin-section" aria-hidden="true"></span>
-                    <span class="sidebar-group-title">Admin</span>
-                </button> -->
+                    <span class="sidebar-group-icon folder-icon folder-icon-folder" aria-hidden="true"></span>
+                    <span class="sidebar-group-title">Folders</span>
+                    <?php if ($otherUnread > 0): ?>
+                        <span class="folder-badge folder-badge-sm"><?= $otherUnread > 99 ? '99+' : $otherUnread ?></span>
+                    <?php endif; ?>
+                </button>
                 <div class="sidebar-group-items">
-                    <a class="sidebar-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
-                       href="<?= e(url('admin')) ?>">
-                        <span class="folder-icon folder-icon-admin" aria-hidden="true"></span>
-                        <span class="sidebar-link-text">Admin panel</span>
-                    </a>
-                    <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
-                       href="<?= e(url('status')) ?>">
-                        <span class="folder-icon folder-icon-connection" aria-hidden="true"></span>
-                        <span class="sidebar-link-text">Connection status</span>
-                    </a>
+                    <?php foreach ($grouped['other'] as $folder): ?>
+                        <?php $renderFolderLink($folder, 'other'); ?>
+                    <?php endforeach; ?>
                 </div>
             </div>
         <?php endif; ?>
     </div>
+
+    <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
+        <div class="sidebar-footer">
+            <a class="sidebar-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
+               href="<?= e(url('admin')) ?>">
+                <span class="folder-icon folder-icon-admin" aria-hidden="true"></span>
+                <span class="sidebar-link-text">Admin panel</span>
+            </a>
+            <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
+               href="<?= e(url('status')) ?>">
+                <span class="folder-icon folder-icon-connection" aria-hidden="true"></span>
+                <span class="sidebar-link-text">Connection status</span>
+            </a>
+        </div>
+    <?php endif; ?>
 </nav>
