@@ -876,8 +876,13 @@ class MailController
         }
 
         $aliasService = new AliasService();
-        $replyFrom = $aliasService->resolveReplyAlias($message['delivered_to'] ?? null, $message['to'] ?? null)
-            ?? $aliasService->userAlias(Auth::user()['id'] ?? null);
+        $userId = Auth::user()['id'] ?? null;
+        if (is_draft_folder($folderPath)) {
+            $replyFrom = $aliasService->resolveAllowedFrom($message['from'] ?? null, $userId);
+        } else {
+            $replyFrom = $aliasService->resolveReplyAlias($message['delivered_to'] ?? null, $message['to'] ?? null)
+                ?? $aliasService->userAlias($userId);
+        }
 
         $prefs = user_preferences();
 

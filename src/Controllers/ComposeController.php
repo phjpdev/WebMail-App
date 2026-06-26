@@ -56,7 +56,10 @@ class ComposeController
         verify_csrf_or_fail();
         releaseSessionLock();
 
-        $fromEmail = trim($_POST['from_email'] ?? config('mail')['mailbox_email']);
+        $fromEmail = (new AliasService())->resolveAllowedFrom(
+            trim($_POST['from_email'] ?? ''),
+            Auth::user()['id'] ?? null
+        );
         $to = trim($_POST['to'] ?? '');
         $cc = trim($_POST['cc'] ?? '');
         $subject = trim($_POST['subject'] ?? '');
@@ -144,7 +147,10 @@ class ComposeController
         $subject = trim($_POST['subject'] ?? '');
         $body = trim($_POST['body'] ?? '');
         $bodyHtml = trim($_POST['body_html'] ?? '');
-        $fromEmail = trim($_POST['from_email'] ?? config('mail')['mailbox_email']);
+        $fromEmail = (new AliasService())->resolveAllowedFrom(
+            trim($_POST['from_email'] ?? ''),
+            Auth::user()['id'] ?? null
+        );
         $folderPath = decode_folder_path($_POST['folder'] ?? '');
         $uid = (int) ($_POST['uid'] ?? 0);
         $returnFolder = decode_folder_path($_POST['return_folder'] ?? '');
@@ -439,14 +445,24 @@ class ComposeController
             redirect('folder/' . encode_folder_path($folderPath));
         }
 
+        $cached = MailCacheService::getBody($folderPath, $uid);
+        $aliasService = new AliasService();
+        $userId = Auth::user()['id'] ?? null;
+        $savedFrom = (string) ($cached['from'] ?? '');
+        $mimeFrom = (string) ($message['from'] ?? '');
+        $fromEmail = $aliasService->resolveAllowedFrom(
+            $savedFrom !== '' ? $savedFrom : $mimeFrom,
+            $userId
+        );
+
         $this->showForm('compose', [
             'to' => $message['to'] ?? '',
             'cc' => $message['cc'] ?? '',
             'bcc' => '',
             'subject' => $message['subject'] ?? '',
-            'body' => $message['plain'] ?? '',
-            'body_html' => $message['html'] ?? '',
-            'from_email' => (new AliasService())->userAlias(Auth::user()['id'] ?? null),
+            'body' => (string) ($cached['plain'] ?? $message['plain'] ?? ''),
+            'body_html' => (string) ($cached['html'] ?? $message['html'] ?? ''),
+            'from_email' => $fromEmail,
             // Carry the source draft so it can be removed once re-sent.
             'draftFolder' => $folderPath,
             'draftUid' => $uid,
@@ -810,6 +826,7 @@ class ComposeController
         $mail = new PHPMailer(true);
         $mail->CharSet = PHPMailer::CHARSET_UTF8;
         $mail->setFrom($from, $aliasService->getDisplayName($from) ?: '');
+        $mail->addCustomHeader('X-DJ-Send-As', $from);
         $this->applyDraftRecipients($mail, $to, $cc, $from);
         $mail->Subject = $subject;
         $mail->MessageID = $msgId;

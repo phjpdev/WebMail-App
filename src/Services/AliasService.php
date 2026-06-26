@@ -109,6 +109,20 @@ class AliasService
         return $sharedMatch;
     }
 
+    public function resolveAllowedFrom(?string $preferred, ?int $userId = null): string
+    {
+        $email = $this->normalizeEmail($preferred);
+        if ($email !== '') {
+            foreach ($this->listActive() as $alias) {
+                if (strcasecmp($alias['email'], $email) === 0) {
+                    return $alias['email'];
+                }
+            }
+        }
+
+        return $this->userAlias($userId);
+    }
+
     public function getDisplayName(string $email): string
     {
         foreach ($this->listActive() as $alias) {
@@ -132,5 +146,12 @@ class AliasService
         preg_match_all('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $header, $matches);
 
         return array_unique($matches[0] ?? []);
+    }
+
+    private function normalizeEmail(?string $value): string
+    {
+        $emails = $this->extractEmails($value);
+
+        return $emails[0] ?? '';
     }
 }

@@ -256,6 +256,12 @@ class ImapService
         if (isset($header->from[0])) {
             $from = $header->from[0]->mailbox . '@' . $header->from[0]->host;
         }
+        $sendAs = $this->extractHeaderValue($rawHeader, 'X-DJ-Send-As');
+        if ($sendAs !== null && $sendAs !== '') {
+            if (preg_match('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $sendAs, $matches)) {
+                $from = $matches[0];
+            }
+        }
 
         $to = $this->formatAddressList($header->to ?? []);
         $cc = $this->formatAddressList($header->cc ?? []);
