@@ -1051,11 +1051,9 @@ class ComposeController
             $senderFolder = folder_for_alias_email($fromEmail);
             reconcile_alias_self_sent_echoes(
                 $imap,
-                array_values(array_unique(array_filter(array_merge(
-                    $destPaths,
-                    $routedPaths,
+                array_values(array_unique(array_filter(
                     $senderFolder !== null ? [$senderFolder] : []
-                ))))
+                )))
             );
         }
 

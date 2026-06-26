@@ -536,9 +536,9 @@ class MailCacheService
 
         if (!self::hasFolderData($folderPath)) {
             if ($pageMessages !== null && $pageUnread === 0 && $session > 0) {
-                FolderCache::setUnreadCount($folderPath, 0);
-
-                return 0;
+                // Keep the session badge until the folder is indexed — do not
+                // clear optimistic/post-delivery counts while cache is empty.
+                return $session;
             }
 
             return $session;
@@ -604,7 +604,9 @@ class MailCacheService
             return false;
         }
 
-        FolderCache::setUnreadCount($folderPath, self::countUnseenInIndex($folderPath));
+        $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        $indexUnread = self::countUnseenInIndex($folderPath);
+        FolderCache::setUnreadCount($folderPath, max($indexUnread, $session));
 
         return true;
     }

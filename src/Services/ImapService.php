@@ -1034,6 +1034,7 @@ class ImapService
         string|array $fromEmails,
         int $limit = 20,
         ?string $sentMessageId = null,
+        bool $includeSharedMailbox = true,
     ): void {
         if ($inboxPath === '' || !$this->openFolder($inboxPath)) {
             return;
@@ -1049,9 +1050,11 @@ class ImapService
             }
         }
 
-        $mailbox = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
-        if ($mailbox !== '' && !in_array($mailbox, $needles, true)) {
-            $needles[] = $mailbox;
+        if ($includeSharedMailbox) {
+            $mailbox = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
+            if ($mailbox !== '' && !in_array($mailbox, $needles, true)) {
+                $needles[] = $mailbox;
+            }
         }
 
         if ($needles === [] && $normalizedId === '') {

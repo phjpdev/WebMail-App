@@ -639,7 +639,7 @@ function reconcile_alias_self_sent_echoes(App\Services\ImapService $imap, array 
             continue;
         }
 
-        $imap->suppressInboundEchoOfSentMessage($path, $alias, $limit);
+        $imap->suppressInboundEchoOfSentMessage($path, $alias, $limit, null, false);
         App\Services\MailCacheService::reconcileBadgeFromIndex($path);
     }
 }
