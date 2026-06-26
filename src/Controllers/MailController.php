@@ -670,7 +670,7 @@ class MailController
 
         $html = view_string('mail/pane-read', $context);
 
-        echo json_encode([
+        $payload = [
             'ok' => true,
             'uid' => $uid,
             'subject' => $context['message']['subject'] ?: '(no subject)',
@@ -679,14 +679,13 @@ class MailController
             'html' => $html,
             'unread_counts' => $context['unreadCounts'],
             'folder_unread' => (int) ($context['unreadCounts'][$folderPath] ?? 0),
-        ]);
+        ];
 
         if ($deferred !== null) {
-            if (function_exists('fastcgi_finish_request')) {
-                fastcgi_finish_request();
-            }
-            $deferred();
+            json_response_then($payload, $deferred);
         }
+
+        json_response($payload);
     }
 
     /**

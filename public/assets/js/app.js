@@ -91,6 +91,8 @@
     var afterSendBadgePollInFlight = false;
     var attachmentHintsTimer = null;
     var panePrefetchInFlight = {};
+    var paneHoverPrefetchTimer = null;
+    var paneHoverPrefetchUid = null;
     var pendingRemovalUntil = {};
     var PENDING_REMOVAL_MS = 120000;
     var PANE_CACHE_MAX = 24;
@@ -244,7 +246,6 @@
         setRowAriaSelected(uid);
         var rows = rowsForUid(uid);
         if (rows[0]) {
-            warmMessageBodyForRow(rows[0]);
             scheduleComposePrefetch(rows[0]);
         }
         updateCommandBar();
@@ -672,6 +673,40 @@
         loadAttachmentHints(root);
     }
 
+    function prefetchUnreadInList(root) {
+        if (!useReadingPane() || mailSyncPaused || isPostSendQuiet()) return;
+        var scope = root && root.querySelectorAll ? root : document;
+        var unread = scope.querySelectorAll('.mail-row.mail-unread[data-uid], .mail-card.mail-unread[data-uid]');
+        var warmed = 0;
+        for (var i = 0; i < unread.length && warmed < 3; i++) {
+            var uid = parseInt(unread[i].getAttribute('data-uid'), 10);
+            if (!uid || getPaneCache(uid)) continue;
+            warmMessageBodyForRow(unread[i]);
+            prefetchPane(uid);
+            warmed++;
+        }
+    }
+
+    function scheduleUnreadPanePrefetch(row) {
+        if (!row || !useReadingPane() || mailSyncPaused || isPostSendQuiet()) return;
+        if (row.getAttribute('data-seen') === '1') return;
+        var uid = parseInt(row.getAttribute('data-uid'), 10);
+        if (!uid || getPaneCache(uid)) return;
+
+        if (paneHoverPrefetchTimer) window.clearTimeout(paneHoverPrefetchTimer);
+        paneHoverPrefetchUid = uid;
+        paneHoverPrefetchTimer = window.setTimeout(function () {
+            paneHoverPrefetchTimer = null;
+            var targetUid = paneHoverPrefetchUid;
+            paneHoverPrefetchUid = null;
+            if (!targetUid) return;
+            var targetRow = rowsForUid(targetUid)[0];
+            if (!targetRow || targetRow.getAttribute('data-seen') === '1') return;
+            warmMessageBodyForRow(targetRow);
+            prefetchPane(targetUid);
+        }, 80);
+    }
+
     function prefetchVisiblePanes() {
         if (!useReadingPane() || isPostSendQuiet()) return;
         var row = document.querySelector('.mail-row.is-selected, .mail-card.is-selected');
@@ -688,6 +723,7 @@
         initPerPageSelect();
         initMailSync();
         scheduleAttachmentHints(document);
+        prefetchUnreadInList(document);
     }
 
     function loadFolderAjax(folderB64, pushHistory, forceRefresh) {
@@ -1308,6 +1344,12 @@
             }
             showLoading();
             window.location = row.getAttribute('data-href');
+        });
+        row.addEventListener('mouseenter', function () {
+            scheduleUnreadPanePrefetch(row);
+        });
+        row.addEventListener('focusin', function () {
+            scheduleUnreadPanePrefetch(row);
         });
         // Keyboard activation for role="link" cards (mobile list a11y).
         if (row.getAttribute('role') === 'link' || row.getAttribute('role') === 'option') {
@@ -4532,6 +4574,7 @@
         initPerPageSelect();
         initContextMenu();
         initReadingPane();
+        prefetchUnreadInList(document);
         initAjaxFolderNav();
         initStatusPage();
         initMailBootstrap();
