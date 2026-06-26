@@ -4472,6 +4472,35 @@ body:has(.mail-workspace) {
     line-height: 1.35;
 }
 
+.mail-row-snippet {
+    margin-top: 0.125rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted, var(--color-text-secondary));
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.35;
+}
+
+.mail-row-draft-badge {
+    flex-shrink: 0;
+    margin-right: 0.35rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #ef4444;
+    letter-spacing: 0.01em;
+}
+
+.mail-unread .mail-row-snippet {
+    color: var(--color-text-secondary);
+}
+
+.mail-row--outlook.mail-unread .mail-row-snippet {
+    color: var(--color-text);
+    opacity: 0.72;
+}
+
 .mail-row--outlook .mail-kebab {
     flex-shrink: 0;
     opacity: 0;

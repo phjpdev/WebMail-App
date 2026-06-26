@@ -36,10 +36,13 @@ class MailCacheService
         $offset = ($page - 1) * $perPage;
 
         $rows = Database::query(
-            'SELECT imap_uid, from_addr, subject, msg_date, seen, flagged, has_attachment, size
-             FROM mail_index
-             WHERE folder_path = ?
-             ORDER BY msg_date DESC, imap_uid DESC
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                    b.plain_body, b.html_body, b.to_addrs
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+                ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path = ?
+             ORDER BY i.msg_date DESC, i.imap_uid DESC
              LIMIT ' . (int) $perPage . ' OFFSET ' . (int) $offset,
             [$folderPath]
         )->fetchAll();
@@ -50,7 +53,7 @@ class MailCacheService
 
         $messages = [];
         foreach ($rows as $row) {
-            $messages[] = self::indexRowToMessage($row);
+            $messages[] = self::indexRowToMessage($row, $folderPath);
         }
 
         return [
@@ -330,6 +333,67 @@ class MailCacheService
         );
 
         self::upsertIndexRow($folderPath, $message);
+    }
+
+    /**
+     * Add list snippets / draft recipients from cached bodies when missing.
+     *
+     * @param list<array<string, mixed>> $messages
+     * @return list<array<string, mixed>>
+     */
+    public static function enrichListMessages(string $folderPath, array $messages): array
+    {
+        if ($messages === []) {
+            return $messages;
+        }
+
+        $uids = array_values(array_unique(array_filter(array_map(
+            static fn (array $m): int => (int) ($m['uid'] ?? 0),
+            $messages
+        ), static fn (int $u): bool => $u > 0)));
+        if ($uids === []) {
+            return $messages;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$folderPath], $uids);
+        $rows = Database::query(
+            "SELECT imap_uid, plain_body, html_body, to_addrs
+             FROM mail_bodies
+             WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        )->fetchAll();
+
+        $bodies = [];
+        foreach ($rows as $row) {
+            $bodies[(int) $row['imap_uid']] = $row;
+        }
+
+        $isDraft = is_draft_folder($folderPath);
+        foreach ($messages as &$msg) {
+            $uid = (int) ($msg['uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+
+            if (!empty($msg['snippet'])) {
+                continue;
+            }
+
+            $body = $bodies[$uid] ?? null;
+            if ($body === null) {
+                continue;
+            }
+
+            $msg['snippet'] = mail_list_snippet($body['plain_body'] ?? null, $body['html_body'] ?? null);
+            if ($isDraft && !empty($body['to_addrs'])) {
+                $msg['to'] = (string) $body['to_addrs'];
+                $msg['list_from'] = format_mail_from((string) $body['to_addrs']);
+            }
+        }
+        unset($msg);
+
+        return $messages;
     }
 
     public static function updateIndexSeen(string $folderPath, int $uid, bool $seen): void
@@ -729,11 +793,20 @@ class MailCacheService
      * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
-    private static function indexRowToMessage(array $row): array
+    private static function indexRowToMessage(array $row, string $folderPath): array
     {
+        $from = (string) ($row['from_addr'] ?? '');
+        $to = (string) ($row['to_addrs'] ?? '');
+        $snippet = mail_list_snippet($row['plain_body'] ?? null, $row['html_body'] ?? null);
+        $isDraft = is_draft_folder($folderPath);
+        $listFrom = ($isDraft && $to !== '') ? format_mail_from($to) : format_mail_from($from);
+
         return [
             'uid' => (int) $row['imap_uid'],
-            'from' => (string) ($row['from_addr'] ?? ''),
+            'from' => $from,
+            'to' => $to,
+            'list_from' => $listFrom,
+            'snippet' => $snippet,
             'subject' => (string) ($row['subject'] ?? '(no subject)'),
             'date' => $row['msg_date'] ?? '',
             'seen' => (bool) ($row['seen'] ?? false),

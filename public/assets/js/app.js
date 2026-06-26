@@ -1025,8 +1025,11 @@
         var editor = form.querySelector('#body-editor');
         var bodyField = form.querySelector('#body');
         var htmlField = form.querySelector('#body_html');
-        if (htmlField && editor) htmlField.value = editor.innerHTML;
-        if (bodyField && editor) bodyField.value = editor.innerText;
+        if (!editor) return;
+        var html = editor.innerHTML;
+        var text = (editor.innerText || editor.textContent || '').replace(/\u00a0/g, ' ').trim();
+        if (htmlField) htmlField.value = html;
+        if (bodyField) bodyField.value = text !== '' ? text : (editor.innerText || editor.textContent || '');
     }
 
     function setButtonLoading(btn, loading, loadingLabel) {
@@ -1163,6 +1166,9 @@
                 e.preventDefault();
                 closeComposePanel(true);
             }
+            if (e.target.closest('button[formaction*="draft"]')) {
+                syncComposeEditor(form);
+            }
         });
 
         form.addEventListener('submit', function (e) {
@@ -1208,6 +1214,26 @@
                     if (isDraft) {
                         if (data && data.unread_counts) {
                             applyUnreadCounts(data.unread_counts);
+                        }
+                        if (data && data.draft_folder) {
+                            var draftFolderField = form.querySelector('input[name="draft_folder"]');
+                            if (!draftFolderField) {
+                                draftFolderField = document.createElement('input');
+                                draftFolderField.type = 'hidden';
+                                draftFolderField.name = 'draft_folder';
+                                form.appendChild(draftFolderField);
+                            }
+                            draftFolderField.value = data.draft_folder;
+                        }
+                        if (data && data.draft_uid) {
+                            var draftUidField = form.querySelector('input[name="draft_uid"]');
+                            if (!draftUidField) {
+                                draftUidField = document.createElement('input');
+                                draftUidField.type = 'hidden';
+                                draftUidField.name = 'draft_uid';
+                                form.appendChild(draftUidField);
+                            }
+                            draftUidField.value = String(data.draft_uid);
                         }
                         if (currentFolderKind() === 'draft') {
                             scheduleMailPoll(true);
@@ -2078,7 +2104,7 @@
 
     function buildDesktopRow(msg, isNew) {
         var row = document.createElement('div');
-        row.className = 'mail-row mail-row--outlook' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (isNew ? ' mail-row-new' : '');
+        row.className = 'mail-row mail-row--outlook' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (msg.is_draft ? ' mail-row--draft' : '') + (isNew ? ' mail-row-new' : '');
         row.setAttribute('role', 'option');
         row.setAttribute('tabindex', '-1');
         row.setAttribute('aria-selected', 'false');
@@ -2091,6 +2117,13 @@
         if (msg.forward_url) row.setAttribute('data-forward-url', msg.forward_url);
 
         var fromText = msg.from || 'Unknown';
+        var snippet = msg.snippet || '';
+        var draftBadge = msg.is_draft
+            ? '<span class="mail-row-draft-badge">[Draft]</span>'
+            : '';
+        var snippetHtml = snippet
+            ? '<div class="mail-row-snippet" title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) + '</div>'
+            : '';
         var initial = fromText.trim().charAt(0).toUpperCase() || '?';
         var color = avatarColor(fromText);
         var attachHtml = msg.has_attachment
@@ -2107,10 +2140,11 @@
             '<div class="mail-row-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
             '<div class="mail-row-body">' +
                 '<div class="mail-row-text">' +
-                    '<div class="mail-row-line1">' +
+                    '<div class="mail-row-line1">' + draftBadge +
                         '<span class="mail-row-from">' + escapeHtml(fromText) + '</span>' +
                     '</div>' +
                     '<div class="mail-row-subject">' + escapeHtml(msg.subject) + '</div>' +
+                    snippetHtml +
                 '</div>' +
                 '<span class="mail-row-meta">' + attachHtml + flagHtml +
                     '<span class="mail-row-date">' + escapeHtml(msg.date) + '</span>' +
@@ -2124,7 +2158,7 @@
 
     function buildMobileCard(msg, isNew) {
         var a = document.createElement('div');
-        a.className = 'mail-card' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (isNew ? ' mail-row-new' : '');
+        a.className = 'mail-card' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (msg.is_draft ? ' mail-card--draft' : '') + (isNew ? ' mail-row-new' : '');
         a.setAttribute('role', 'option');
         a.setAttribute('tabindex', '0');
         a.setAttribute('aria-selected', 'false');
@@ -2136,6 +2170,13 @@
         if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
         if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
         var fromText = msg.from || 'Unknown';
+        var snippet = msg.snippet || '';
+        var draftBadge = msg.is_draft
+            ? '<span class="mail-row-draft-badge">[Draft]</span>'
+            : '';
+        var snippetHtml = snippet
+            ? '<div class="mail-row-snippet" title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) + '</div>'
+            : '';
         var initial = fromText.trim().charAt(0).toUpperCase() || '?';
         var color = avatarColor(fromText);
         var attachHtml = msg.has_attachment
@@ -2149,12 +2190,13 @@
             '</div>' +
             '<div class="mail-card-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
             '<div class="mail-card-body">' +
-                '<div class="mail-card-line1">' +
+                '<div class="mail-card-line1">' + draftBadge +
                     '<span class="mail-card-from">' + escapeHtml(fromText) + '</span>' +
                     '<span class="mail-card-meta">' + attachHtml + flagHtml +
                         '<span class="mail-card-date">' + escapeHtml(msg.date) + '</span></span>' +
                 '</div>' +
                 '<div class="mail-card-subject">' + escapeHtml(msg.subject) + '</div>' +
+                snippetHtml +
             '</div>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button>';
         bindMailRow(a);
@@ -3345,6 +3387,14 @@
         var toolbar = form.querySelector('#rich-toolbar');
         if (!editor) return;
 
+        function syncEditorFields() {
+            if (!editor) return;
+            var html = editor.innerHTML;
+            var text = (editor.innerText || editor.textContent || '').replace(/\u00a0/g, ' ').trim();
+            if (htmlField) htmlField.value = html;
+            if (bodyField) bodyField.value = text !== '' ? text : (editor.innerText || editor.textContent || '');
+        }
+
         if (toolbar) {
             toolbar.addEventListener('click', function (e) {
                 var btn = e.target.closest('button[data-cmd]');
@@ -3362,17 +3412,15 @@
         }
 
         form.addEventListener('submit', function () {
-            if (htmlField) htmlField.value = editor.innerHTML;
-            if (bodyField) bodyField.value = editor.innerText;
+            syncEditorFields();
         });
 
         var draftTimer;
-        form.addEventListener('input', function () {
+        editor.addEventListener('input', function () {
             window.clearTimeout(draftTimer);
-            draftTimer = window.setTimeout(function () {
-                if (htmlField) htmlField.value = editor.innerHTML;
-            }, 60000);
+            draftTimer = window.setTimeout(syncEditorFields, 250);
         });
+        editor.addEventListener('blur', syncEditorFields);
     }
 
     function avatarColor(email) {

@@ -12,6 +12,8 @@ use App\Services\FolderCache;
 use App\Services\ImapService;
 use App\Services\MailCacheService;
 use App\Services\SmtpService;
+use PHPMailer\PHPMailer\Exception as MailerException;
+use PHPMailer\PHPMailer\PHPMailer;
 
 class ComposeController
 {
@@ -61,7 +63,13 @@ class ComposeController
         $body = trim($_POST['body'] ?? '');
         $bodyHtml = trim($_POST['body_html'] ?? '');
 
-        $raw = $this->buildDraftRaw($fromEmail, $to, $cc, $subject, $body, $bodyHtml);
+        try {
+            $draftContent = $this->buildDraftMessage($fromEmail, $to, $cc, $subject, $body, $bodyHtml);
+        } catch (\Throwable $e) {
+            $this->composeFail('Could not save draft: ' . $e->getMessage());
+        }
+
+        $raw = $draftContent['raw'];
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -98,6 +106,8 @@ class ComposeController
             app_log('Post-draft cache sync failed: ' . $e->getMessage());
         }
 
+        $this->cacheSavedDraftBody($imap, $draftFolder, $fromEmail, $to, $cc, $subject, $draftContent);
+
         if (!$isReplacement) {
             FolderCache::bumpUnread($draftFolder, 1);
         }
@@ -105,11 +115,14 @@ class ComposeController
         FolderCache::refreshPaths([$draftFolder]);
         $unreadCounts = FolderCache::sidebarUnreadCounts();
 
+        $savedDraftUid = $this->resolveLatestDraftUid($imap, $draftFolder);
+
         if (wants_json()) {
             json_response([
                 'ok' => true,
                 'message' => 'Draft saved.',
                 'draft_folder' => encode_folder_path($draftFolder),
+                'draft_uid' => $savedDraftUid > 0 ? $savedDraftUid : null,
                 'unread_counts' => $unreadCounts,
             ]);
         }
@@ -770,56 +783,144 @@ class ComposeController
         return ['files' => $files, 'error' => null];
     }
 
-    private function buildDraftRaw(
+    /**
+     * @return array{raw: string, message_id: string, plain: string, html: string|null}
+     */
+    private function buildDraftMessage(
         string $from,
         string $to,
         string $cc,
         string $subject,
         string $body,
         string $bodyHtml
-    ): string {
-        $date = date('r');
+    ): array {
+        $plain = $this->resolveDraftPlainBody($body, $bodyHtml);
+        $html = HtmlSanitizer::sanitize($bodyHtml);
+        if ($html !== '' && $plain === '') {
+            $plain = trim(html_entity_decode(strip_tags(
+                str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>'], "\n", $html),
+                ENT_QUOTES | ENT_HTML5,
+                'UTF-8'
+            )));
+        }
+
         $msgId = '<draft.' . bin2hex(random_bytes(8)) . '@webmail.local>';
-        $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
+        $aliasService = new AliasService();
 
-        $headers = "From: {$from}\r\n";
-        if ($to !== '') {
-            $headers .= "To: {$to}\r\n";
-        }
-        if ($cc !== '') {
-            $headers .= "Cc: {$cc}\r\n";
-        }
-        $headers .= "Subject: {$encodedSubject}\r\n";
-        $headers .= "Date: {$date}\r\n";
-        $headers .= "Message-ID: {$msgId}\r\n";
-        $headers .= "MIME-Version: 1.0\r\n";
+        $mail = new PHPMailer(true);
+        $mail->CharSet = PHPMailer::CHARSET_UTF8;
+        $mail->setFrom($from, $aliasService->getDisplayName($from) ?: '');
+        $this->applyDraftRecipients($mail, $to, $cc, $from);
+        $mail->Subject = $subject;
+        $mail->MessageID = $msgId;
 
-        // Save HTML drafts as multipart/alternative so they re-open with full
-        // formatting (plus a plain-text fallback), not as raw markup text.
-        if ($bodyHtml !== '') {
-            $boundary = 'draft-' . bin2hex(random_bytes(8));
-            $plain = $body !== '' ? $body : trim(strip_tags($bodyHtml));
-            $sanitizedHtml = HtmlSanitizer::sanitize($bodyHtml);
-
-            $headers .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
-            $headers .= "--{$boundary}\r\n";
-            $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
-            $headers .= "Content-Transfer-Encoding: base64\r\n\r\n";
-            $headers .= chunk_split(base64_encode($plain)) . "\r\n";
-            $headers .= "--{$boundary}\r\n";
-            $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
-            $headers .= "Content-Transfer-Encoding: base64\r\n\r\n";
-            $headers .= chunk_split(base64_encode($sanitizedHtml)) . "\r\n";
-            $headers .= "--{$boundary}--\r\n";
-
-            return $headers;
+        if ($html !== '') {
+            $mail->isHTML(true);
+            $mail->Body = $html;
+            $mail->AltBody = $plain;
+        } else {
+            $mail->isHTML(false);
+            $mail->Body = $plain;
         }
 
-        $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
-        $headers .= "Content-Transfer-Encoding: base64\r\n\r\n";
-        $headers .= chunk_split(base64_encode($body));
+        try {
+            $mail->preSend();
+        } catch (MailerException $e) {
+            throw new \RuntimeException('Could not build draft: ' . $e->getMessage(), 0, $e);
+        }
 
-        return $headers;
+        return [
+            'raw' => $mail->getSentMIMEMessage(),
+            'message_id' => $msgId,
+            'plain' => $plain,
+            'html' => $html !== '' ? $html : null,
+        ];
+    }
+
+    private function resolveDraftPlainBody(string $body, string $bodyHtml): string
+    {
+        if ($body !== '') {
+            return $body;
+        }
+
+        if ($bodyHtml === '') {
+            return '';
+        }
+
+        return trim(html_entity_decode(strip_tags(
+            str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>'], "\n", $bodyHtml),
+            ENT_QUOTES | ENT_HTML5,
+            'UTF-8'
+        )));
+    }
+
+    private function applyDraftRecipients(PHPMailer $mail, string $to, string $cc, string $from): void
+    {
+        $hasMailboxRecipient = false;
+
+        foreach (parse_email_list($to)['valid'] as $addr) {
+            $mail->addAddress($addr);
+            $hasMailboxRecipient = true;
+        }
+        if ($to !== '' && !$hasMailboxRecipient) {
+            $mail->addCustomHeader('To', $to);
+        }
+
+        foreach (parse_email_list($cc)['valid'] as $addr) {
+            $mail->addCC($addr);
+            $hasMailboxRecipient = true;
+        }
+        if ($cc !== '' && parse_email_list($cc)['valid'] === []) {
+            $mail->addCustomHeader('Cc', $cc);
+        }
+
+        // PHPMailer requires at least one recipient to assemble MIME.
+        if (!$hasMailboxRecipient && $from !== '') {
+            $mail->addAddress($from);
+        }
+    }
+
+    /**
+     * @param array{message_id: string, plain: string, html: string|null} $draftContent
+     */
+    private function cacheSavedDraftBody(
+        ImapService $imap,
+        string $draftFolder,
+        string $fromEmail,
+        string $to,
+        string $cc,
+        string $subject,
+        array $draftContent,
+    ): void {
+        if ($draftContent['plain'] === '' && ($draftContent['html'] ?? null) === null) {
+            return;
+        }
+
+        $uid = $this->resolveLatestDraftUid($imap, $draftFolder);
+        if ($uid <= 0) {
+            return;
+        }
+
+        MailCacheService::saveBody($draftFolder, [
+            'uid' => $uid,
+            'from' => $fromEmail,
+            'to' => $to,
+            'cc' => $cc,
+            'subject' => $subject,
+            'date' => date('Y-m-d H:i:s'),
+            'message_id' => $draftContent['message_id'],
+            'html' => $draftContent['html'],
+            'plain' => $draftContent['plain'],
+            'attachments' => [],
+            'seen' => false,
+        ]);
+    }
+
+    private function resolveLatestDraftUid(ImapService $imap, string $draftFolder): int
+    {
+        $list = $imap->listMessages($draftFolder, 1, 1);
+
+        return (int) ($list['messages'][0]['uid'] ?? 0);
     }
 
     private function resolveDraftsFolder(): string

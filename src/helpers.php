@@ -801,6 +801,84 @@ function is_trash_folder(string $path): bool
     return folder_icon_type($path) === 'trash';
 }
 
+function is_draft_folder(string $path): bool
+{
+    return folder_icon_type($path) === 'draft';
+}
+
+/**
+ * One-line preview for the message list (draft body snippet, etc.).
+ */
+function mail_list_snippet(?string $plain, ?string $html = null, int $maxLen = 140): string
+{
+    $text = trim((string) $plain);
+    if ($text === '' && $html !== null && trim($html) !== '') {
+        $text = trim(html_entity_decode(strip_tags(
+            str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], "\n", $html),
+            ENT_QUOTES | ENT_HTML5,
+            'UTF-8'
+        )));
+    }
+
+    if ($text === '') {
+        return '';
+    }
+
+    // Prefer the newest reply text above quoted history.
+    $parts = preg_split("/\n\s*On .+ wrote:\s*\n/i", $text, 2);
+    if (is_array($parts) && isset($parts[0])) {
+        $text = trim((string) $parts[0]);
+    }
+
+    $lines = preg_split('/\R/', $text) ?: [];
+    $kept = [];
+    foreach ($lines as $line) {
+        $line = trim((string) $line);
+        if ($line === '' || str_starts_with($line, '>')) {
+            continue;
+        }
+        $kept[] = $line;
+    }
+    if ($kept !== []) {
+        $text = implode(' ', $kept);
+    }
+
+    $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+    $text = trim($text);
+
+    if ($text === '') {
+        return '';
+    }
+
+    if (mb_strlen($text) > $maxLen) {
+        return mb_substr($text, 0, max(1, $maxLen - 1)) . '…';
+    }
+
+    return $text;
+}
+
+/**
+ * @param array<string, mixed> $msg
+ * @return array{is_draft: bool, list_from: string, snippet: string, avatar_from: string}
+ */
+function mail_list_row_display(array $msg, string $folderPath): array
+{
+    $isDraft = is_draft_folder($folderPath);
+    $from = (string) ($msg['from'] ?? '');
+    $to = (string) ($msg['to'] ?? '');
+    $listFrom = (string) ($msg['list_from'] ?? '');
+    if ($listFrom === '') {
+        $listFrom = ($isDraft && $to !== '') ? format_mail_from($to) : format_mail_from($from);
+    }
+
+    return [
+        'is_draft' => $isDraft,
+        'list_from' => $listFrom,
+        'snippet' => (string) ($msg['snippet'] ?? ''),
+        'avatar_from' => ($isDraft && $to !== '') ? $to : $from,
+    ];
+}
+
 /** Trash is a holding area — never show an unread badge in the sidebar or header. */
 function folder_shows_unread_badge(string $path): bool
 {

@@ -170,6 +170,8 @@ class MailController
             $folderData['unread_counts'][$folderPath] = $folderUnread;
         }
 
+        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
+
         $prefs = user_preferences();
 
         return [
@@ -428,14 +430,26 @@ class MailController
             }
         }
 
+        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
+
         $messages = [];
 
         foreach ($list['messages'] as $msg) {
             $uid = (int) $msg['uid'];
+            $isDraft = is_draft_folder($folderPath);
+            $listFrom = (string) ($msg['list_from'] ?? '');
+            if ($listFrom === '') {
+                $to = (string) ($msg['to'] ?? '');
+                $listFrom = ($isDraft && $to !== '')
+                    ? format_mail_from($to)
+                    : format_mail_from($msg['from'] ?? '');
+            }
             $messages[] = [
                 'uid' => $uid,
-                'from' => format_mail_from($msg['from'] ?? ''),
+                'from' => $listFrom,
                 'subject' => $msg['subject'] ?? '(no subject)',
+                'snippet' => (string) ($msg['snippet'] ?? ''),
+                'is_draft' => $isDraft,
                 'date' => format_mail_date($msg['date'] ?? ''),
                 'seen' => (bool) ($msg['seen'] ?? false),
                 'flagged' => (bool) ($msg['flagged'] ?? false),

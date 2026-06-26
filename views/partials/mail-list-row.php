@@ -1,14 +1,16 @@
 <?php
 /**
- * @var array{uid: int, from?: string, subject?: string, date?: string, seen?: bool, flagged?: bool, has_attachment?: bool} $msg
+ * @var array{uid: int, from?: string, to?: string, list_from?: string, snippet?: string, subject?: string, date?: string, seen?: bool, flagged?: bool, has_attachment?: bool} $msg
  * @var string $folderPath
  */
-$fromDisplay = format_mail_from($msg['from'] ?? '');
-$avatarInitial = mail_avatar_initial($msg['from'] ?? '');
-$avatarColor = mail_avatar_color($msg['from'] ?? '');
+$rowDisplay = mail_list_row_display($msg, $folderPath);
+$fromDisplay = $rowDisplay['list_from'];
+$avatarInitial = mail_avatar_initial($rowDisplay['avatar_from']);
+$avatarColor = mail_avatar_color($rowDisplay['avatar_from']);
+$snippet = $rowDisplay['snippet'];
 $uid = (int) $msg['uid'];
 ?>
-<div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
+<div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= $rowDisplay['is_draft'] ? ' mail-row--draft' : '' ?>"
     role="option"
     tabindex="-1"
     aria-selected="false"
@@ -26,9 +28,15 @@ $uid = (int) $msg['uid'];
     <div class="mail-row-body">
         <div class="mail-row-text">
             <div class="mail-row-line1">
+                <?php if ($rowDisplay['is_draft']): ?>
+                    <span class="mail-row-draft-badge">[Draft]</span>
+                <?php endif; ?>
                 <span class="mail-row-from" title="<?= e($fromDisplay) ?>"><?= e($fromDisplay) ?></span>
             </div>
             <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject'] ?? '(no subject)') ?></div>
+            <?php if ($snippet !== ''): ?>
+                <div class="mail-row-snippet" title="<?= e($snippet) ?>"><?= e($snippet) ?></div>
+            <?php endif; ?>
         </div>
         <span class="mail-row-meta">
             <?php if (!empty($msg['has_attachment'])): ?>

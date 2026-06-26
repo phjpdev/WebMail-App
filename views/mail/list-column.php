@@ -104,7 +104,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
 
     <div class="mail-list-mobile" id="mail-list-mobile"<?= empty($messages) ? ' hidden' : '' ?> role="listbox" aria-label="Messages">
         <?php foreach ($messages as $msg): ?>
-            <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?>"
+            <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= is_draft_folder($folderPath) ? ' mail-card--draft' : '' ?>"
                role="option" tabindex="0" aria-selected="false"
                data-uid="<?= (int) $msg['uid'] ?>"
                data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
@@ -114,9 +114,11 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
                 <?php
-                $fromDisplay = format_mail_from($msg['from'] ?? '');
-                $avatarInitial = mail_avatar_initial($msg['from'] ?? '');
-                $avatarColor = mail_avatar_color($msg['from'] ?? '');
+                $rowDisplay = mail_list_row_display($msg, $folderPath);
+                $fromDisplay = $rowDisplay['list_from'];
+                $avatarInitial = mail_avatar_initial($rowDisplay['avatar_from']);
+                $avatarColor = mail_avatar_color($rowDisplay['avatar_from']);
+                $snippet = $rowDisplay['snippet'];
                 ?>
                 <div class="mail-card-check mail-row-check" onclick="event.stopPropagation()">
                     <input type="checkbox" class="mail-check" value="<?= (int) $msg['uid'] ?>" aria-label="Select message">
@@ -124,6 +126,9 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                 <div class="mail-card-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
                 <div class="mail-card-body">
                     <div class="mail-card-line1">
+                        <?php if ($rowDisplay['is_draft']): ?>
+                            <span class="mail-row-draft-badge">[Draft]</span>
+                        <?php endif; ?>
                         <span class="mail-card-from" title="<?= e($fromDisplay) ?>"><?= e($fromDisplay) ?></span>
                         <span class="mail-card-meta">
                             <?php if (!empty($msg['has_attachment'])): ?>
@@ -138,6 +143,9 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                         </span>
                     </div>
                     <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject']) ?></div>
+                    <?php if ($snippet !== ''): ?>
+                        <div class="mail-row-snippet" title="<?= e($snippet) ?>"><?= e($snippet) ?></div>
+                    <?php endif; ?>
                 </div>
                 <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>
             </div>
