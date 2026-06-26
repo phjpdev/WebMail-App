@@ -243,7 +243,7 @@ class ComposeController
             $_SESSION['_post_send_at'] = time();
             unset($_SESSION['_after_send_filter_ran']);
 
-            $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc);
+            $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc, $fromEmail);
             $_SESSION['_post_send_dest_paths'] = $destPaths;
             $_SESSION['_post_send_from'] = $fromEmail;
             $_SESSION['_post_send_message_id'] = extract_message_id_from_mime($sentMime);
@@ -1047,15 +1047,30 @@ class ComposeController
                     app_log('Post-send cache sync failed for ' . $path . ': ' . $e->getMessage());
                 }
             }
+
+            $senderFolder = folder_for_alias_email($fromEmail);
+            reconcile_alias_self_sent_echoes(
+                $imap,
+                array_values(array_unique(array_filter(array_merge(
+                    $destPaths,
+                    $routedPaths,
+                    $senderFolder !== null ? [$senderFolder] : []
+                ))))
+            );
         }
 
         ensure_session_writable();
+        $senderFolder = folder_for_alias_email($fromEmail);
         $badgePaths = array_values(array_filter(
             $routedPaths,
             static fn (string $p): bool => folder_shows_unread_badge($p)
         ));
         if ($badgePaths === []) {
             $badgePaths = FolderCache::getPendingBadgePaths();
+        }
+        if ($senderFolder !== null && folder_shows_unread_badge($senderFolder)) {
+            $badgePaths[] = $senderFolder;
+            $badgePaths = array_values(array_unique($badgePaths));
         }
         if ($badgePaths !== []) {
             foreach ($badgePaths as $path) {

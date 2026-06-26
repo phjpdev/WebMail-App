@@ -17,12 +17,21 @@ class FilterService
      *
      * @return list<string>
      */
-    public static function predictDestinationPaths(string $to, string $cc = '', string $bcc = ''): array
-    {
+    public static function predictDestinationPaths(
+        string $to,
+        string $cc = '',
+        string $bcc = '',
+        string $fromEmail = '',
+    ): array {
+        $fromEmail = strtolower(trim($fromEmail));
         $emails = [];
         foreach ([$to, $cc, $bcc] as $list) {
             foreach (parse_email_list($list)['valid'] as $email) {
-                $emails[strtolower($email)] = true;
+                $email = strtolower($email);
+                if ($fromEmail !== '' && strcasecmp($email, $fromEmail) === 0) {
+                    continue;
+                }
+                $emails[$email] = true;
             }
         }
 
@@ -67,7 +76,18 @@ class FilterService
             }
         }
 
-        return array_keys($paths);
+        $result = array_keys($paths);
+        $senderFolder = folder_for_alias_email($fromEmail);
+        if ($senderFolder === null) {
+            return $result;
+        }
+
+        $resolvedSender = FolderCache::resolvePath($senderFolder);
+
+        return array_values(array_filter(
+            $result,
+            static fn (string $path): bool => FolderCache::resolvePath($path) !== $resolvedSender
+        ));
     }
 
     private static function bumpUnreadIfNotPending(string $path): void
@@ -168,6 +188,7 @@ class FilterService
                                 app_log('Mail cache sync after filter failed for ' . $path . ': ' . $e->getMessage());
                             }
                         }
+                        reconcile_alias_self_sent_echoes($imap, $pathList);
                     }
                 }
 
@@ -497,7 +518,7 @@ class FilterService
                 $body = $imap->fetchFilterBody($sourceFolder, $uid);
             }
 
-            if (!RuleMatcher::matches($headers, $body, $rule)) {
+            if (!RuleMatcher::matchesForDelivery($headers, $body, $rule)) {
                 continue;
             }
 

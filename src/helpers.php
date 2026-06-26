@@ -600,6 +600,51 @@ function folder_for_alias_email(string $email): ?string
 }
 
 /**
+ * Primary send-as alias for an employee folder (e.g. INBOX.support → support@).
+ */
+function alias_email_for_folder(string $folderPath): ?string
+{
+    if ($folderPath === '') {
+        return null;
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            'SELECT a.email
+             FROM aliases a
+             INNER JOIN folders f ON a.default_folder_id = f.id AND f.active = 1
+             WHERE f.imap_path = ? AND a.active = 1
+             ORDER BY a.id ASC
+             LIMIT 1',
+            [$folderPath]
+        );
+
+        return !empty($row['email']) ? (string) $row['email'] : null;
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+/**
+ * Mark or remove unread outbound echoes in employee folders (mail From the
+ * folder alias that was mis-routed via envelope headers).
+ *
+ * @param list<string> $folderPaths
+ */
+function reconcile_alias_self_sent_echoes(App\Services\ImapService $imap, array $folderPaths, int $limit = 30): void
+{
+    foreach (array_values(array_unique(array_filter($folderPaths))) as $path) {
+        $alias = alias_email_for_folder($path);
+        if ($alias === null) {
+            continue;
+        }
+
+        $imap->suppressInboundEchoOfSentMessage($path, $alias, $limit);
+        App\Services\MailCacheService::reconcileBadgeFromIndex($path);
+    }
+}
+
+/**
  * Best folder context for compose/send: return folder, reply folder, alias folder,
  * or the employee's linked folder — never default to Inbox for badge refresh.
  */
