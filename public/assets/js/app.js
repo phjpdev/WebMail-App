@@ -595,6 +595,8 @@
         if (parsed && parsed.uid) {
             openMessageInPaneNow(parsed.uid, false);
         }
+
+        initThreadSubjectToggle();
     }
 
     function stopMailSync() {
@@ -986,11 +988,209 @@
         body.innerHTML = html;
         initComposeForm(body);
         bindComposeLinks(body);
+        var editor = body.querySelector('#body-editor');
+        if (body.id === 'mail-inline-compose' || body.closest('#mail-inline-compose')) {
+            if (editor) {
+                window.setTimeout(function () {
+                    editor.focus();
+                    try {
+                        var sel = window.getSelection();
+                        var range = document.createRange();
+                        range.selectNodeContents(editor);
+                        range.collapse(true);
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    } catch (err) {}
+                }, 50);
+            }
+            var slot = body.id === 'mail-inline-compose' ? body : body.closest('#mail-inline-compose');
+            if (slot) slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
+
+    function isInlineComposeHref(href) {
+        if (!href) return false;
+        var path = normalizeComposePath(href);
+        return /compose\/(reply-all|reply|forward|edit-draft)(\/|$|\?)/.test(path);
+    }
+
+    var composeUiLocked = false;
+
+    function isComposeUiLocked() {
+        return composeUiLocked || isComposeOpen();
+    }
+
+    function setComposeActionsDisabled(disabled) {
+        composeUiLocked = disabled;
+        document.body.classList.toggle('is-compose-locked', disabled);
+
+        document.querySelectorAll('.compose-panel-link, .mail-cmd-compose, #compose-link, .btn-compose').forEach(function (el) {
+            if (disabled) {
+                el.classList.add('is-disabled');
+                el.setAttribute('aria-disabled', 'true');
+                if (el.tagName === 'A' && el.getAttribute('href')) {
+                    el.dataset.composeSavedHref = el.getAttribute('href');
+                    el.removeAttribute('href');
+                }
+            } else {
+                el.classList.remove('is-disabled');
+                el.removeAttribute('aria-disabled');
+                if (el.dataset.composeSavedHref) {
+                    el.setAttribute('href', el.dataset.composeSavedHref);
+                    delete el.dataset.composeSavedHref;
+                }
+            }
+        });
+
+        updateCommandBar();
+    }
+
+    function setThreadComposeFocus(focus) {
+        var content = document.querySelector('#reading-pane-body .mail-read-content');
+        if (!content) return;
+        content.classList.toggle('is-compose-focus', focus);
+        if (!focus) {
+            content.classList.remove('is-thread-expanded');
+        }
+        var bar = content.querySelector('.mail-read-subject-bar');
+        if (bar) {
+            bar.classList.toggle('mail-read-subject-bar--expandable', focus);
+            bar.setAttribute('aria-expanded', focus && content.classList.contains('is-thread-expanded') ? 'true' : 'false');
+            if (focus) {
+                bar.setAttribute('title', 'Show full conversation');
+                bar.setAttribute('tabindex', '0');
+                bar.setAttribute('role', 'button');
+            } else {
+                bar.removeAttribute('title');
+                bar.removeAttribute('tabindex');
+                bar.removeAttribute('role');
+            }
+        }
+    }
+
+    function resetComposeUiState() {
+        setComposeActionsDisabled(false);
+        setThreadComposeFocus(false);
+    }
+
+    function initThreadSubjectToggle() {
+        var paneBody = document.getElementById('reading-pane-body');
+        if (!paneBody || paneBody.dataset.threadSubjectBound) return;
+        paneBody.dataset.threadSubjectBound = '1';
+
+        function toggleThread(e) {
+            var bar = e.target.closest('.mail-read-subject-bar');
+            if (!bar) return;
+            var content = paneBody.querySelector('.mail-read-content.is-compose-focus');
+            if (!content) return;
+            e.preventDefault();
+            var expanded = content.classList.toggle('is-thread-expanded');
+            bar.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            bar.setAttribute('title', expanded ? 'Show latest message only' : 'Show full conversation');
+        }
+
+        paneBody.addEventListener('click', toggleThread);
+        paneBody.addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            var bar = e.target.closest('.mail-read-subject-bar.mail-read-subject-bar--expandable');
+            if (!bar) return;
+            e.preventDefault();
+            toggleThread(e);
+        });
+    }
+
+    function closeInlineCompose(restoreMessage, options) {
+        options = options || {};
+        var inline = document.getElementById('mail-inline-compose');
+        if (inline) inline.remove();
+        var pane = document.getElementById('reading-pane');
+        if (pane) pane.classList.remove('is-inline-compose-open');
+        if (!options.keepUiState) {
+            resetComposeUiState();
+        }
+        composePanelSeq++;
+        if (restoreMessage === undefined) restoreMessage = true;
+        if (restoreMessage && composePanelRestoreUid) {
+            openMessageInPaneNow(composePanelRestoreUid, false);
+        }
+        composePanelRestoreUid = null;
+    }
+
+    function openInlineCompose(href, title, triggerLink) {
+        var paneBody = document.getElementById('reading-pane-body');
+        var thread = paneBody && paneBody.querySelector('.mail-thread');
+        if (!paneBody || !thread) {
+            openComposePanelFullscreen(href, title, triggerLink);
+            return;
+        }
+
+        var selected = document.querySelector('.mail-row.is-selected, .mail-card.is-selected');
+        composePanelRestoreUid = selected ? parseInt(selected.getAttribute('data-uid'), 10) : null;
+
+        closeInlineCompose(false, { keepUiState: true });
+        var fullscreenPanel = document.getElementById('compose-panel');
+        if (fullscreenPanel && !fullscreenPanel.hidden) {
+            setComposeOpen(false);
+            var panelBody = document.getElementById('compose-panel-body');
+            if (panelBody) panelBody.innerHTML = '';
+        }
+
+        var path = withEmbedParams(href);
+        var cacheKey = composeCacheKey(path);
+        var seq = ++composePanelSeq;
+        if (triggerLink) setButtonLoading(triggerLink, true, loadingLabelForAction('compose'));
+
+        var slot = document.createElement('div');
+        slot.id = 'mail-inline-compose';
+        slot.className = 'mail-inline-compose';
+        slot.setAttribute('aria-label', title || 'Compose');
+        thread.appendChild(slot);
+
+        var pane = document.getElementById('reading-pane');
+        if (pane) pane.classList.add('is-inline-compose-open');
+        setComposeActionsDisabled(true);
+        setThreadComposeFocus(true);
+
+        function finish(html) {
+            if (seq !== composePanelSeq) return;
+            applyComposePanelHtml(slot, html);
+            if (triggerLink) setButtonLoading(triggerLink, false);
+        }
+
+        var cached = composePrefetchCache[cacheKey];
+        if (cached) {
+            finish(cached);
+            return;
+        }
+
+        slot.innerHTML = '<div class="compose-panel-loading"><span class="reading-pane-spinner" aria-hidden="true"></span><span>Loading…</span></div>';
+
+        var inFlight = composePrefetchInFlight[cacheKey];
+        var loadPromise = inFlight || fetch(apiUrl(path), { credentials: 'same-origin', headers: { Accept: 'text/html' } })
+            .then(function (res) {
+                if (!res.ok) throw new Error('Could not load compose form.');
+                return res.text();
+            })
+            .then(function (html) {
+                composePrefetchCache[cacheKey] = html;
+                return html;
+            });
+
+        loadPromise.then(function (html) {
+            finish(html);
+        }).catch(function (err) {
+            if (seq !== composePanelSeq) return;
+            showToast('error', err.message || 'Could not load compose form.');
+            closeInlineCompose(true);
+        }).finally(function () {
+            if (triggerLink) setButtonLoading(triggerLink, false);
+        });
     }
 
     function isComposeOpen() {
         var panel = document.getElementById('compose-panel');
-        return !!(panel && !panel.hidden);
+        var inline = document.getElementById('mail-inline-compose');
+        return !!(panel && !panel.hidden) || !!inline;
     }
 
     function setComposeOpen(open) {
@@ -1003,6 +1203,7 @@
     }
 
     function openComposePanel(href, title, triggerLink) {
+        if (isComposeUiLocked()) return;
         if (!useReadingPane()) {
             if (triggerLink) setButtonLoading(triggerLink, true, loadingLabelForAction('compose'));
             showLoading();
@@ -1010,6 +1211,15 @@
             return;
         }
 
+        if (isInlineComposeHref(href)) {
+            openInlineCompose(href, title, triggerLink);
+            return;
+        }
+
+        openComposePanelFullscreen(href, title, triggerLink);
+    }
+
+    function openComposePanelFullscreen(href, title, triggerLink) {
         var selected = document.querySelector('.mail-row.is-selected, .mail-card.is-selected');
         composePanelRestoreUid = selected ? parseInt(selected.getAttribute('data-uid'), 10) : null;
 
@@ -1017,6 +1227,7 @@
         var cacheKey = composeCacheKey(path);
         var seq = ++composePanelSeq;
         setComposeOpen(true);
+        setComposeActionsDisabled(true);
         if (triggerLink) setButtonLoading(triggerLink, true, loadingLabelForAction('compose'));
 
         var body = document.getElementById('compose-panel-body');
@@ -1075,9 +1286,14 @@
     }
 
     function closeComposePanel(restorePane) {
+        if (document.getElementById('mail-inline-compose')) {
+            closeInlineCompose(restorePane);
+            return;
+        }
         if (restorePane === undefined) restorePane = true;
         composePanelSeq++;
         setComposeOpen(false);
+        resetComposeUiState();
         var body = document.getElementById('compose-panel-body');
         if (body) body.innerHTML = '';
 
@@ -1113,8 +1329,9 @@
             a.addEventListener('click', function (e) {
                 if (!useReadingPane()) return;
                 e.preventDefault();
+                if (isComposeUiLocked()) return;
                 var linkTitle = a.getAttribute('data-compose-title') || composeTitleFromPath(a.getAttribute('href'));
-                openComposePanel(a.getAttribute('href'), linkTitle, a);
+                openComposePanel(a.getAttribute('href') || a.dataset.composeSavedHref, linkTitle, a);
             });
         });
     }
@@ -1126,8 +1343,194 @@
         if (!editor) return;
         var html = editor.innerHTML;
         var text = (editor.innerText || editor.textContent || '').replace(/\u00a0/g, ' ').trim();
-        if (htmlField) htmlField.value = html;
-        if (bodyField) bodyField.value = text !== '' ? text : (editor.innerText || editor.textContent || '');
+        var quotedEl = form.querySelector('.compose-quoted-source');
+        var quotedText = quotedEl ? quotedEl.value.replace(/\r\n/g, '\n') : '';
+        var combined = text;
+        if (quotedText !== '') {
+            if (combined !== '') {
+                combined = quotedText.charAt(0) === '\n' ? combined + quotedText : combined + '\n\n' + quotedText;
+            } else {
+                combined = quotedText;
+            }
+        }
+        if (htmlField) {
+            var quotedHtml = quotedText !== ''
+                ? '<div class="mail-quoted"><pre>' + escapeHtml(quotedText) + '</pre></div>'
+                : '';
+            htmlField.value = html + quotedHtml;
+        }
+        if (bodyField) bodyField.value = combined;
+    }
+
+    function initComposeQuotedToggle(root) {
+        root = root || document;
+        var form = root.querySelector ? root.querySelector('#compose-form') : document.getElementById('compose-form');
+        if (!form || form.dataset.quotedToggleBound) return;
+        var toggle = form.querySelector('.compose-quoted-toggle');
+        if (!toggle) return;
+        form.dataset.quotedToggleBound = '1';
+        toggle.addEventListener('click', function () {
+            var panel = form.querySelector('.compose-quoted-body');
+            var expanded = toggle.getAttribute('aria-expanded') === 'true';
+            toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+            if (panel) panel.hidden = expanded;
+        });
+    }
+
+    function syncOutlookInlineRecipients(form) {
+        var toHidden = form.querySelector('#to');
+        var chipsEl = form.querySelector('#to-chips');
+        var input = form.querySelector('#to-input');
+        if (!toHidden || !chipsEl) return;
+        var emails = [];
+        chipsEl.querySelectorAll('.recipient-chip').forEach(function (chip) {
+            var email = chip.getAttribute('data-email');
+            if (email) emails.push(email);
+        });
+        if (input && input.value.trim()) {
+            var parsed = parseRecipientToken(input.value.trim());
+            if (parsed.valid) emails.push(parsed.email);
+        }
+        if (emails.length) {
+            toHidden.value = emails.join(', ');
+        }
+    }
+
+    function outlookChipDisplayNames(chipsEl) {
+        if (!chipsEl) return '';
+        var names = [];
+        chipsEl.querySelectorAll('.recipient-chip').forEach(function (chip) {
+            var display = chip.dataset.displayName || chip.getAttribute('data-email') || '';
+            if (display.indexOf('@') >= 0 && display.indexOf('<') < 0) {
+                display = display.split('@')[0];
+            }
+            names.push(display);
+        });
+        return names.join(', ');
+    }
+
+    function updateOutlookRecipientsSummary(form) {
+        if (!form) return;
+        var el = form.querySelector('[data-recipients-summary-inline]');
+        if (!el) return;
+
+        var toText = outlookChipDisplayNames(form.querySelector('#to-chips'));
+        var ccText = outlookChipDisplayNames(form.querySelector('#cc-chips'));
+        var bccText = outlookChipDisplayNames(form.querySelector('#bcc-chips'));
+
+        function part(label, text) {
+            return '<span class="compose-outlook-summary-part">' +
+                '<span class="compose-outlook-summary-label">' + escapeHtml(label) + '</span>' +
+                escapeHtml(text) +
+                '</span>';
+        }
+
+        var html = part('To:', toText);
+        if (ccText) html += part('CC:', ccText);
+        if (bccText) html += part('BCC:', bccText);
+
+        el.innerHTML = html;
+    }
+
+    function updateOutlookToSummary(form) {
+        updateOutlookRecipientsSummary(form);
+    }
+
+    function updateOutlookRecipientChips(form, expanded) {
+        form.querySelectorAll('.recipient-chip').forEach(function (chip) {
+            var email = chip.getAttribute('data-email') || '';
+            var display = chip.dataset.displayName || email;
+            var label = chip.querySelector('.recipient-chip-label');
+            if (!label) return;
+            if (expanded) {
+                label.textContent = display && display !== email && display.indexOf('@') < 0
+                    ? display + ' <' + email + '>'
+                    : email;
+            } else {
+                label.textContent = display && display.indexOf('@') < 0 ? display : email.split('@')[0];
+            }
+        });
+    }
+
+    function commitOutlookRecipientInputs(form) {
+        form.querySelectorAll('.recipient-input').forEach(function (input) {
+            if (!input.value.trim()) return;
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        });
+    }
+
+    function setOutlookRecipientsExpanded(form, expanded) {
+        var card = form.querySelector('.compose-outlook-card');
+        var panel = form.querySelector('[data-recipients-panel]');
+        var toggle = form.querySelector('[data-to-summary-toggle]');
+        if (!card || !panel) return;
+        if (!expanded) {
+            commitOutlookRecipientInputs(form);
+        }
+        card.classList.toggle('compose-outlook-card--recipients-expanded', expanded);
+        panel.hidden = !expanded;
+        if (toggle) {
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            toggle.setAttribute('tabindex', expanded ? '-1' : '0');
+        }
+        updateOutlookRecipientChips(form, expanded);
+        if (!expanded) {
+            updateOutlookRecipientsSummary(form);
+        } else {
+            var input = form.querySelector('#to-input');
+            if (input) window.setTimeout(function () { input.focus(); }, 0);
+        }
+    }
+
+    function initOutlookInlineCompose(root) {
+        root = root || document;
+        var form = root.querySelector ? root.querySelector('.compose-form--outlook-inline') : document.querySelector('.compose-form--outlook-inline');
+        if (!form || form.dataset.outlookInlineBound) return;
+        form.dataset.outlookInlineBound = '1';
+
+        var summaryToggle = form.querySelector('[data-to-summary-toggle]');
+        var recipientsPanel = form.querySelector('[data-recipients-panel]');
+
+        window.setTimeout(function () {
+            updateOutlookRecipientsSummary(form);
+        }, 0);
+
+        if (summaryToggle) {
+            summaryToggle.addEventListener('click', function (e) {
+                if (recipientsPanel && !recipientsPanel.hidden) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setOutlookRecipientsExpanded(form, true);
+            });
+            summaryToggle.addEventListener('keydown', function (e) {
+                if (recipientsPanel && !recipientsPanel.hidden) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setOutlookRecipientsExpanded(form, true);
+                }
+            });
+        }
+
+        if (!window.__outlookRecipientsOutsideBound) {
+            window.__outlookRecipientsOutsideBound = true;
+            document.addEventListener('click', function (e) {
+                document.querySelectorAll('.compose-outlook-card--recipients-expanded').forEach(function (card) {
+                    var inlineForm = card.closest('.compose-form--outlook-inline');
+                    if (!inlineForm) return;
+                    if (e.target.closest('[data-recipients-panel]')) return;
+                    if (e.target.closest('.recipient-suggest')) return;
+                    var panel = inlineForm.querySelector('[data-recipients-panel]');
+                    if (panel && panel.hidden) return;
+                    setOutlookRecipientsExpanded(inlineForm, false);
+                });
+            });
+        }
+
+        form.addEventListener('click', function (e) {
+            if (e.target.closest('.recipient-chip-remove')) {
+                window.setTimeout(function () { updateOutlookRecipientsSummary(form); }, 0);
+            }
+        });
     }
 
     function setButtonLoading(btn, loading, loadingLabel) {
@@ -1262,7 +1665,11 @@
             var cancel = e.target.closest('[data-compose-cancel]');
             if (cancel) {
                 e.preventDefault();
-                closeComposePanel(true);
+                if (form.closest('#mail-inline-compose')) {
+                    closeInlineCompose(false);
+                } else {
+                    closeComposePanel(true);
+                }
             }
             if (e.target.closest('button[formaction*="draft"]')) {
                 syncComposeEditor(form);
@@ -1279,7 +1686,7 @@
             var actionPath = draftAction ? normalizeComposePath(draftAction) : 'compose/send';
             var isDraft = actionPath.indexOf('draft') >= 0;
             var loadingLabel = isDraft ? 'Saving…' : 'Sending…';
-            var isPanelAjax = useReadingPane() && form.closest('#compose-panel');
+            var isPanelAjax = useReadingPane() && (form.closest('#compose-panel') || form.closest('#mail-inline-compose'));
 
             if (isPanelAjax) {
                 e.preventDefault();
@@ -1339,6 +1746,18 @@
                         return;
                     }
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
+                    var inlineCompose = form.closest('#mail-inline-compose');
+                    if (inlineCompose) {
+                        var restoreUid = composePanelRestoreUid;
+                        closeInlineCompose(false);
+                        beginPostSendQuiet(30000);
+                        afterSendBadgePolls = 0;
+                        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+                        if (restoreUid) {
+                            openMessageInPaneNow(restoreUid, false);
+                        }
+                        return;
+                    }
                     closeComposePanel(false);
                     stopPaneMessageSync();
                     setPaneView('empty');
@@ -1364,6 +1783,8 @@
         initRichEditor(root);
         initRecipientFields(root);
         initFileUpload(root);
+        initComposeQuotedToggle(root);
+        initOutlookInlineCompose(root);
         var form = root.querySelector ? root.querySelector('#compose-form') : document.getElementById('compose-form');
         if (form) {
             var returnField = form.querySelector('#return_folder');
@@ -2951,6 +3372,7 @@
         var needsSelection = ['delete', 'move', 'mark-read', 'mark-unread', 'flag-toggle'];
         var singleRow = selectedPrimaryRow();
         var isSingle = !!singleRow;
+        var composeLocked = isComposeUiLocked();
 
         needsSelection.forEach(function (cmd) {
             var btn = toolbar.querySelector('[data-cmd="' + cmd + '"]');
@@ -2964,9 +3386,15 @@
             btn.hidden = !visible;
         }
 
-        setMobileCmd('reply', isSingle && !!(singleRow && singleRow.getAttribute('data-reply-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-reply-url')));
-        setMobileCmd('reply-all', isSingle && !!(singleRow && singleRow.getAttribute('data-reply-all-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-reply-all-url')));
-        setMobileCmd('forward', isSingle && !!(singleRow && singleRow.getAttribute('data-forward-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-forward-url')));
+        setMobileCmd('reply', isSingle && !composeLocked && !!(singleRow && singleRow.getAttribute('data-reply-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-reply-url')));
+        setMobileCmd('reply-all', isSingle && !composeLocked && !!(singleRow && singleRow.getAttribute('data-reply-all-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-reply-all-url')));
+        setMobileCmd('forward', isSingle && !composeLocked && !!(singleRow && singleRow.getAttribute('data-forward-url')), isSingle && !!(singleRow && singleRow.getAttribute('data-forward-url')));
+
+        var composeBtn = toolbar.querySelector('.mail-cmd-compose');
+        if (composeBtn) {
+            composeBtn.classList.toggle('is-disabled', composeLocked);
+            composeBtn.setAttribute('aria-disabled', composeLocked ? 'true' : 'false');
+        }
 
         var moveSelect = document.getElementById('cmd-move-target');
         if (moveSelect) moveSelect.disabled = !hasSelection;
@@ -3034,6 +3462,7 @@
         var selectionCount = effectiveSelectionCount();
 
         if (action === 'reply' || action === 'reply-all' || action === 'forward') {
+            if (isComposeUiLocked()) return;
             var composeRow = selectedPrimaryRow();
             if (!composeRow) return;
             var composeAttr = action === 'reply'
@@ -3578,6 +4007,38 @@
         window.print();
     }
 
+    function initMailThreadCards(root) {
+        root = root || document;
+        if (!root.querySelectorAll) return;
+
+        root.querySelectorAll('[data-mail-thread-card]').forEach(function (card) {
+            if (card.dataset.threadBound) return;
+            card.dataset.threadBound = '1';
+
+            function expandCard() {
+                if (card.classList.contains('is-expanded')) return;
+                card.classList.add('is-expanded');
+                card.setAttribute('aria-expanded', 'true');
+                var collapsed = card.querySelector('.mail-message-collapsed');
+                var expanded = card.querySelector('.mail-message-expanded');
+                if (collapsed) collapsed.hidden = true;
+                if (expanded) expanded.hidden = false;
+            }
+
+            card.addEventListener('click', function (e) {
+                if (e.target.closest('a, button')) return;
+                expandCard();
+            });
+
+            card.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    expandCard();
+                }
+            });
+        });
+    }
+
     function bindReadViewCard(card) {
         if (!card || card.dataset.actionsBound) return;
         card.dataset.actionsBound = '1';
@@ -3642,6 +4103,7 @@
         });
 
         bindComposeLinks(card);
+        initMailThreadCards(card);
     }
 
     function initReadViewActions() {
@@ -3650,6 +4112,7 @@
                 bindReadViewCard(card);
             }
         });
+        initMailThreadCards(document);
     }
 
     function initRichEditor(root) {
@@ -3665,11 +4128,7 @@
         if (!editor) return;
 
         function syncEditorFields() {
-            if (!editor) return;
-            var html = editor.innerHTML;
-            var text = (editor.innerText || editor.textContent || '').replace(/\u00a0/g, ' ').trim();
-            if (htmlField) htmlField.value = html;
-            if (bodyField) bodyField.value = text !== '' ? text : (editor.innerText || editor.textContent || '');
+            syncComposeEditor(form);
         }
 
         if (toolbar) {
@@ -3752,6 +4211,7 @@
         var chip = document.createElement('span');
         chip.className = 'recipient-chip';
         chip.setAttribute('data-email', data.email);
+        chip.dataset.displayName = data.display || data.email;
         var initial = (data.display || data.email).charAt(0).toUpperCase();
         var color = avatarColor(data.email);
         chip.innerHTML =
@@ -4173,7 +4633,7 @@
         }
 
         form.addEventListener('submit', function (e) {
-            if (form.dataset.ajaxBound && form.closest('#compose-panel')) {
+            if (form.dataset.ajaxBound && (form.closest('#compose-panel') || form.closest('#mail-inline-compose'))) {
                 Object.keys(rows).forEach(function (key) {
                     var row = rows[key];
                     if (!row) return;
@@ -4746,7 +5206,7 @@
             function go(target) { if (target) { showLoading(); window.location = target; } }
 
             function goCompose(target, label) {
-                if (!target) return;
+                if (!target || isComposeUiLocked()) return;
                 if (useReadingPane()) {
                     openComposePanel(target, label);
                 } else {

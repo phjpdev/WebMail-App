@@ -844,6 +844,65 @@ function format_mail_datetime(?string $date): string
     return format_app_datetime($date, 'Y-m-d H:i:s');
 }
 
+/**
+ * Outlook-style date for the message read header (e.g. Fri 6/26/2026 6:14 PM).
+ */
+function format_mail_read_datetime(?string $date): string
+{
+    if ($date === null || trim($date) === '') {
+        return '—';
+    }
+
+    $dt = to_app_datetime($date);
+    if ($dt === null) {
+        return $date;
+    }
+
+    return $dt->format('D n/j/Y g:i A');
+}
+
+/**
+ * @return array{name: string, email: string}
+ */
+function mail_parse_address(?string $header): array
+{
+    $header = trim((string) $header);
+    if ($header === '') {
+        return ['name' => '', 'email' => ''];
+    }
+
+    if (preg_match('/^(.+?)\s*<([^>]+)>$/', $header, $m)) {
+        return [
+            'name' => trim($m[1], "\"' "),
+            'email' => trim($m[2]),
+        ];
+    }
+
+    if (filter_var($header, FILTER_VALIDATE_EMAIL)) {
+        return ['name' => '', 'email' => $header];
+    }
+
+    return ['name' => $header, 'email' => ''];
+}
+
+function mail_user_initials(): string
+{
+    $user = App\Auth::user();
+    $name = trim((string) ($user['name'] ?? ''));
+    if ($name === '') {
+        return 'Y';
+    }
+
+    $parts = preg_split('/\s+/', $name) ?: [];
+    if (count($parts) >= 2) {
+        return mb_strtoupper(
+            mb_substr($parts[0], 0, 1) . mb_substr($parts[count($parts) - 1], 0, 1)
+        );
+    }
+
+    return mb_strtoupper(mb_substr($name, 0, 2));
+}
+
 function format_mail_date(?string $date): string
 {
     if ($date === null || $date === '') {
@@ -1360,6 +1419,260 @@ function format_mail_recipients(?string $header, bool $substituteSelf = true): s
     }
 
     return $out === [] ? '—' : implode(', ', $out);
+}
+
+/**
+ * @return array{date: string, from: string}
+ */
+function mail_parse_on_wrote_header(string $header): array
+{
+    $header = trim($header);
+    if (preg_match('/^(.+?),\s*(.+)$/s', $header, $m)) {
+        return ['date' => trim($m[1]), 'from' => trim($m[2])];
+    }
+
+    return ['date' => '', 'from' => $header];
+}
+
+function mail_unquote_plain(string $text): string
+{
+    $lines = preg_split('/\R/', $text) ?: [];
+    $out = [];
+    foreach ($lines as $line) {
+        $out[] = preg_replace('/^>\s?/', '', (string) $line) ?? $line;
+    }
+
+    return trim(implode("\n", $out));
+}
+
+function mail_plain_from_html(string $html): string
+{
+    return trim(html_entity_decode(strip_tags(
+        str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], "\n", $html),
+        ENT_QUOTES | ENT_HTML5,
+        'UTF-8'
+    )));
+}
+
+function mail_conversation_snippet(string $body, int $maxLen = 120): string
+{
+    $text = trim(preg_replace('/\s+/u', ' ', mail_unquote_plain($body)) ?? '');
+    if ($text === '') {
+        return '';
+    }
+    if (mb_strlen($text) > $maxLen) {
+        return mb_substr($text, 0, $maxLen - 1) . '…';
+    }
+
+    return $text;
+}
+
+function mail_extract_latest_html(string $html): string
+{
+    $patterns = [
+        '/<div[^>]*id=["\']divRplyFwdMsg["\'][^>]*>.*$/is',
+        '/<div[^>]*class=["\'][^"\']*gmail_quote[^"\']*["\'][^>]*>.*$/is',
+        '/<blockquote[^>]*>.*$/is',
+    ];
+    foreach ($patterns as $pattern) {
+        $html = preg_replace($pattern, '', $html) ?? $html;
+    }
+
+    return trim($html);
+}
+
+/**
+ * @return list<array{from: string, to: string, cc: string, date: string, body: string}>
+ */
+function mail_parse_quoted_block(string $text, array $header): array
+{
+    $text = str_replace(["\r\n", "\r"], "\n", $text);
+    $body = $text;
+    $nested = '';
+    if (preg_match('/\n\s*On .+? wrote:\s*\n/is', $text, $match, PREG_OFFSET_CAPTURE)) {
+        $body = substr($text, 0, $match[0][1]);
+        $nested = substr($text, $match[0][1]);
+    }
+
+    $segments = [[
+        'from' => $header['from'] ?? '',
+        'to' => $header['to'] ?? '',
+        'cc' => '',
+        'date' => $header['date'] ?? '',
+        'body' => mail_unquote_plain($body),
+    ]];
+
+    if ($nested !== '' && preg_match('/\n\s*On (.+?) wrote:\s*\n/is', $nested, $match, PREG_OFFSET_CAPTURE)) {
+        $nestedHeader = mail_parse_on_wrote_header($match[1][0]);
+        $nestedRest = substr($nested, $match[0][1] + strlen($match[0][0]));
+        $segments = array_merge($segments, mail_parse_quoted_block($nestedRest, $nestedHeader));
+    }
+
+    return $segments;
+}
+
+/**
+ * @return list<array{from: string, to: string, cc: string, date: string, body: string}>
+ */
+function mail_split_conversation_plain(string $plain): array
+{
+    $plain = str_replace(["\r\n", "\r"], "\n", trim($plain));
+    if ($plain === '') {
+        return [];
+    }
+
+    if (!preg_match('/\n\s*On (.+?) wrote:\s*\n/is', $plain, $match, PREG_OFFSET_CAPTURE)) {
+        return [[
+            'from' => '',
+            'to' => '',
+            'cc' => '',
+            'date' => '',
+            'body' => mail_unquote_plain($plain),
+        ]];
+    }
+
+    $latest = trim(substr($plain, 0, $match[0][1]));
+    $remainder = substr($plain, $match[0][1] + strlen($match[0][0]));
+    $header = mail_parse_on_wrote_header($match[1][0]);
+
+    $segments = [[
+        'from' => '',
+        'to' => '',
+        'cc' => '',
+        'date' => '',
+        'body' => mail_unquote_plain($latest),
+    ]];
+
+    return array_merge($segments, mail_parse_quoted_block($remainder, $header));
+}
+
+/**
+ * Build Outlook-style conversation segments (newest first).
+ *
+ * @return list<array<string, mixed>>
+ */
+function mail_build_conversation_thread(array $message, string $sanitizedHtml = '', ?string $replyFrom = null): array
+{
+    $plain = trim((string) ($message['plain'] ?? ''));
+    if ($plain === '' && $sanitizedHtml !== '') {
+        $plain = mail_plain_from_html($sanitizedHtml);
+    }
+
+    $segments = mail_split_conversation_plain($plain);
+    if ($segments === []) {
+        $segments[] = [
+            'from' => '',
+            'to' => '',
+            'cc' => '',
+            'date' => '',
+            'body' => '',
+        ];
+    }
+
+    $segments[0]['from'] = (string) ($message['from'] ?? '');
+    $segments[0]['to'] = (string) ($message['to'] ?? '');
+    $segments[0]['cc'] = (string) ($message['cc'] ?? '');
+    $segments[0]['date'] = (string) ($message['date'] ?? '');
+    $segments[0]['is_current'] = true;
+
+    if (count($segments) === 1) {
+        $segments[0]['body_html'] = $sanitizedHtml;
+    } else {
+        $latestHtml = mail_extract_latest_html($sanitizedHtml);
+        $segments[0]['body_html'] = trim(strip_tags($latestHtml)) !== '' ? $latestHtml : '';
+    }
+
+    foreach ($segments as $i => &$segment) {
+        if ($i > 0) {
+            $segment['is_current'] = false;
+            $segment['body_html'] = '';
+            $segment['cc'] = '';
+        }
+        $segment['snippet'] = mail_conversation_snippet((string) ($segment['body'] ?? ''));
+    }
+    unset($segment);
+
+    return $segments;
+}
+
+/**
+ * @param array<string, mixed> $segment
+ * @return array{
+ *   sender_name: string,
+ *   sender_email: string,
+ *   avatar_initial: string,
+ *   avatar_color: string,
+ *   display_to: string,
+ *   display_cc: string,
+ *   display_date: string
+ * }
+ */
+function mail_thread_segment_display(array $segment, ?string $replyFrom = null): array
+{
+    $from = (string) ($segment['from'] ?? '');
+    $userSent = mail_is_sent_by_user($from);
+    $parsed = mail_parse_address($from);
+
+    if ($userSent) {
+        $senderName = 'You';
+        $senderEmail = '';
+        $avatarInitial = mail_user_initials();
+        $avatarColor = mail_avatar_color($from !== '' ? $from : ($replyFrom ?? ''));
+    } else {
+        $senderName = $parsed['name'] !== ''
+            ? $parsed['name']
+            : ($parsed['email'] !== '' ? $parsed['email'] : '—');
+        $senderEmail = ($parsed['name'] !== '' && $parsed['email'] !== '') ? $parsed['email'] : '';
+        $avatarInitial = mail_avatar_initials_from_header($from);
+        $avatarColor = mail_avatar_color($from);
+    }
+
+    return [
+        'sender_name' => $senderName,
+        'sender_email' => $senderEmail,
+        'avatar_initial' => $avatarInitial,
+        'avatar_color' => $avatarColor,
+        'display_to' => format_mail_recipients($segment['to'] ?? null, !$userSent),
+        'display_cc' => !empty($segment['cc']) ? format_mail_recipients($segment['cc'], !$userSent) : '',
+        'display_date' => format_mail_read_datetime($segment['date'] ?? ''),
+    ];
+}
+
+function mail_avatar_initials_from_header(?string $from): string
+{
+    $parsed = mail_parse_address((string) $from);
+    $name = $parsed['name'] !== '' ? $parsed['name'] : $parsed['email'];
+    if ($name === '') {
+        return '?';
+    }
+
+    $parts = preg_split('/\s+/', trim($name)) ?: [];
+    if (count($parts) >= 2) {
+        return mb_strtoupper(
+            mb_substr($parts[0], 0, 1) . mb_substr($parts[count($parts) - 1], 0, 1)
+        );
+    }
+
+    return mb_strtoupper(mb_substr($name, 0, 2));
+}
+
+function compose_split_reply_body(string $body): array
+{
+    $body = str_replace(["\r\n", "\r"], "\n", $body);
+    $patterns = [
+        '/\n\nOn .+ wrote:\n/s',
+        '/(?:\n\n|^)-{3,}\s*Forwarded message\s*-{3,}\s*\n/s',
+    ];
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $body, $match, PREG_OFFSET_CAPTURE)) {
+            return [
+                'compose' => rtrim(substr($body, 0, $match[0][1])),
+                'quoted' => substr($body, $match[0][1]),
+            ];
+        }
+    }
+
+    return ['compose' => trim($body), 'quoted' => ''];
 }
 
 function mail_avatar_initial(?string $from): string

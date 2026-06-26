@@ -14,11 +14,10 @@ $isPane = !empty($isPane);
 $folderB64 = $folderB64 ?? encode_folder_path($folderPath);
 $uid = (int) ($message['uid'] ?? 0);
 $isFlagged = !empty($message['flagged']);
-$userSent = mail_is_sent_by_user($message['from'] ?? null);
-$displayFrom = trim((string) ($message['from'] ?? '')) !== '' ? trim((string) $message['from']) : '—';
-$displayTo = format_mail_recipients($message['to'] ?? null, !$userSent);
-$displayCc = !empty($message['cc']) ? format_mail_recipients($message['cc'], !$userSent) : '';
-$displayDate = format_mail_datetime($message['date'] ?? '') ?: '—';
+$thread = mail_build_conversation_thread($message, $sanitizedHtml, $replyFrom);
+$threadDisplay = array_reverse($thread);
+$threadCount = count($threadDisplay);
+$messageAttachments = $message['attachments'] ?? [];
 ?>
 
 <div class="mail-actions no-print" role="toolbar" aria-label="Message actions">
@@ -90,60 +89,19 @@ $displayDate = format_mail_datetime($message['date'] ?? '') ?: '—';
     <?php endif; ?>
 </div>
 
-<div class="mail-meta" role="group" aria-label="Message details">
-    <div class="mail-meta-grid">
-        <div class="mail-meta-row">
-            <span class="mail-meta-label">From</span>
-            <span class="mail-meta-value"><?= e($displayFrom) ?></span>
-        </div>
-        <div class="mail-meta-row">
-            <span class="mail-meta-label">To</span>
-            <span class="mail-meta-value"><?= e($displayTo) ?></span>
-        </div>
-        <?php if ($displayCc !== ''): ?>
-        <div class="mail-meta-row">
-            <span class="mail-meta-label">Cc</span>
-            <span class="mail-meta-value"><?= e($displayCc) ?></span>
-        </div>
-        <?php endif; ?>
+<div class="mail-read-content">
+    <div class="mail-read-subject-bar">
+        <h1 class="mail-read-subject"><?= e($message['subject'] ?: '(no subject)') ?></h1>
     </div>
-    <time class="mail-meta-date" datetime="<?= e($message['date'] ?? '') ?>"><?= e($displayDate) ?></time>
-</div>
 
-<div class="mail-body">
-    <h1 class="mail-message-subject"><?= e($message['subject'] ?: '(no subject)') ?></h1>
-    <div class="mail-body-content">
-        <?php if ($sanitizedHtml !== ''): ?>
-            <div class="mail-body-html"><?= $sanitizedHtml ?></div>
-        <?php elseif (!empty($message['plain'])): ?>
-            <pre class="mail-body-plain"><?= e($message['plain']) ?></pre>
-        <?php else: ?>
-            <p class="text-muted">(No message body)</p>
-        <?php endif; ?>
-    </div>
-</div>
-
-<?php if (!empty($message['attachments'])): ?>
-<div class="attachments">
-    <strong>Attachments:</strong>
-    <ul>
-        <?php foreach ($message['attachments'] as $att): ?>
+    <div class="mail-thread" data-mail-thread>
+        <?php foreach ($threadDisplay as $i => $segment): ?>
             <?php
-            $baseUrl = url('attachment?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid . '&part=' . urlencode($att['id']));
-            $isPreview = str_starts_with($att['mime'], 'image/') || $att['mime'] === 'application/pdf';
+            $isLatest = ($i === $threadCount - 1);
+            $display = mail_thread_segment_display($segment, $replyFrom);
+            $attachments = $isLatest ? $messageAttachments : [];
+            require base_path('views/partials/mail-thread-card.php');
             ?>
-            <li>
-                <a href="<?= e($baseUrl) ?>"><?= e($att['filename']) ?> (<?= number_format($att['size'] / 1024, 1) ?> KB)</a>
-                <?php if ($isPreview): ?>
-                    · <a href="<?= e($baseUrl . '&disposition=inline') ?>" target="_blank" rel="noopener">Preview</a>
-                <?php endif; ?>
-            </li>
-            <?php if (str_starts_with($att['mime'], 'image/')): ?>
-            <li class="attachment-preview">
-                <img src="<?= e($baseUrl . '&disposition=inline') ?>" alt="<?= e($att['filename']) ?>" loading="lazy">
-            </li>
-            <?php endif; ?>
         <?php endforeach; ?>
-    </ul>
+    </div>
 </div>
-<?php endif; ?>

@@ -6,7 +6,7 @@
  * @var string|null $success
  */
 ?>
-<div class="compose-panel-inner">
+<div class="compose-panel-inner compose-panel-inner--<?= e($mode) ?>">
     <?php if (!empty($error)): ?>
         <p class="status status-error compose-panel-flash"><?= e($error) ?></p>
     <?php endif; ?>

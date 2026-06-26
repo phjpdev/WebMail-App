@@ -1379,9 +1379,20 @@ a:hover {
     flex-wrap: wrap;
     gap: 0.25rem;
     align-items: center;
-    margin-bottom: 1.25rem;
-    padding-bottom: 1.25rem;
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.mail-read-card {
+    padding: 0;
+    overflow: hidden;
+}
+
+.mail-read-card > .mail-actions {
+    padding: 0.75rem 1.25rem;
     border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
 }
 
 .mail-action-btn {
@@ -1586,7 +1597,7 @@ a:hover {
 }
 
 .attachments {
-    margin-top: 1.25rem;
+    margin-top: 0;
     margin-bottom: 0;
     padding: 0.75rem 1rem;
     background: var(--color-surface-alt);
@@ -1594,6 +1605,15 @@ a:hover {
     border-radius: var(--radius-sm);
     font-size: 0.875rem;
     color: var(--color-text);
+}
+
+.attachments--message {
+    margin: 0;
+    border: none;
+    border-top: 1px solid var(--color-border-subtle);
+    border-radius: 0;
+    background: var(--color-surface);
+    padding: 0.875rem 1.25rem 1rem;
 }
 
 .attachments strong {
@@ -1628,70 +1648,194 @@ a:hover {
     margin-left: -1.25rem;
 }
 
-.mail-meta {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: start;
-    gap: 0.5rem 1.5rem;
-    margin-bottom: 0;
+.mail-read-content {
+    min-width: 0;
+    background: var(--color-bg);
 }
 
-.mail-meta-date {
-    grid-column: 2;
-    grid-row: 1;
+.mail-read-subject-bar {
+    background: var(--color-surface);
+    padding: 0.875rem 1.25rem 1.125rem;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.mail-read-subject-bar--expandable {
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.mail-read-subject-bar--expandable:hover,
+.mail-read-subject-bar--expandable:focus-visible {
+    background: var(--color-surface-alt);
+    outline: none;
+}
+
+.mail-read-content.is-compose-focus:not(.is-thread-expanded) .mail-message-card:not(.mail-message-card--latest) {
+    display: none;
+}
+
+.is-compose-locked .compose-panel-link,
+.is-compose-locked .mail-cmd-compose,
+.is-compose-locked #compose-link,
+.is-compose-locked .btn-compose {
+    opacity: 0.45;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
+.mail-thread {
+    padding-top: 0.875rem;
+}
+
+.mail-read-subject {
     margin: 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.02em;
+    color: var(--color-text);
+    word-break: break-word;
+}
+
+.mail-message-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    margin: 0 1rem 0.75rem;
+    overflow: hidden;
+}
+
+.mail-thread .mail-message-card:last-child {
+    margin-bottom: 1rem;
+}
+
+.mail-message-card--collapsed {
+    cursor: pointer;
+    transition: background 0.12s, box-shadow 0.12s;
+}
+
+.mail-message-card--collapsed:hover,
+.mail-message-card--collapsed:focus-visible {
+    background: var(--color-surface-alt);
+    box-shadow: var(--shadow-md);
+    outline: none;
+}
+
+.mail-message-card--collapsed.is-expanded {
+    cursor: default;
+}
+
+.mail-message-collapsed {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.875rem 1.25rem;
+}
+
+.mail-message-collapsed .mail-message-avatar {
+    width: 2.25rem;
+    height: 2.25rem;
+    font-size: 0.75rem;
+}
+
+.mail-message-collapsed-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.mail-message-collapsed-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.mail-message-snippet {
+    margin: 0.2rem 0 0;
     font-size: 0.8125rem;
-    line-height: 1.5;
+    line-height: 1.45;
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mail-message-card--latest {
+    box-shadow: var(--shadow-md);
+}
+
+.mail-message-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.mail-message-avatar {
+    flex-shrink: 0;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #fff;
+    letter-spacing: -0.02em;
+}
+
+.mail-message-sender {
+    flex: 1;
+    min-width: 0;
+}
+
+.mail-message-sender-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.mail-message-from {
+    min-width: 0;
+    line-height: 1.45;
+}
+
+.mail-message-from-name {
+    color: var(--color-primary);
+    font-weight: 600;
+    font-size: 0.9375rem;
+}
+
+.mail-message-from-email {
+    color: var(--color-text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 400;
+    margin-left: 0.2rem;
+}
+
+.mail-message-date {
+    flex-shrink: 0;
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.45;
     color: var(--color-text-secondary);
     white-space: nowrap;
     text-align: right;
 }
 
-.mail-meta-grid {
-    grid-column: 1;
-    grid-row: 1;
-    min-width: 0;
-    display: grid;
-    gap: 0.4rem;
-}
-
-.mail-meta-row {
-    display: grid;
-    grid-template-columns: 3.25rem 1fr;
-    gap: 0.5rem 1.25rem;
-    align-items: baseline;
-    font-size: 0.875rem;
-    line-height: 1.5;
-}
-
-.mail-meta-label {
-    color: var(--color-text-muted);
-    font-weight: 500;
+.mail-message-recipients {
+    margin-top: 0.2rem;
     font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
 }
 
-.mail-meta-value {
-    color: var(--color-text);
-    word-break: break-word;
-}
-
-.mail-body {
-    border-top: 1px solid var(--color-border-subtle);
-    padding-top: 1.5rem;
-    margin-top: 1.25rem;
-}
-
-.mail-message-subject {
-    margin: 0 0 1.25rem;
-    font-size: 1.5rem;
-    font-weight: 600;
-    line-height: 1.3;
-    letter-spacing: -0.025em;
-    color: var(--color-text);
-    word-break: break-word;
-}
-
-.mail-body-content {
+.mail-message-body {
+    padding: 1rem 1.25rem 1.25rem;
     min-width: 0;
 }
 
@@ -2520,31 +2664,22 @@ a:hover {
         flex-wrap: wrap;
     }
 
-    .mail-meta {
-        grid-template-columns: 1fr;
+    .mail-message-sender-row {
+        flex-direction: column;
+        gap: 0.35rem;
     }
 
-    .mail-meta-date {
-        grid-column: 1;
-        grid-row: 1;
-        justify-self: end;
+    .mail-message-date {
+        align-self: flex-end;
     }
 
-    .mail-meta-grid {
-        grid-row: 2;
+    .mail-read-subject {
+        font-size: 1.125rem;
     }
 
-    .mail-meta-row {
-        grid-template-columns: 1fr;
-        gap: 0.1rem;
-    }
-
-    .mail-meta-row + .mail-meta-row {
-        margin-top: 0.35rem;
-    }
-
-    .mail-message-subject {
-        font-size: 1.25rem;
+    .mail-message-card {
+        margin-left: 0.75rem;
+        margin-right: 0.75rem;
     }
 }
 
@@ -5038,12 +5173,13 @@ body:has(.mail-workspace) {
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;
-    background: var(--color-surface);
+    background: var(--color-bg);
 }
 
 .reading-pane-inner {
     display: flex;
     flex-direction: column;
+    min-height: 100%;
 }
 
 .mail-read-card--pane {
@@ -5051,32 +5187,577 @@ body:has(.mail-workspace) {
     border-radius: 0;
     box-shadow: none;
     margin: 0;
+    background: transparent;
+    padding: 0;
 }
 
-.mail-read-card--pane .mail-actions {
+.mail-read-card--pane > .mail-actions {
     padding: 0.75rem 1.25rem;
-    border-bottom: 1px solid var(--color-border-subtle);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
     flex-wrap: wrap;
     gap: 0.25rem;
 }
 
-.mail-read-card--pane .mail-meta,
-.mail-read-card--pane .attachments,
-.mail-read-card--pane .mail-body {
+.mail-read-card--pane .mail-read-subject-bar {
     padding-left: 1.25rem;
     padding-right: 1.25rem;
 }
 
-.mail-read-card--pane .attachments {
-    padding-bottom: 1.25rem;
+.mail-read-card--pane .mail-message-card {
+    margin-left: 1rem;
+    margin-right: 1rem;
 }
 
-.mail-read-card--pane .mail-meta {
-    padding-top: 0.875rem;
+.reading-pane.is-compose-open .compose-panel {
+    background: var(--color-bg);
 }
 
-.mail-read-card--pane .mail-message-subject {
-    font-size: 1.375rem;
+.reading-pane.is-compose-open .compose-panel-header {
+    background: var(--color-surface);
+}
+
+.reading-pane.is-compose-open .compose-panel-body {
+    padding: 0.75rem 1rem 1rem;
+    background: var(--color-bg);
+}
+
+.compose-panel-inner--reply,
+.compose-panel-inner--reply-all,
+.compose-panel-inner--forward {
+    background: transparent;
+}
+
+.compose-panel-inner--reply .compose-form,
+.compose-panel-inner--reply-all .compose-form,
+.compose-panel-inner--forward .compose-form {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 0.75rem 1rem 1rem;
+    gap: 0.75rem;
+}
+
+.compose-outlook-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+    margin-bottom: 0.25rem;
+}
+
+.compose-outlook-avatar {
+    flex-shrink: 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #fff;
+}
+
+.compose-outlook-meta {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+}
+
+.compose-outlook-meta strong {
+    color: var(--color-text);
+    font-weight: 600;
+}
+
+.compose-panel-inner--reply .compose-subject-group,
+.compose-panel-inner--reply-all .compose-subject-group {
+    margin-top: 0;
+}
+
+.compose-panel-inner--reply .compose-form > .form-group:has(#from_email),
+.compose-panel-inner--reply-all .compose-form > .form-group:has(#from_email) {
+    display: none;
+}
+
+.compose-form--outlook-inline .compose-quoted-wrap {
+    padding: 0;
+}
+
+.compose-outlook-card--reply .compose-quoted-toggle {
+    margin: 0;
+}
+
+.compose-quoted-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.75rem;
+    height: 1.5rem;
+    margin: 0.25rem 0 0;
+    padding: 0 0.65rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-surface-alt);
+    color: var(--color-text-secondary);
+    font-size: 1rem;
+    line-height: 1;
+    letter-spacing: 0.15em;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+}
+
+.compose-quoted-toggle:hover,
+.compose-quoted-toggle:focus-visible {
+    background: var(--color-surface);
+    border-color: var(--color-text-muted);
+    color: var(--color-text);
+}
+
+.compose-quoted-toggle-dots {
+    transform: translateY(-1px);
+}
+
+.compose-quoted-body {
+    margin-top: 0.5rem;
+    padding: 0.75rem 0.875rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-alt);
+    max-height: 16rem;
+    overflow: auto;
+}
+
+.compose-quoted-text {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+}
+
+/* Outlook inline reply / forward at bottom of conversation thread */
+.mail-inline-compose {
+    margin: 0 1rem 1rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+}
+
+.mail-inline-compose .compose-form--outlook-inline {
+    margin: 0;
+}
+
+.mail-inline-compose .compose-outlook-card {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.compose-outlook-card--reply .compose-outlook-header {
+    padding: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.compose-outlook-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
+    position: relative;
+}
+
+.compose-outlook-header-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem 0.75rem 1rem;
+}
+
+.compose-outlook-avatar {
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: #fff;
+}
+
+.compose-outlook-to-summary[data-to-summary-toggle] {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    min-height: 2rem;
+    margin: 0;
+    padding: 0.2rem 0.4rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    color: var(--color-text);
+    transition: background 0.12s;
+}
+
+.compose-outlook-recipients-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 1.5rem;
+    flex: 1;
+    min-width: 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    overflow: hidden;
+}
+
+.compose-outlook-summary-part {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compose-outlook-summary-label {
+    margin-right: 0.35rem;
+    color: var(--color-text);
+}
+
+.compose-outlook-to-summary[data-to-summary-toggle]:hover,
+.compose-outlook-to-summary[data-to-summary-toggle]:focus-visible {
+    background: var(--color-surface-alt);
+    outline: none;
+}
+
+.compose-outlook-card--recipients-expanded .compose-outlook-header {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+}
+
+.compose-outlook-card--recipients-expanded .compose-outlook-header-row {
+    flex: 0 0 auto;
+    padding: 0;
+    align-self: flex-start;
+}
+
+.compose-outlook-card--recipients-expanded .compose-outlook-to-summary {
+    display: none;
+}
+
+.compose-outlook-recipients-panel {
+    padding: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.compose-outlook-card--recipients-expanded .compose-outlook-recipients-panel {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+}
+
+.compose-outlook-to-prefix {
+    flex-shrink: 0;
+    color: var(--color-text);
+    font-weight: 400;
+    font-size: 0.875rem;
+}
+
+.compose-outlook-to-prefix::after {
+    content: ':';
+}
+
+.compose-outlook-to-names {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compose-recipients--outlook-expanded {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    margin: 0;
+    width: 100%;
+    background: var(--color-surface);
+    box-sizing: border-box;
+}
+
+.compose-recipients--outlook-expanded .compose-recipient-row {
+    min-height: 2.5rem;
+}
+
+.compose-recipients--outlook-expanded .compose-recipient-label {
+    flex: 0 0 2rem;
+    padding-top: 0.45rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+}
+
+.compose-recipients--outlook-expanded .recipient-chip {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    padding: 0.12rem 0.28rem 0.12rem 0.12rem;
+    max-width: min(100%, 24rem);
+    gap: 0.3rem;
+}
+
+.compose-recipients--outlook-expanded .recipient-chip-avatar {
+    display: inline-flex;
+    width: 1.35rem;
+    height: 1.35rem;
+    font-size: 0.625rem;
+}
+
+.compose-recipients--outlook-expanded .recipient-chip-label {
+    font-size: 0.8125rem;
+}
+
+.compose-recipients--outlook-expanded .recipient-chip-remove {
+    opacity: 1;
+    width: 1.1rem;
+}
+
+.compose-recipients--outlook-expanded .compose-recipient-meta {
+    padding-top: 0.35rem;
+}
+
+.compose-recipients--outlook-expanded .compose-recipient-meta button {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    padding: 0.15rem 0.35rem;
+}
+
+.compose-recipients--outlook-expanded .compose-recipient-meta button:hover,
+.compose-recipients--outlook-expanded .compose-recipient-meta button.is-active {
+    color: var(--color-primary);
+}
+
+.compose-outlook-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    flex-shrink: 0;
+}
+
+.compose-outlook-header-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    padding: 0;
+}
+
+.compose-outlook-header-btn:hover,
+.compose-outlook-header-btn:focus-visible {
+    background: var(--color-surface-alt);
+    color: var(--color-text);
+    outline: none;
+}
+
+.compose-outlook-subject-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+    font-size: 0.875rem;
+}
+
+.compose-outlook-subject-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    font-size: 0.875rem;
+    padding: 0.15rem 0;
+    color: var(--color-text);
+}
+
+.compose-outlook-subject-input:focus {
+    outline: none;
+}
+
+.compose-outlook-from-wrap {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+}
+
+.compose-outlook-editor-wrap {
+    position: relative;
+    padding: 0;
+}
+
+.compose-outlook-card--reply .compose-outlook-editor-wrap {
+    border-top: none;
+}
+
+.compose-form--outlook-inline .rich-toolbar--minimal {
+    border: none;
+    border-bottom: 1px solid var(--color-border-subtle);
+    padding: 0.35rem 1rem;
+    margin-bottom: 0;
+    background: transparent;
+}
+
+.compose-outlook-editor {
+    min-height: 7.5rem;
+    max-height: 18rem;
+    overflow-y: auto;
+    border: none;
+    border-radius: 0;
+    padding: 0.75rem 1rem 2.25rem;
+    box-shadow: none;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+}
+
+.compose-outlook-card--expanded .compose-outlook-editor {
+    min-height: 16rem;
+    max-height: 32rem;
+}
+
+.compose-outlook-card--reply .compose-quoted-wrap {
+    position: absolute;
+    left: 1rem;
+    bottom: 0.65rem;
+    padding: 0;
+    z-index: 2;
+}
+
+.compose-outlook-card--reply .compose-quoted-wrap:has(.compose-quoted-body:not([hidden])) {
+    position: static;
+    left: auto;
+    bottom: auto;
+    padding: 0 1rem 0.75rem;
+}
+
+.compose-outlook-card--reply .compose-quoted-body:not([hidden]) {
+    position: static;
+    margin: 0.5rem 0 0;
+}
+
+.compose-outlook-forwarded {
+    padding: 0.5rem 1rem 0;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+}
+
+.file-upload--compact {
+    border: none;
+    background: transparent;
+}
+
+.compose-outlook-attach {
+    padding: 0.35rem 1rem 0.5rem;
+}
+
+.compose-form--outlook-inline .file-upload-label--compact {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0;
+    border: none;
+    background: transparent;
+    color: var(--color-primary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.compose-form--outlook-inline .file-upload-label--compact:hover {
+    text-decoration: underline;
+}
+
+.compose-outlook-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 1rem 0.85rem;
+    border-top: 1px solid var(--color-border-subtle);
+}
+
+.compose-outlook-send {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.95rem;
+    border: none;
+    border-radius: var(--radius);
+    background: var(--color-primary);
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    line-height: 1.25;
+    transition: background 0.12s;
+}
+
+.compose-outlook-send:hover,
+.compose-outlook-send:focus-visible {
+    background: var(--color-primary-hover);
+}
+
+.compose-outlook-discard {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.95rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    line-height: 1.25;
+    transition: background 0.12s, border-color 0.12s;
+}
+
+.compose-outlook-discard:hover,
+.compose-outlook-discard:focus-visible {
+    background: var(--color-surface-alt);
+    border-color: var(--color-text-muted);
+}
+
+.reading-pane.is-inline-compose-open .reading-pane-viewport {
+    display: flex;
 }
 
 .mail-row.is-selected,
@@ -5588,7 +6269,7 @@ body:has(.mail-workspace) {
         background: #fff !important;
     }
 
-    body.is-printing-message #print-message-root .mail-message-subject {
+    body.is-printing-message #print-message-root .mail-read-subject {
         font-size: 1.25rem !important;
         margin: 0 0 0.75rem !important;
     }
@@ -5622,7 +6303,8 @@ body:has(.mail-workspace) {
     .reading-pane-body,
     .reading-pane-inner,
     .mail-read-card,
-    .mail-body,
+    .mail-message-card,
+    .mail-message-body,
     .mail-body-html,
     .mail-body-plain,
     .print-area {
@@ -5646,12 +6328,12 @@ body:has(.mail-workspace) {
         display: none !important;
     }
 
-    .mail-meta,
-    .mail-meta-label,
-    .mail-meta-value,
-    .mail-meta-date,
-    .mail-message-subject,
-    .mail-body,
+    .mail-read-subject,
+    .mail-message-from-name,
+    .mail-message-from-email,
+    .mail-message-date,
+    .mail-message-recipients,
+    .mail-message-body,
     .mail-body-html,
     .mail-body-plain,
     .mail-body-html * {
@@ -5665,9 +6347,8 @@ body:has(.mail-workspace) {
         page-break-inside: avoid;
     }
 
-    .mail-body,
-    .mail-meta,
-    .attachments {
+    .mail-message-body,
+    .attachments--message {
         page-break-inside: auto;
     }
 
