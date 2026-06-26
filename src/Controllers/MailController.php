@@ -97,7 +97,7 @@ class MailController
         $forceRefresh = ($params['refresh'] ?? $_GET['refresh'] ?? '') === '1';
         $cacheFirst = !$forceRefresh;
 
-        FolderCache::load(skipUnreadRefresh: true);
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
 
         if ($forceRefresh) {
             $filterResult = $this->maybeRunFilter($folderPath, true);
@@ -106,17 +106,11 @@ class MailController
             }
         }
 
-        $folderData = FolderCache::load(skipUnreadRefresh: true);
-
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $query = trim($_GET['q'] ?? '');
         $folders = $folderData['folders'];
         $imapConnected = $folderData['connected'];
         $imapError = $folderData['error'];
-
-        if ($imapConnected && !$this->folderExists($folders, $folderPath)) {
-            return null;
-        }
 
         $perPage = mail_per_page();
         $list = ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => $perPage, 'total_pages' => 0];
@@ -172,6 +166,14 @@ class MailController
         }
 
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
+
+        foreach ($folders as $folder) {
+            $listed = (string) ($folder['path'] ?? '');
+            if ($listed !== '' && strcasecmp($listed, $folderPath) === 0) {
+                $folderPath = $listed;
+                break;
+            }
+        }
 
         $prefs = user_preferences();
 
@@ -1855,7 +1857,7 @@ class MailController
     private function folderExists(array $folders, string $path): bool
     {
         foreach ($folders as $folder) {
-            if ($folder['path'] === $path) {
+            if (strcasecmp((string) ($folder['path'] ?? ''), $path) === 0) {
                 return true;
             }
         }
@@ -1869,7 +1871,7 @@ class MailController
     private function folderDisplayName(array $folders, string $path): string
     {
         foreach ($folders as $folder) {
-            if ($folder['path'] === $path) {
+            if (strcasecmp((string) ($folder['path'] ?? ''), $path) === 0) {
                 return $folder['path'] === 'INBOX' ? 'Inbox' : $folder['name'];
             }
         }

@@ -22,7 +22,7 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
 
 $renderFolderLink = static function (array $folder, string $bucket) use ($activeFolder, $unreadCounts): void {
     $displayName = sidebar_folder_label($folder, $bucket);
-    $isActive = ($activeFolder ?? '') === $folder['path'];
+    $isActive = strcasecmp($activeFolder ?? '', $folder['path']) === 0;
     $icon = folder_icon_type($folder['path']);
     $unread = folder_shows_unread_badge($folder['path'])
         ? (int) ($unreadCounts[$folder['path']] ?? 0)
@@ -50,7 +50,7 @@ foreach ($grouped['other'] as $folder) {
 }
 $foldersOpen = false;
 foreach ($grouped['other'] as $folder) {
-    if (($activeFolder ?? '') === $folder['path']) {
+    if (strcasecmp($activeFolder ?? '', $folder['path']) === 0) {
         $foldersOpen = true;
         break;
     }

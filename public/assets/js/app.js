@@ -253,9 +253,18 @@
         return { folderB64: m[1] };
     }
 
-    function updateSidebarActive(folderPath) {
+    function folderPathKey(path) {
+        return path ? String(path).toLowerCase() : '';
+    }
+
+    function updateSidebarActive(folderPath, folderB64) {
+        var pathKey = folderPathKey(folderPath);
+        var b64 = folderB64 || '';
         document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
-            var active = link.getAttribute('data-folder-path') === folderPath;
+            var linkPath = link.getAttribute('data-folder-path') || '';
+            var linkB64 = link.getAttribute('data-folder-b64') || '';
+            var active = (b64 !== '' && linkB64 === b64)
+                || (pathKey !== '' && folderPathKey(linkPath) === pathKey);
             link.classList.toggle('active', active);
             if (active && link.closest('.sidebar-group.is-collapsible')) {
                 link.closest('.sidebar-group').classList.add('is-open');
@@ -894,7 +903,7 @@
                 workspace.replaceChild(newColumn, oldColumn);
             }
 
-            if (data.folder_path) updateSidebarActive(data.folder_path);
+            if (data.folder_path) updateSidebarActive(data.folder_path, data.folder_b64);
             if (data.unread_counts) applyUnreadCounts(data.unread_counts);
             if (data.title) {
                 var parts = document.title.split(' — ');
@@ -926,6 +935,8 @@
 
             e.preventDefault();
             var b64 = link.getAttribute('data-folder-b64');
+            var path = link.getAttribute('data-folder-path');
+            if (path) updateSidebarActive(path, b64);
             loadFolderAjax(b64, true);
             if (window.innerWidth < 900) closeSidebar();
         });

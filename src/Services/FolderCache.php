@@ -12,8 +12,7 @@ class FolderCache
     private const SESSION_KEY = '_folder_cache';
     private const PENDING_BADGE_PATHS_KEY = '_pending_badge_paths';
     private const PENDING_FILTER_ROUTES_KEY = '_pending_filter_routes';
-    private const TTL = 300;
-    private const UNREAD_TTL = 60;
+    private const UNREAD_TTL = 90;
 
     /**
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}|null
@@ -21,13 +20,7 @@ class FolderCache
     public function get(): ?array
     {
         $cached = $_SESSION[self::SESSION_KEY] ?? null;
-        if (!is_array($cached) || !isset($cached['expires'], $cached['folders'])) {
-            return null;
-        }
-
-        if (time() > (int) $cached['expires']) {
-            unset($_SESSION[self::SESSION_KEY]);
-
+        if (!is_array($cached) || !isset($cached['folders'])) {
             return null;
         }
 
@@ -46,7 +39,6 @@ class FolderCache
     public function set(array $folders, array $unreadCounts = []): void
     {
         $_SESSION[self::SESSION_KEY] = [
-            'expires' => time() + self::TTL,
             'folders' => $folders,
             'unread_counts' => self::sanitizeUnreadCounts($unreadCounts),
             'unread_expires' => time() + self::UNREAD_TTL,
@@ -852,10 +844,10 @@ class FolderCache
 
             $seen[$key] = true;
             $entry = $registry[$key];
-            $folder['path'] = $entry['path'];
+            // Keep the exact IMAP path for open/list operations; registry only supplies the label.
             $folder['name'] = $entry['display_name'];
             $filtered[] = $folder;
-            $counts[$entry['path']] = (int) (
+            $counts[$imapPath] = (int) (
                 $data['unread_counts'][$imapPath]
                 ?? $data['unread_counts'][$entry['path']]
                 ?? 0
