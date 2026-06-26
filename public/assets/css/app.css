@@ -381,6 +381,7 @@ a:hover {
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    overflow: hidden;
 }
 
 .btn-compose {
@@ -388,6 +389,7 @@ a:hover {
     align-items: center;
     justify-content: center;
     gap: var(--space-2);
+    flex-shrink: 0;
     margin: 0 var(--space-1) var(--space-3);
     padding: var(--space-2) var(--space-3);
     font-weight: 600;
@@ -403,12 +405,13 @@ a:hover {
 
 .sidebar-scroll,
 .sidebar-groups {
-    flex: 1;
+    flex: 1 1 auto;
     min-height: 0;
-    padding: 0 0.25rem 0.75rem;
+    padding: 0 0.25rem 0.5rem;
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
 }
 
 .sidebar-primary-folders {
@@ -441,7 +444,8 @@ a:hover {
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-2) var(--space-3);
+    min-height: 2.25rem;
+    padding: 0.35rem var(--space-3);
     margin: 1px 0;
     border-radius: var(--radius-sm);
     border-left: 3px solid transparent;
@@ -2252,6 +2256,10 @@ a:hover {
         transform: translateX(0);
     }
 
+    .sidebar {
+        padding: 0.5rem 0.35rem;
+    }
+
     .sidebar-backdrop:not([hidden]) {
         display: block;
     }
@@ -3103,8 +3111,9 @@ body.modal-open {
     align-items: center;
     gap: 0.55rem;
     width: 100%;
-    padding: 0.55rem 0.65rem;
-    margin: 0.4rem 0 0.25rem;
+    min-height: 2.25rem;
+    padding: 0.4rem 0.65rem;
+    margin: 0.35rem 0 0.2rem;
     border: none;
     background: transparent;
     color: var(--color-text-secondary);
@@ -5051,9 +5060,73 @@ body:has(.mail-workspace) {
 
 @media (max-width: 1023px) {
     .sidebar-link {
-        min-height: 2.75rem;
-        padding-top: var(--space-2);
-        padding-bottom: var(--space-2);
+        min-height: 2.125rem;
+        padding: 0.3rem 0.6rem;
+        gap: 0.5rem;
+        margin: 0;
+        font-size: 0.78125rem;
+    }
+
+    .sidebar-primary-folders .sidebar-link,
+    .sidebar-group-items .sidebar-link,
+    .sidebar-footer .sidebar-link {
+        min-height: 2.125rem;
+        padding: 0.3rem 0.6rem;
+    }
+
+    .sidebar .folder-icon {
+        width: 17px;
+        height: 17px;
+        opacity: 0.88;
+    }
+
+    .sidebar-groups {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 0.15rem 0.35rem;
+    }
+
+    .sidebar-divider {
+        margin: 0.3rem 0.45rem;
+    }
+
+    .sidebar-group-toggle {
+        min-height: 2.125rem;
+        padding: 0.3rem 0.5rem;
+        margin: 0.15rem 0 0.05rem;
+        gap: 0.5rem;
+        font-size: 0.78125rem;
+    }
+
+    .sidebar-group-chevron-btn {
+        width: 1.2rem;
+        height: 1.2rem;
+    }
+
+    .sidebar-group {
+        margin-bottom: 0;
+    }
+
+    .sidebar-group-items {
+        padding: 0.1rem 0 0.2rem 0.3rem;
+    }
+
+    .sidebar-group.is-collapsible .sidebar-group-items .sidebar-link {
+        padding-left: 0.55rem;
+    }
+
+    .sidebar-footer {
+        flex-shrink: 0;
+        padding: 0.35rem 0.25rem 0.5rem;
+        margin-top: auto;
+    }
+
+    .btn-compose {
+        min-height: 2.25rem;
+        margin-bottom: 0.4rem;
+        padding: 0.35rem 0.65rem;
+        font-size: 0.78125rem;
     }
 
     .mail-list-mobile {
@@ -5078,10 +5151,6 @@ body:has(.mail-workspace) {
 
     .mail-kebab {
         display: none !important;
-    }
-
-    .btn-compose {
-        min-height: 2.75rem;
     }
 
     .mail-cmd-btn--refresh-mobile {
