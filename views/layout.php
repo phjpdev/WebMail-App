@@ -2,9 +2,9 @@
 <html lang="en" data-theme="<?= e(($prefs['theme'] ?? 'light') === 'auto' ? '' : ($prefs['theme'] ?? 'light')) ?>">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=77">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=79">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -36,42 +36,6 @@
       data-csrf="<?= e(csrf_token()) ?>"
       data-base-url="<?= e(url('')) ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
-
-    <div id="confirm-modal" class="app-modal" hidden aria-hidden="true">
-        <div class="app-modal-backdrop" data-confirm-dismiss tabindex="-1"></div>
-        <div class="app-modal-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message">
-            <div class="app-modal-body">
-                <div class="app-modal-icon" id="confirm-modal-icon" aria-hidden="true">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
-                </div>
-                <div class="app-modal-content">
-                    <h2 id="confirm-modal-title" class="app-modal-title"></h2>
-                    <p id="confirm-modal-message" class="app-modal-message"></p>
-                </div>
-            </div>
-            <div class="app-modal-actions">
-                <button type="button" class="btn btn-outline" id="confirm-modal-cancel">Cancel</button>
-                <button type="button" class="btn btn-primary" id="confirm-modal-ok">OK</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="folder-picker-modal" class="app-modal folder-picker-modal" hidden aria-hidden="true">
-        <div class="app-modal-backdrop" data-folder-picker-dismiss tabindex="-1"></div>
-        <div class="app-modal-dialog app-modal-dialog--sheet" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
-            <div class="folder-picker-header">
-                <h2 id="folder-picker-title" class="folder-picker-title">Choose folder</h2>
-                <button type="button" class="folder-picker-close" id="folder-picker-cancel" aria-label="Close">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                </button>
-            </div>
-            <div class="folder-picker-search-wrap">
-                <label class="sr-only" for="folder-picker-search">Search folders</label>
-                <input type="search" id="folder-picker-search" class="folder-picker-search" placeholder="Search folders…" autocomplete="off">
-            </div>
-            <div class="folder-picker-list" id="folder-picker-list" role="listbox" aria-labelledby="folder-picker-title"></div>
-        </div>
-    </div>
 
     <header class="site-header">
         <div class="header-inner">
@@ -120,6 +84,42 @@
         </main>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=86" defer></script>
+    <div id="confirm-modal" class="app-modal" hidden aria-hidden="true">
+        <div class="app-modal-backdrop" data-confirm-dismiss tabindex="-1"></div>
+        <div class="app-modal-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message">
+            <div class="app-modal-body">
+                <div class="app-modal-icon" id="confirm-modal-icon" aria-hidden="true">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                </div>
+                <div class="app-modal-content">
+                    <h2 id="confirm-modal-title" class="app-modal-title"></h2>
+                    <p id="confirm-modal-message" class="app-modal-message"></p>
+                </div>
+            </div>
+            <div class="app-modal-actions">
+                <button type="button" class="btn btn-outline" id="confirm-modal-cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirm-modal-ok">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="folder-picker-modal" class="app-modal folder-picker-modal" hidden aria-hidden="true">
+        <div class="app-modal-backdrop" data-folder-picker-dismiss tabindex="-1"></div>
+        <div class="app-modal-dialog app-modal-dialog--sheet" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
+            <div class="folder-picker-header">
+                <h2 id="folder-picker-title" class="folder-picker-title">Choose folder</h2>
+                <button type="button" class="folder-picker-close" id="folder-picker-cancel" aria-label="Close">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="folder-picker-search-wrap">
+                <label class="sr-only" for="folder-picker-search">Search folders</label>
+                <input type="search" id="folder-picker-search" class="folder-picker-search" placeholder="Search folders…" autocomplete="off">
+            </div>
+            <div class="folder-picker-list" id="folder-picker-list" role="listbox" aria-labelledby="folder-picker-title"></div>
+        </div>
+    </div>
+
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=87" defer></script>
 </body>
 </html>

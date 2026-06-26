@@ -68,10 +68,10 @@ $isFlagged = !empty($message['flagged']);
     </button>
 
     <?php if (!empty($moveTargets)): ?>
-    <form class="mail-action-move move-form" onsubmit="return false;">
+    <div class="mail-action-move" id="read-mail-move-<?= $uid ?>">
         <label class="sr-only" for="read-move-target-<?= $uid ?>">Move to folder</label>
-        <div class="mail-action-move-select-wrap">
-            <select id="read-move-target-<?= $uid ?>" name="target_folder" class="mail-action-move-select" required aria-label="Move to folder">
+        <div class="mail-action-move-select-wrap" aria-hidden="true">
+            <select id="read-move-target-<?= $uid ?>" name="target_folder" class="mail-action-move-select" aria-label="Move to folder" tabindex="-1">
                 <option value="">Move to…</option>
                 <?php foreach ($moveTargets as $target): ?>
                     <option value="<?= e($target['path']) ?>"><?= e($target['name']) ?></option>
@@ -81,7 +81,7 @@ $isFlagged = !empty($message['flagged']);
         <button type="button" class="mail-action-btn mail-action-btn--move" data-mail-action="move" title="Move to folder" aria-label="Move to folder">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h5l2 3h11v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7z"/><path d="M9 12h7"/><path d="M13 9l3 3-3 3"/></svg>
         </button>
-    </form>
+    </div>
     <?php endif; ?>
 </div>
 
