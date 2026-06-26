@@ -549,6 +549,36 @@ function folder_url(string $folderPath, string $suffix = ''): string
 }
 
 /**
+ * Personal inbox path for the logged-in employee (e.g. INBOX.Jean).
+ */
+function employee_linked_inbox_path(?array $user = null): ?string
+{
+    static $cache = [];
+
+    $user = $user ?? App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return null;
+    }
+
+    $userId = (int) $user['id'];
+    if (array_key_exists($userId, $cache)) {
+        return $cache[$userId];
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' AND active = 1 LIMIT 1",
+            [$userId]
+        );
+        $cache[$userId] = ($row !== null && !empty($row['imap_path'])) ? (string) $row['imap_path'] : null;
+    } catch (\Throwable) {
+        $cache[$userId] = null;
+    }
+
+    return $cache[$userId];
+}
+
+/**
  * Default folder after login: employees land on their linked folder, admins on INBOX.
  */
 function default_mail_folder(): string
@@ -750,8 +780,40 @@ function spam_folder_path(): string
  */
 function resolve_system_folder(array $keywords, string $default): string
 {
+    $employeeInbox = employee_linked_inbox_path();
+
     try {
         $folders = \App\Services\FolderCache::load(skipUnreadRefresh: true)['folders'];
+
+        if ($employeeInbox !== null) {
+            $prefix = $employeeInbox . '.';
+            foreach ($keywords as $keyword) {
+                foreach ($folders as $folder) {
+                    $path = (string) ($folder['path'] ?? '');
+                    if ($path !== '' && str_starts_with($path, $prefix) && str_contains(strtolower($path), $keyword)) {
+                        return $path;
+                    }
+                }
+            }
+
+            $suffixByKeyword = [
+                'sent' => 'Sent',
+                'draft' => 'Drafts',
+                'archive' => 'Archive',
+                'junk' => 'Junk',
+                'spam' => 'Spam',
+                'trash' => 'Trash',
+            ];
+            foreach ($keywords as $keyword) {
+                $keyword = strtolower($keyword);
+                foreach ($suffixByKeyword as $needle => $suffix) {
+                    if (str_contains($keyword, $needle) || str_contains($needle, $keyword)) {
+                        return $employeeInbox . '.' . $suffix;
+                    }
+                }
+            }
+        }
+
         foreach ($keywords as $keyword) {
             foreach ($folders as $folder) {
                 $path = (string) ($folder['path'] ?? '');
@@ -762,6 +824,25 @@ function resolve_system_folder(array $keywords, string $default): string
         }
     } catch (\Throwable) {
         // fall through to default
+    }
+
+    if ($employeeInbox !== null) {
+        $suffixByKeyword = [
+            'sent' => 'Sent',
+            'draft' => 'Drafts',
+            'archive' => 'Archive',
+            'junk' => 'Junk',
+            'spam' => 'Spam',
+            'trash' => 'Trash',
+        ];
+        foreach ($keywords as $keyword) {
+            $keyword = strtolower($keyword);
+            foreach ($suffixByKeyword as $needle => $suffix) {
+                if (str_contains($keyword, $needle) || str_contains($needle, $keyword)) {
+                    return $employeeInbox . '.' . $suffix;
+                }
+            }
+        }
     }
 
     return $default;
@@ -965,6 +1046,11 @@ function folder_icon_type(string $path): string
  */
 function sidebar_folder_bucket(string $path): string
 {
+    $employeeInbox = employee_linked_inbox_path();
+    if ($employeeInbox !== null && $path === $employeeInbox) {
+        return 'inbox';
+    }
+
     $lower = strtolower($path);
     if ($path === 'INBOX') {
         return 'inbox';

@@ -510,18 +510,18 @@ class FolderCache
             return $allPaths;
         }
 
-        $allowed = $this->employeeAllowedPaths((int) $user['id']);
+        $prefix = $this->employeeMailboxPrefix((int) $user['id']);
 
         return array_values(array_filter(
             $allPaths,
-            fn (string $path) => $this->isEmployeeFolderAllowed($path, $allowed)
+            fn (string $path) => $this->isEmployeeFolderAllowed($path, $prefix)
         ));
     }
 
     /**
      * Authorization check for direct folder access (read, attachment, move, etc.).
-     * Only folders in the admin registry may be opened. Employees may additionally
-     * only access INBOX, standard shared folders, and their own linked folder.
+     * Only folders in the admin registry may be opened. Employees may only open
+     * their personal mailbox (linked inbox and subfolders under it).
      */
     public static function canAccess(string $path): bool
     {
@@ -543,9 +543,9 @@ class FolderCache
             return true;
         }
 
-        $allowedPaths = $cache->employeeAllowedPaths((int) $user['id']);
+        $prefix = $cache->employeeMailboxPrefix((int) $user['id']);
 
-        return $cache->isEmployeeFolderAllowed($path, $allowedPaths);
+        return $cache->isEmployeeFolderAllowed($path, $prefix);
     }
 
     /**
@@ -561,12 +561,12 @@ class FolderCache
             return $data;
         }
 
-        $allowedPaths = $this->employeeAllowedPaths((int) $user['id']);
+        $prefix = $this->employeeMailboxPrefix((int) $user['id']);
         $filtered = [];
         $counts = [];
 
         foreach ($data['folders'] as $folder) {
-            if ($this->isEmployeeFolderAllowed($folder['path'], $allowedPaths)) {
+            if ($this->isEmployeeFolderAllowed($folder['path'], $prefix)) {
                 $filtered[] = $folder;
                 $counts[$folder['path']] = $data['unread_counts'][$folder['path']] ?? 0;
             }
@@ -578,44 +578,37 @@ class FolderCache
         return $data;
     }
 
-    /**
-     * @return list<string>
+  /**
+     * Personal mailbox root for an employee (e.g. INBOX.Jean).
      */
-    private function employeeAllowedPaths(int $userId): array
+    private function employeeMailboxPrefix(int $userId): ?string
     {
-        $paths = [];
         try {
             $linked = Database::fetchOne(
-                'SELECT imap_path FROM folders WHERE linked_user_id = ? AND active = 1 LIMIT 1',
+                "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' AND active = 1 LIMIT 1",
                 [$userId]
             );
-            if ($linked !== null) {
-                $paths[] = $linked['imap_path'];
+            if ($linked !== null && !empty($linked['imap_path'])) {
+                return (string) $linked['imap_path'];
             }
         } catch (\Throwable $e) {
             // ignore
         }
 
-        return $paths;
+        return null;
     }
 
-    /**
-     * @param list<string> $allowedPaths
-     */
-    private function isEmployeeFolderAllowed(string $path, array $allowedPaths): bool
+    private function isEmployeeFolderAllowed(string $path, ?string $mailboxPrefix): bool
     {
-        if (in_array($path, $allowedPaths, true)) {
+        if ($mailboxPrefix === null || $mailboxPrefix === '') {
+            return false;
+        }
+
+        if ($path === $mailboxPrefix) {
             return true;
         }
 
-        $lower = strtolower($path);
-        foreach (['sent', 'draft', 'trash', 'spam', 'junk'] as $type) {
-            if (str_contains($lower, $type)) {
-                return true;
-            }
-        }
-
-        return false;
+        return str_starts_with($path, $mailboxPrefix . '.');
     }
 
     /**

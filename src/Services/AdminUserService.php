@@ -189,6 +189,54 @@ class AdminUserService
 
         FilterService::clearProcessed((string) (config('app')['filter_source_folder'] ?? 'INBOX'));
 
+        if ($this->provisionEmployeeSubfolders($imapPath, $userId)) {
+            $created = true;
+        }
+
+        return $created;
+    }
+
+    /**
+     * Create personal Sent/Drafts/Archive/Junk/Spam/Trash folders under an employee mailbox.
+     *
+     * @return bool true if anything new was created
+     */
+    private function provisionEmployeeSubfolders(string $imapPath, int $userId): bool
+    {
+        $created = false;
+        $folderService = new AdminFolderService();
+        $subfolders = [
+            ['suffix' => 'Sent', 'display_name' => 'Sent', 'folder_type' => 'sent'],
+            ['suffix' => 'Drafts', 'display_name' => 'Drafts', 'folder_type' => 'other'],
+            ['suffix' => 'Archive', 'display_name' => 'Archive', 'folder_type' => 'other'],
+            ['suffix' => 'Junk', 'display_name' => 'Junk', 'folder_type' => 'spam'],
+            ['suffix' => 'Spam', 'display_name' => 'Spam', 'folder_type' => 'spam'],
+            ['suffix' => 'Trash', 'display_name' => 'Trash', 'folder_type' => 'trash'],
+        ];
+
+        foreach ($subfolders as $subfolder) {
+            $subPath = $imapPath . '.' . $subfolder['suffix'];
+            $existing = Database::fetchOne(
+                'SELECT id FROM folders WHERE imap_path = ? LIMIT 1',
+                [$subPath]
+            );
+            if ($existing !== null) {
+                continue;
+            }
+
+            $folderService->insertFolder([
+                'imap_path' => $subPath,
+                'display_name' => $subfolder['display_name'],
+                'folder_type' => $subfolder['folder_type'],
+                'linked_user_id' => $userId,
+            ]);
+            $created = true;
+        }
+
+        if ($created) {
+            (new FolderCache())->clear();
+        }
+
         return $created;
     }
 
