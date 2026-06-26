@@ -747,6 +747,11 @@ a:hover {
     border-top-color: #fff;
 }
 
+.btn-danger.is-loading .btn-spinner {
+    border-color: rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+}
+
 .mail-cmd-btn.is-loading,
 .mail-action-btn.is-loading {
     position: relative;
@@ -1854,6 +1859,15 @@ a:hover {
     line-height: 1.6;
 }
 
+.mail-quoted-wrap {
+    margin-top: 0.75rem;
+}
+
+.mail-body-html--quoted {
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+}
+
 /* Forms */
 .table-wrap {
     overflow-x: auto;
@@ -2907,12 +2921,14 @@ body.modal-open {
 .app-modal-backdrop {
     position: absolute;
     inset: 0;
+    z-index: 0;
     background: rgba(0, 0, 0, 0.32);
     backdrop-filter: blur(1px);
 }
 
 .app-modal-dialog {
     position: relative;
+    z-index: 1;
     width: 100%;
     max-width: 420px;
     background: var(--color-surface);
@@ -3006,6 +3022,18 @@ body.modal-open {
 
 .app-modal-actions .btn {
     min-width: 5.5rem;
+}
+
+.app-modal-dialog--busy .app-modal-actions {
+    pointer-events: none;
+}
+
+.app-modal-dialog--busy .app-modal-actions .btn.is-loading {
+    pointer-events: none;
+}
+
+.app-modal-dialog--busy .app-modal-actions #confirm-modal-cancel {
+    pointer-events: auto;
 }
 
 [data-theme="dark"] .app-modal-backdrop {
@@ -4553,6 +4581,15 @@ body:has(.mail-workspace) {
     .mail-command-bar:not(.mail-command-bar--has-selection) .mail-cmd-move {
         display: none;
     }
+
+    .mail-command-bar--has-selection .mail-command-bar-actions .mail-cmd-btn:not(:disabled),
+    .mail-command-bar--has-selection .mail-command-bar-actions .mail-cmd-move {
+        display: inline-flex !important;
+    }
+
+    .mail-command-bar--has-selection .mail-command-bar-actions .mail-command-divider {
+        display: inline-block;
+    }
 }
 
 .mail-cmd-move {
@@ -4609,12 +4646,6 @@ body:has(.mail-workspace) {
 
 .mail-list-select-all--toolbar {
     font-size: 0.75rem;
-}
-
-.mail-cmd-selection-count {
-    font-size: 0.75rem;
-    color: var(--color-text-muted);
-    white-space: nowrap;
 }
 
 .mail-select-all-banner {

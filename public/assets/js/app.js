@@ -64,6 +64,8 @@
     var PANE_MEDIA = window.matchMedia('(min-width: 1024px)');
     var paneLoadSeq = 0;
     var folderLoadSeq = 0;
+    var folderFetchAbort = null;
+    var listMutationQuietUntil = 0;
     var composePanelSeq = 0;
     var composePanelRestoreUid = null;
     var composePrefetchCache = {};
@@ -163,6 +165,45 @@
             return n === 1 ? 'Message deleted permanently.' : 'Selected messages deleted permanently.';
         }
         return n === 1 ? 'Message moved to Trash.' : 'Selected messages moved to Trash.';
+    }
+
+    function deleteLoadingMessage(count) {
+        var n = count || 1;
+        if (isTrashFolder()) {
+            return n === 1 ? 'Deleting message…' : 'Deleting messages…';
+        }
+        return n === 1 ? 'Moving to Trash…' : 'Moving messages to Trash…';
+    }
+
+    function resetConfirmModalButtons() {
+        setConfirmModalLoading(false);
+        var okBtn = document.getElementById('confirm-modal-ok');
+        var cancelBtn = document.getElementById('confirm-modal-cancel');
+        if (okBtn) setButtonLoading(okBtn, false);
+        if (cancelBtn) cancelBtn.disabled = false;
+    }
+
+    function setConfirmModalLoading(loading, loadingLabel) {
+        var modal = document.getElementById('confirm-modal');
+        var okBtn = document.getElementById('confirm-modal-ok');
+        var cancelBtn = document.getElementById('confirm-modal-cancel');
+        var backdrop = modal ? modal.querySelector('[data-confirm-dismiss]') : null;
+        var dialog = modal ? modal.querySelector('.app-modal-dialog') : null;
+
+        if (okBtn) {
+            if (loading) {
+                setButtonLoading(okBtn, true, loadingLabel || okBtn.textContent.trim());
+            } else {
+                setButtonLoading(okBtn, false);
+            }
+        }
+        if (cancelBtn) cancelBtn.disabled = false;
+        if (backdrop) backdrop.style.pointerEvents = loading ? 'none' : '';
+        if (dialog) {
+            dialog.classList.toggle('app-modal-dialog--busy', !!loading);
+            if (loading) dialog.setAttribute('aria-busy', 'true');
+            else dialog.removeAttribute('aria-busy');
+        }
     }
 
     function parseMessagePath(pathname) {
@@ -784,12 +825,41 @@
         prefetchUnreadInList(document);
     }
 
+    function isListMutationQuiet() {
+        return Date.now() < listMutationQuietUntil;
+    }
+
+    function beginListMutationQuiet(ms) {
+        listMutationQuietUntil = Date.now() + (ms || 2500);
+        mailSyncPaused = true;
+    }
+
+    function endListMutationQuiet(delayMs) {
+        window.setTimeout(function () {
+            if (Date.now() >= listMutationQuietUntil) {
+                mailSyncPaused = false;
+            }
+        }, delayMs || 0);
+    }
+
     function loadFolderAjax(folderB64, pushHistory, forceRefresh) {
         if (!folderB64 || !document.getElementById('mail-workspace')) return;
+
+        stopMailSync();
+        if (folderFetchAbort) {
+            try { folderFetchAbort.abort(); } catch (e) { /* ignore */ }
+        }
+        if (typeof AbortController !== 'undefined') {
+            folderFetchAbort = new AbortController();
+        } else {
+            folderFetchAbort = null;
+        }
 
         var seq = ++folderLoadSeq;
         clearReadingPane();
         closeComposePanel(false);
+        mailSyncPaused = true;
+        listMutationQuietUntil = 0;
 
         var column = document.querySelector('.mail-list-column');
         if (column) column.classList.add('is-loading');
@@ -801,7 +871,8 @@
 
         fetch(fragmentUrl, {
             credentials: 'same-origin',
-            headers: { Accept: 'application/json' }
+            headers: { Accept: 'application/json' },
+            signal: folderFetchAbort ? folderFetchAbort.signal : undefined
         }).then(function (res) {
             return res.json().then(function (data) {
                 if (!res.ok) throw new Error((data && data.error) || 'Could not load folder.');
@@ -837,9 +908,11 @@
             announceLive('Folder loaded: ' + (data.title || 'Mail'));
         }).catch(function (err) {
             if (seq !== folderLoadSeq) return;
+            if (err && err.name === 'AbortError') return;
             showToast('error', err.message || 'Could not load folder.');
         }).finally(function () {
             if (seq !== folderLoadSeq) return;
+            mailSyncPaused = false;
             var col = document.querySelector('.mail-list-column');
             if (col) col.classList.remove('is-loading');
         });
@@ -1928,6 +2001,7 @@
         if (!mailPoll) return;
         if (mailPollInFlight) return;
         if (!force && isPostSendQuiet()) return;
+        if (!force && isListMutationQuiet()) return;
         if (mailSyncPaused && !force) return;
         var now = Date.now();
         if (!force && (now - lastMailPollAt) < mailPollMinGapMs) return;
@@ -2188,6 +2262,7 @@
         var infoIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></svg>';
 
         return new Promise(function (resolve) {
+            resetConfirmModalButtons();
             if (titleEl) titleEl.textContent = opts.title || (isAlert ? 'Notice' : 'Confirm');
             if (msgEl) msgEl.textContent = opts.message || '';
             if (okBtn) {
@@ -2209,6 +2284,7 @@
             }
 
             function finish(result) {
+                resetConfirmModalButtons();
                 modal.hidden = true;
                 modal.setAttribute('aria-hidden', 'true');
                 unlockBodyForModal();
@@ -2240,6 +2316,122 @@
         });
     }
 
+    /**
+     * Confirm dialog that runs an async action with loading state on the primary button.
+     * @param {{ title?: string, message?: string, confirmLabel?: string, cancelLabel?: string, danger?: boolean, loadingLabel?: string, successMessage?: string, errorMessage?: string, action: function(): Promise<*> }} opts
+     * @returns {Promise<boolean>}
+     */
+    function showConfirmAction(opts) {
+        opts = opts || {};
+        if (typeof opts.action !== 'function') {
+            return showConfirm(opts);
+        }
+
+        var modal = document.getElementById('confirm-modal');
+        if (!modal) {
+            return Promise.resolve(window.confirm(opts.message || opts.title || 'Are you sure?'))
+                .then(function (ok) {
+                    if (!ok) return false;
+                    return opts.action().then(function () {
+                        if (opts.successMessage) showToast('success', opts.successMessage);
+                        return true;
+                    }).catch(function (err) {
+                        showToast('error', err.message || opts.errorMessage || 'Action failed.');
+                        return false;
+                    });
+                });
+        }
+
+        var titleEl = document.getElementById('confirm-modal-title');
+        var msgEl = document.getElementById('confirm-modal-message');
+        var okBtn = document.getElementById('confirm-modal-ok');
+        var cancelBtn = document.getElementById('confirm-modal-cancel');
+        var iconEl = document.getElementById('confirm-modal-icon');
+        var backdrop = modal.querySelector('[data-confirm-dismiss]');
+        var dialog = modal.querySelector('.app-modal-dialog');
+        var isDanger = !!opts.danger;
+        var inFlight = false;
+
+        var dangerIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>';
+        var infoIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></svg>';
+
+        return new Promise(function (resolve) {
+            resetConfirmModalButtons();
+            if (titleEl) titleEl.textContent = opts.title || 'Confirm';
+            if (msgEl) msgEl.textContent = opts.message || '';
+            if (okBtn) {
+                okBtn.textContent = opts.confirmLabel || 'Confirm';
+                okBtn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
+            }
+            if (cancelBtn) {
+                cancelBtn.hidden = false;
+                cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+            }
+            if (iconEl) {
+                iconEl.hidden = false;
+                iconEl.innerHTML = isDanger ? dangerIcon : infoIcon;
+                iconEl.classList.toggle('is-danger', isDanger);
+                iconEl.classList.toggle('is-info', !isDanger);
+            }
+            if (dialog) {
+                dialog.classList.toggle('app-modal-dialog--danger', isDanger);
+            }
+
+            function closeModal() {
+                inFlight = false;
+                resetConfirmModalButtons();
+                modal.hidden = true;
+                modal.setAttribute('aria-hidden', 'true');
+                unlockBodyForModal();
+                if (confirmKeyHandler) {
+                    document.removeEventListener('keydown', confirmKeyHandler, true);
+                    confirmKeyHandler = null;
+                }
+            }
+
+            function finishCancelled() {
+                closeModal();
+                resolve(false);
+            }
+
+            confirmKeyHandler = function (e) {
+                if (e.key === 'Escape' && !inFlight) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    finishCancelled();
+                }
+            };
+
+            if (okBtn) {
+                okBtn.onclick = function () {
+                    if (inFlight) return;
+                    inFlight = true;
+                    setConfirmModalLoading(true, opts.loadingLabel);
+                    Promise.resolve(opts.action())
+                        .then(function () {
+                            closeModal();
+                            if (opts.successMessage) showToast('success', opts.successMessage);
+                            resolve(true);
+                        })
+                        .catch(function (err) {
+                            closeModal();
+                            showToast('error', err.message || opts.errorMessage || 'Action failed.');
+                            resolve(false);
+                        });
+                };
+            }
+            if (cancelBtn) cancelBtn.onclick = finishCancelled;
+            if (backdrop) backdrop.onclick = finishCancelled;
+            document.addEventListener('keydown', confirmKeyHandler, true);
+
+            modal.hidden = false;
+            modal.setAttribute('aria-hidden', 'false');
+            lockBodyForModal();
+            if (isDanger && cancelBtn) cancelBtn.focus();
+            else if (okBtn) okBtn.focus();
+        });
+    }
+
     function showAlert(opts) {
         opts = opts || {};
         return showConfirm({
@@ -2251,6 +2443,7 @@
     }
 
     window.showConfirm = showConfirm;
+    window.showConfirmAction = showConfirmAction;
     window.showAlert = showAlert;
 
     function isMobileUi() {
@@ -3027,6 +3220,9 @@
             if (mailSyncPaused && !force) {
                 return;
             }
+            if (!force && isListMutationQuiet()) {
+                return;
+            }
             if (!force && isPostSendQuiet()) {
                 return;
             }
@@ -3160,6 +3356,7 @@
 
     var lastCheckedRowIndex = -1;
     var selectAllInFolder = false;
+    var listMutationInFlight = false;
 
     function folderMessageTotal() {
         var card = document.querySelector('.mail-list-card[data-total-messages]');
@@ -3226,7 +3423,24 @@
         banner.innerHTML = '';
     }
 
+    function initMailCheckDelegation() {
+        if (document.body.dataset.mailCheckDelegationBound) return;
+        document.body.dataset.mailCheckDelegationBound = '1';
+
+        document.addEventListener('change', function (e) {
+            if (!e.target || !e.target.classList || !e.target.classList.contains('mail-check')) return;
+            onMailCheckChange(e);
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!e.target || !e.target.classList || !e.target.classList.contains('mail-check')) return;
+            onMailCheckClick(e);
+        });
+    }
+
     function initMailCommandBar() {
+        initMailCheckDelegation();
+
         var toolbar = document.getElementById('mail-command-bar');
         if (!toolbar) return;
 
@@ -3264,12 +3478,6 @@
                 updateCommandBar();
             });
         }
-
-        document.querySelectorAll('.mail-check:not([data-cmd-bound])').forEach(function (cb) {
-            cb.setAttribute('data-cmd-bound', '1');
-            cb.addEventListener('change', onMailCheckChange);
-            cb.addEventListener('click', onMailCheckClick);
-        });
 
         var selectAll = document.getElementById('select-all');
         if (selectAll && !selectAll.dataset.cmdBound) {
@@ -3409,13 +3617,6 @@
             flagBtn.title = 'Mark as important';
         }
 
-        var countEl = document.getElementById('cmd-selection-count');
-        if (countEl) {
-            var count = effectiveSelectionCount();
-            countEl.textContent = hasSelection ? count + ' selected' : '';
-            countEl.hidden = !hasSelection;
-        }
-
         var deleteBtn = toolbar.querySelector('[data-cmd="delete"]');
         if (deleteBtn) {
             deleteBtn.title = isTrashFolder() ? 'Delete permanently' : 'Delete';
@@ -3481,9 +3682,14 @@
         }
 
         if (action === 'delete') {
-            showConfirm(deleteConfirmOptions(selectionCount)).then(function (ok) {
-                if (ok) runBulkCommandExecute(action, uids, folderEnc, triggerBtn);
-            });
+            var deleteOpts = deleteConfirmOptions(selectionCount);
+            showConfirmAction(Object.assign({}, deleteOpts, {
+                loadingLabel: deleteLoadingMessage(selectionCount),
+                successMessage: deleteSuccessMessage(selectionCount),
+                action: function () {
+                    return runBulkCommandExecute(action, uids, folderEnc, triggerBtn);
+                }
+            }));
             return;
         }
 
@@ -3674,7 +3880,8 @@
     }
 
     /** List mutations (move/delete/spam): refresh folder if server rejects optimistic UI. */
-    function fireListMutation(actionPath, payload) {
+    function fireListMutation(actionPath, payload, options) {
+        options = options || {};
         return fetch(apiUrl(actionPath), {
             method: 'POST',
             credentials: 'same-origin',
@@ -3697,9 +3904,13 @@
             }
             return data;
         }).catch(function (err) {
-            showToast('error', err.message || 'Action failed.');
-            scheduleMailPoll(true);
-            return null;
+            if (!options.suppressErrorToast) {
+                showToast('error', err.message || 'Action failed.');
+            }
+            if (!isListMutationQuiet()) {
+                scheduleMailPoll(true);
+            }
+            return Promise.reject(err);
         });
     }
 
@@ -3825,8 +4036,18 @@
         var moveTarget = action === 'move' ? (document.getElementById('cmd-move-target') || {}).value || '' : '';
 
         if (action === 'delete' || action === 'move') {
+            if (listMutationInFlight) {
+                if (action === 'delete') {
+                    return Promise.reject(new Error('Please wait for the current action to finish.'));
+                }
+                return;
+            }
+            listMutationInFlight = true;
+            beginListMutationQuiet(allInFolder ? 4000 : 2500);
+
             if (allInFolder) {
                 payload.set('unread_delta', String(folderUnreadCount()));
+                pendingRemovalUntil = {};
             }
 
             markUidsPendingRemoval(uids);
@@ -3836,10 +4057,21 @@
                 uids.forEach(function (uid) { removeRowByUid(uid); });
             }
             applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
-            showToast('success', successMsg);
             finishBulkSelectionUi(action, allInFolder, uids);
             clearReadingPaneIfShowingUids(uids);
-            fireListMutation(actionPath, payload);
+            if (action === 'delete') {
+                fireListMutation(actionPath, payload, { suppressErrorToast: true })
+                    .finally(function () {
+                        listMutationInFlight = false;
+                        endListMutationQuiet(800);
+                    });
+                return Promise.resolve(true);
+            }
+            showToast('success', successMsg);
+            fireListMutation(actionPath, payload).finally(function () {
+                listMutationInFlight = false;
+                endListMutationQuiet(800);
+            });
             return;
         }
 
@@ -4007,6 +4239,31 @@
         window.print();
     }
 
+    function initReadQuotedToggle(root) {
+        root = root || document;
+        var container = null;
+        if (root.id === 'reading-pane-body') {
+            container = root;
+        } else if (root.closest) {
+            container = root.closest('#reading-pane-body') || root;
+        } else {
+            container = root;
+        }
+        if (!container || container.dataset.readQuotedBound) return;
+        container.dataset.readQuotedBound = '1';
+        container.addEventListener('click', function (e) {
+            var toggle = e.target.closest('.mail-quoted-toggle');
+            if (!toggle) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var wrap = toggle.closest('.mail-quoted-wrap');
+            var panel = wrap && wrap.querySelector('.mail-quoted-body');
+            var expanded = toggle.getAttribute('aria-expanded') === 'true';
+            toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+            if (panel) panel.hidden = expanded;
+        });
+    }
+
     function initMailThreadCards(root) {
         root = root || document;
         if (!root.querySelectorAll) return;
@@ -4104,6 +4361,7 @@
 
         bindComposeLinks(card);
         initMailThreadCards(card);
+        initReadQuotedToggle(card);
     }
 
     function initReadViewActions() {
@@ -4843,6 +5101,15 @@
             };
         }
         if (confirmCfg) {
+            if (kind === 'trash') {
+                return showConfirmAction(Object.assign({}, confirmCfg, {
+                    loadingLabel: deleteLoadingMessage(1),
+                    successMessage: deleteSuccessMessage(1),
+                    action: function () {
+                        return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn);
+                    }
+                })).then(function (ok) { return !!ok; });
+            }
             return showConfirm(confirmCfg).then(function (ok) {
                 if (!ok) return false;
                 return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn).then(function () { return true; });
@@ -4927,6 +5194,7 @@
             movePayload.set('_csrf', csrf);
             Object.keys(fields).forEach(function (k) { movePayload.set(k, fields[k]); });
 
+            beginListMutationQuiet(2500);
             markUidsPendingRemoval([uid]);
             removeRowByUid(uid);
             if (affectsBadge) {
@@ -4939,8 +5207,13 @@
             }
 
             if (kind === 'trash') {
-                showToast('success', deleteSuccessMessage(1));
-            } else if (kind === 'spam') {
+                clearReadingPaneIfShowingUids([uid]);
+                fireListMutation('message/' + kind, movePayload, { suppressErrorToast: true })
+                    .finally(function () { endListMutationQuiet(800); });
+                return Promise.resolve(true);
+            }
+
+            if (kind === 'spam') {
                 showToast('success', 'Message moved to Spam.');
             } else if (kind === 'move') {
                 showToast('success', 'Message moved.');

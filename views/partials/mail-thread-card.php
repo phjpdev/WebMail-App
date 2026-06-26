@@ -12,6 +12,9 @@
 $isLatest = !empty($isLatest);
 $hasBody = trim((string) ($segment['body_html'] ?? '')) !== ''
     || trim((string) ($segment['body'] ?? '')) !== '';
+$quotedPlain = trim((string) ($segment['quoted_plain'] ?? ''));
+$quotedHtml = trim((string) ($segment['quoted_html'] ?? ''));
+$hasQuoted = $isLatest && ($quotedPlain !== '' || $quotedHtml !== '');
 $snippet = (string) ($segment['snippet'] ?? '');
 $collapsed = !$isLatest && $hasBody;
 ?>
@@ -63,8 +66,23 @@ $collapsed = !$isLatest && $hasBody;
                 <div class="mail-body-html"><?= $segment['body_html'] ?></div>
             <?php elseif (trim((string) ($segment['body'] ?? '')) !== ''): ?>
                 <pre class="mail-body-plain"><?= e($segment['body']) ?></pre>
-            <?php else: ?>
+            <?php elseif (!$hasQuoted): ?>
                 <p class="text-muted">(No message body)</p>
+            <?php endif; ?>
+
+            <?php if ($hasQuoted): ?>
+            <div class="mail-quoted-wrap">
+                <button type="button" class="compose-quoted-toggle mail-quoted-toggle" aria-expanded="false" aria-label="Show quoted message">
+                    <span class="compose-quoted-toggle-dots" aria-hidden="true">⋯</span>
+                </button>
+                <div class="mail-quoted-body compose-quoted-body" hidden>
+                    <?php if ($quotedHtml !== ''): ?>
+                        <div class="mail-body-html mail-body-html--quoted"><?= $quotedHtml ?></div>
+                    <?php else: ?>
+                        <pre class="compose-quoted-text"><?= e(ltrim($quotedPlain, "\n")) ?></pre>
+                    <?php endif; ?>
+                </div>
+            </div>
             <?php endif; ?>
         </div>
 

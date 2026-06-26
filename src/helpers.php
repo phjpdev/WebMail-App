@@ -317,6 +317,10 @@ function json_response(array $data, int $status = 200): never
  */
 function json_response_then(array $data, callable $after, int $status = 200): never
 {
+    // Release the session before responding so parallel folder loads are not
+    // blocked while background IMAP work runs in this same PHP process.
+    releaseSessionLock();
+
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Connection: close');
@@ -329,6 +333,7 @@ function json_response_then(array $data, callable $after, int $status = 200): ne
 
 function redirect_then(string $path, callable $after): never
 {
+    releaseSessionLock();
     header('Location: ' . url($path));
     finish_background($after);
     exit;
@@ -349,14 +354,24 @@ function finish_background(callable $after): void
     @set_time_limit(120);
 
     try {
-        ensure_session_writable();
         $after();
     } catch (\Throwable $e) {
         app_log('Background task failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Open the session, run a short write, then release the lock immediately.
+ * Use inside background tasks instead of holding the session across IMAP work.
+ */
+function with_session_write(callable $fn): void
+{
+    ensure_session_writable();
+
+    try {
+        $fn();
     } finally {
-        if (session_status() === PHP_SESSION_ACTIVE) {
-            session_write_close();
-        }
+        releaseSessionLock();
     }
 }
 
@@ -1555,16 +1570,7 @@ function mail_conversation_snippet(string $body, int $maxLen = 120): string
 
 function mail_extract_latest_html(string $html): string
 {
-    $patterns = [
-        '/<div[^>]*id=["\']divRplyFwdMsg["\'][^>]*>.*$/is',
-        '/<div[^>]*class=["\'][^"\']*gmail_quote[^"\']*["\'][^>]*>.*$/is',
-        '/<blockquote[^>]*>.*$/is',
-    ];
-    foreach ($patterns as $pattern) {
-        $html = preg_replace($pattern, '', $html) ?? $html;
-    }
-
-    return trim($html);
+    return mail_split_html_quote($html)['visible'];
 }
 
 /**
@@ -1661,11 +1667,24 @@ function mail_build_conversation_thread(array $message, string $sanitizedHtml = 
     $segments[0]['date'] = (string) ($message['date'] ?? '');
     $segments[0]['is_current'] = true;
 
+    $fullSplit = compose_split_reply_body($plain);
+    $htmlSplit = mail_split_html_quote($sanitizedHtml);
+
     if (count($segments) === 1) {
-        $segments[0]['body_html'] = $sanitizedHtml;
+        $segments[0]['body'] = $fullSplit['compose'] !== ''
+            ? mail_unquote_plain($fullSplit['compose'])
+            : mail_unquote_plain($segments[0]['body']);
+        $segments[0]['body_html'] = $htmlSplit['visible'];
+        $segments[0]['quoted_plain'] = $fullSplit['quoted'];
+        $segments[0]['quoted_html'] = $htmlSplit['quoted'];
     } else {
-        $latestHtml = mail_extract_latest_html($sanitizedHtml);
-        $segments[0]['body_html'] = trim(strip_tags($latestHtml)) !== '' ? $latestHtml : '';
+        $segments[0]['body_html'] = $htmlSplit['visible'] !== ''
+            ? $htmlSplit['visible']
+            : (trim(strip_tags(mail_extract_latest_html($sanitizedHtml))) !== ''
+                ? mail_extract_latest_html($sanitizedHtml)
+                : '');
+        $segments[0]['quoted_plain'] = '';
+        $segments[0]['quoted_html'] = $htmlSplit['quoted'];
     }
 
     foreach ($segments as $i => &$segment) {
@@ -1746,6 +1765,7 @@ function compose_split_reply_body(string $body): array
 {
     $body = str_replace(["\r\n", "\r"], "\n", $body);
     $patterns = [
+        '/\n\s*On .+? wrote:\s*\n/is',
         '/\n\nOn .+ wrote:\n/s',
         '/(?:\n\n|^)-{3,}\s*Forwarded message\s*-{3,}\s*\n/s',
     ];
@@ -1759,6 +1779,35 @@ function compose_split_reply_body(string $body): array
     }
 
     return ['compose' => trim($body), 'quoted' => ''];
+}
+
+/**
+ * @return array{visible: string, quoted: string}
+ */
+function mail_split_html_quote(string $html): array
+{
+    if (trim($html) === '') {
+        return ['visible' => '', 'quoted' => ''];
+    }
+
+    $patterns = [
+        '/(<div[^>]*id=["\']divRplyFwdMsg["\'][^>]*>.*)$/is',
+        '/(<div[^>]*class=["\'][^"\']*gmail_quote[^"\']*["\'][^>]*>.*)$/is',
+        '/(<blockquote[^>]*>.*)$/is',
+        '/(<br\s*\/?>\s*On .+? wrote:\s*<br\s*\/?>.*)$/is',
+        '/(\s*On .+? wrote:\s*<br\s*\/?>.*)$/is',
+        '/(\n\s*On .+? wrote:\s*\n.*)$/is',
+    ];
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $html, $match, PREG_OFFSET_CAPTURE)) {
+            return [
+                'visible' => trim(substr($html, 0, $match[0][1])),
+                'quoted' => substr($html, $match[0][1]),
+            ];
+        }
+    }
+
+    return ['visible' => trim($html), 'quoted' => ''];
 }
 
 function mail_avatar_initial(?string $from): string

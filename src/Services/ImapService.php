@@ -555,7 +555,15 @@ class ImapService
             imap_errors();
 
             foreach ($chunk as $uid) {
-                if ($this->moveMessage($fromPath, $uid, $toPath)) {
+                imap_errors();
+                if (@imap_mail_move($this->connection, (string) $uid, $target, CP_UID)) {
+                    $moved[] = $uid;
+                    continue;
+                }
+
+                imap_errors();
+                $wasSeen = $this->isSeen($fromPath, $uid);
+                if ($this->moveMessageCopyDelete($fromPath, $uid, $toPath, $wasSeen)) {
                     $moved[] = $uid;
                 } else {
                     $failed[] = $uid;
@@ -1301,6 +1309,16 @@ class ImapService
         if (trim($searchQuery) !== '') {
             return $this->searchUids($path, trim($searchQuery));
         }
+
+        $result = @imap_search($this->connection, 'ALL', SE_UID);
+        if (is_array($result) && $result !== []) {
+            $uids = array_values(array_map('intval', $result));
+            rsort($uids, SORT_NUMERIC);
+
+            return $uids;
+        }
+
+        imap_errors();
 
         $total = imap_num_msg($this->connection) ?: 0;
         if ($total === 0) {

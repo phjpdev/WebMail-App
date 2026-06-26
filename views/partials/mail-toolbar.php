@@ -26,7 +26,6 @@
                     <input type="checkbox" id="select-all" aria-label="Select all messages on this page">
                     <span>All</span>
                 </label>
-                <span class="mail-cmd-selection-count" id="cmd-selection-count" hidden></span>
             </div>
         </div>
     </div>

@@ -1244,42 +1244,21 @@ class MailController
         }
 
         if (wants_json()) {
-            $imap = new ImapService();
-            if (!$imap->connect()) {
-                json_response(['ok' => false, 'error' => $imap->getLastError()], 503);
+            MailCacheService::removeMessages($folderPath, $uids);
+            if (!is_trash_folder($targetPath)) {
+                MailCacheService::invalidateFolder($targetPath);
             }
-
-            $folders = FolderCache::load(skipUnreadRefresh: true)['folders'];
-            if (!$this->folderExists($folders, $targetPath)) {
-                if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
-                    json_response(['ok' => false, 'error' => 'Target folder could not be created on the mail server.'], 500);
-                }
-                (new FolderCache())->clear();
-            }
-
-            $moveResult = $this->runMovesOnImap($imap, $folderPath, $uids, $targetPath, $purgeSiblingCopies);
-            if ($moveResult['moved'] === 0) {
-                json_response([
-                    'ok' => false,
-                    'error' => $moveResult['error'] !== '' ? $moveResult['error'] : 'Could not move message.',
-                ], 500);
-            }
-
-            foreach ($moveResult['removed'] as $path => $pathUids) {
-                MailCacheService::removeMessages($path, $pathUids);
-            }
-            MailCacheService::invalidateFolder($targetPath);
 
             if (folder_uses_draft_badge($folderPath)) {
                 MailCacheService::reconcileBadgeFromIndex($folderPath);
                 $counts = FolderCache::sidebarUnreadCounts();
             } elseif ($unreadDelta > 0) {
-                FolderCache::bumpUnread($folderPath, -$unreadDelta);
+                $unreadDelta = min($unreadDelta, count($uids));
+                $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
                 if (folder_shows_unread_badge($targetPath)) {
                     $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
                 } else {
                     FolderCache::setUnreadCount($targetPath, 0);
-                    $counts = FolderCache::bumpUnread($folderPath, 0);
                 }
             } else {
                 $counts = FolderCache::bumpUnread($folderPath, 0);
@@ -1287,29 +1266,13 @@ class MailController
 
             json_response_then([
                 'ok' => true,
-                'moved' => $moveResult['moved'],
-                'errors' => $moveResult['errors'],
+                'moved' => count($uids),
+                'errors' => 0,
                 'uids' => array_values($uids),
                 'target' => $targetPath,
                 'unread_counts' => $counts,
-            ], function () use ($imap, $targetPath, $purgeSiblingCopies): void {
-                if ($purgeSiblingCopies) {
-                    try {
-                        $imap->removeDuplicateDeliveries($targetPath, 20);
-                    } catch (\Throwable $e) {
-                        app_log('Post-spam dedupe failed: ' . $e->getMessage());
-                    }
-                }
-
-                try {
-                    MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
-                    if (folder_shows_unread_badge($targetPath)) {
-                        MailCacheService::reconcileBadgeFromIndex($targetPath);
-                    }
-                } catch (\Throwable $e) {
-                    app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
-                    MailCacheService::invalidateFolder($targetPath);
-                }
+            ], function () use ($folderPath, $uids, $targetPath, $purgeSiblingCopies): void {
+                $this->executeMoveOnServer($folderPath, $uids, $targetPath, $purgeSiblingCopies);
             });
         }
 
@@ -1468,6 +1431,11 @@ class MailController
         string $targetPath,
         bool $purgeSiblingCopies = false,
     ): void {
+        $uids = array_values(array_unique(array_filter(
+            array_map('intval', $uids),
+            static fn (int $u): bool => $u > 0
+        )));
+
         if ($uids === []) {
             return;
         }
@@ -1480,40 +1448,70 @@ class MailController
             return;
         }
 
-        $folders = FolderCache::load(skipUnreadRefresh: true)['folders'];
-        if (!$this->folderExists($folders, $targetPath)) {
-            if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
-                app_log('Background move: could not create target folder ' . $targetPath);
-                MailCacheService::invalidateFolder($folderPath);
+        if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
+            app_log('Background move: could not create target folder ' . $targetPath);
+            MailCacheService::invalidateFolder($folderPath);
+            ImapService::closeShared();
 
-                return;
+            return;
+        }
+        ImapService::closeShared();
+
+        $movedTotal = 0;
+        $removed = [];
+
+        foreach (array_chunk($uids, 50) as $chunk) {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                app_log('Background move chunk failed: ' . $imap->getLastError());
+                break;
             }
-            (new FolderCache())->clear();
+
+            $moveResult = $this->runMovesOnImap($imap, $folderPath, $chunk, $targetPath, false);
+            ImapService::closeShared();
+
+            $movedUids = $moveResult['removed'][$folderPath] ?? [];
+            if ($movedUids !== []) {
+                $movedTotal += count($movedUids);
+                $removed[$folderPath] = array_merge($removed[$folderPath] ?? [], $movedUids);
+                MailCacheService::removeMessages($folderPath, $movedUids);
+            }
+
+            if (($moveResult['moved'] ?? 0) === 0 && ($moveResult['errors'] ?? 0) > 0) {
+                break;
+            }
         }
 
-        $moveResult = $this->runMovesOnImap($imap, $folderPath, $uids, $targetPath, $purgeSiblingCopies);
-        if ($moveResult['moved'] === 0) {
+        if ($movedTotal === 0) {
             MailCacheService::invalidateFolder($folderPath);
+            MailCacheService::invalidateFolder($targetPath);
 
             return;
         }
 
-        foreach ($moveResult['removed'] as $path => $pathUids) {
-            MailCacheService::removeMessages($path, $pathUids);
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return;
         }
 
-        try {
-            MailCacheService::syncFolderHeaders($imap, $targetPath);
-            if (!folder_shows_unread_badge($targetPath)) {
-                FolderCache::setUnreadCount($targetPath, 0);
-            } else {
-                MailCacheService::reconcileBadgeFromIndex($targetPath);
-                FolderCache::refreshPaths([$targetPath]);
+        if ($purgeSiblingCopies) {
+            try {
+                $imap->removeDuplicateDeliveries($targetPath, 20);
+            } catch (\Throwable $e) {
+                app_log('Post-spam dedupe failed: ' . $e->getMessage());
             }
-        } catch (\Throwable $e) {
-            app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
-            MailCacheService::invalidateFolder($targetPath);
         }
+
+        if (!is_trash_folder($targetPath)) {
+            try {
+                MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
+            } catch (\Throwable $e) {
+                app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
+                MailCacheService::invalidateFolder($targetPath);
+            }
+        }
+
+        ImapService::closeShared();
     }
 
     /**
@@ -1580,18 +1578,25 @@ class MailController
      */
     private function executeDeleteOnServer(string $folderPath, array $uids): void
     {
+        $uids = array_values(array_unique(array_filter(
+            array_map('intval', $uids),
+            static fn (int $u): bool => $u > 0
+        )));
+
         if ($uids === []) {
             return;
         }
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            app_log('Background delete failed: ' . $imap->getLastError());
+        foreach (array_chunk($uids, 100) as $chunk) {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                app_log('Background delete chunk failed: ' . $imap->getLastError());
+                break;
+            }
 
-            return;
+            $imap->deleteMessages($folderPath, $chunk);
+            ImapService::closeShared();
         }
-
-        $imap->deleteMessages($folderPath, $uids);
     }
 
     /**
