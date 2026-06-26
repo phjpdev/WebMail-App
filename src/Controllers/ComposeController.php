@@ -260,11 +260,12 @@ class ComposeController
                 }
             }
 
+            $this->deleteSourceDraftIfRequested();
+
             $unreadCounts = FolderCache::sidebarUnreadCounts();
             flush_session_for_poll();
 
             $afterSend = function () use ($fromEmail, $returnFolder, $folderPath, $sentFolder, $sentMime, $destPaths): void {
-                $this->deleteSourceDraftIfRequested();
                 $this->saveToSent($sentFolder, $sentMime);
                 $this->syncMailboxAfterSend($fromEmail, $returnFolder, $folderPath, $sentFolder, $destPaths, $sentMime);
             };
@@ -1100,7 +1101,10 @@ class ComposeController
 
         $imap = new ImapService();
         if ($imap->connect()) {
-            $imap->moveMessage($draftFolder, $draftUid, trash_folder_path());
+            if ($imap->moveMessage($draftFolder, $draftUid, trash_folder_path())) {
+                MailCacheService::removeMessage($draftFolder, $draftUid);
+                MailCacheService::reconcileBadgeFromIndex($draftFolder);
+            }
         }
     }
 

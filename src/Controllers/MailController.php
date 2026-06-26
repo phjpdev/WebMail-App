@@ -160,6 +160,11 @@ class MailController
 
         if ($imapConnected && $query === '') {
             $folderUnread = MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+            if (folder_uses_draft_badge($folderPath)) {
+                MailCacheService::reconcileSyncStateFromIndex($folderPath);
+                $folderUnread = MailCacheService::countBadgeFromIndex($folderPath);
+                FolderCache::setUnreadCount($folderPath, $folderUnread);
+            }
             if (!isset($folderData['unread_counts']) || !is_array($folderData['unread_counts'])) {
                 $folderData['unread_counts'] = [];
             }
@@ -279,9 +284,18 @@ class MailController
 
         FilterService::runBackground(false);
 
+        $synced = MailCacheService::bootstrapSync($imap, $paths);
+        $draftPaths = array_values(array_filter($paths, static fn (string $p): bool => folder_uses_draft_badge($p)));
+        if ($draftPaths !== []) {
+            foreach ($draftPaths as $draftPath) {
+                MailCacheService::reconcileBadgeFromIndex($draftPath);
+            }
+            FolderCache::refreshPaths($draftPaths);
+        }
+
         echo json_encode([
             'ok' => true,
-            'synced' => MailCacheService::bootstrapSync($imap, $paths),
+            'synced' => $synced,
         ]);
     }
 
@@ -1217,7 +1231,10 @@ class MailController
             }
             MailCacheService::invalidateFolder($targetPath);
 
-            if ($unreadDelta > 0) {
+            if (folder_uses_draft_badge($folderPath)) {
+                MailCacheService::reconcileBadgeFromIndex($folderPath);
+                $counts = FolderCache::sidebarUnreadCounts();
+            } elseif ($unreadDelta > 0) {
                 FolderCache::bumpUnread($folderPath, -$unreadDelta);
                 if (folder_shows_unread_badge($targetPath)) {
                     $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
@@ -1472,8 +1489,11 @@ class MailController
 
         if (wants_json()) {
             MailCacheService::removeMessages($folderPath, $uids);
-            $unreadDelta = min($unreadDelta, count($uids));
-            if ($unreadDelta > 0) {
+            if (folder_uses_draft_badge($folderPath)) {
+                MailCacheService::reconcileBadgeFromIndex($folderPath);
+                $counts = FolderCache::sidebarUnreadCounts();
+            } elseif ($unreadDelta > 0) {
+                $unreadDelta = min($unreadDelta, count($uids));
                 $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
             } else {
                 $counts = FolderCache::bumpUnread($folderPath, 0);

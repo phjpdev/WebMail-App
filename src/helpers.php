@@ -1052,6 +1052,12 @@ function folder_shows_unread_badge(string $path): bool
     return !is_trash_folder($path);
 }
 
+/** Drafts badge shows total draft count, not IMAP \\Seen flags. */
+function folder_uses_draft_badge(string $path): bool
+{
+    return is_draft_folder($path);
+}
+
 function normalize_email_token(string $token): string
 {
     $token = trim($token);

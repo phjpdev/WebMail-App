@@ -19,12 +19,11 @@ class MailCacheService
         }
 
         $total = (int) ($state['imap_total'] ?? 0);
-        if ($total <= 0) {
-            $row = Database::fetchOne(
-                'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ?',
-                [$folderPath]
-            );
-            $total = (int) ($row['c'] ?? 0);
+        $indexed = self::countMessagesInIndex($folderPath);
+        if ($indexed > 0 || self::hasFolderData($folderPath)) {
+            $total = $indexed;
+        } elseif ($total <= 0) {
+            $total = $indexed;
         }
 
         if ($total === 0) {
@@ -151,6 +150,33 @@ class MailCacheService
         return (int) ($state['imap_total'] ?? 0) !== $imapTotal;
     }
 
+    public static function countMessagesInIndex(string $folderPath): int
+    {
+        $row = Database::fetchOne(
+            'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ?',
+            [$folderPath]
+        );
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    /** Sidebar badge value from mail_index (unread or draft total). */
+    public static function countBadgeFromIndex(string $folderPath): int
+    {
+        if (folder_uses_draft_badge($folderPath)) {
+            $indexed = self::countMessagesInIndex($folderPath);
+            if (self::hasFolderData($folderPath) || $indexed > 0) {
+                return $indexed;
+            }
+
+            $state = self::getSyncState($folderPath);
+
+            return (int) ($state['imap_total'] ?? 0);
+        }
+
+        return self::countUnseenInIndex($folderPath);
+    }
+
     /**
      * Sidebar badge shows unread on IMAP but the cached list has not caught up yet.
      */
@@ -166,7 +192,7 @@ class MailCacheService
             return true;
         }
 
-        return self::countUnseenInIndex($folderPath) < $badge;
+        return self::countBadgeFromIndex($folderPath) < $badge;
     }
 
     /**
@@ -539,7 +565,7 @@ class MailCacheService
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
 
         $pageUnread = 0;
-        if ($pageMessages !== null) {
+        if ($pageMessages !== null && !folder_uses_draft_badge($folderPath)) {
             foreach ($pageMessages as $msg) {
                 if (empty($msg['seen'])) {
                     $pageUnread++;
@@ -548,7 +574,7 @@ class MailCacheService
         }
 
         if (!self::hasFolderData($folderPath)) {
-            if ($pageMessages !== null && $pageUnread === 0 && $session > 0) {
+            if ($pageMessages !== null && $pageUnread === 0 && $session > 0 && !folder_uses_draft_badge($folderPath)) {
                 // Keep the session badge until the folder is indexed — do not
                 // clear optimistic/post-delivery counts while cache is empty.
                 return $session;
@@ -557,8 +583,20 @@ class MailCacheService
             return $session;
         }
 
+        if (folder_uses_draft_badge($folderPath)) {
+            self::reconcileSyncStateFromIndex($folderPath);
+            $truth = self::countBadgeFromIndex($folderPath);
+            if ($truth !== $session) {
+                FolderCache::setUnreadCount($folderPath, $truth);
+
+                return $truth;
+            }
+
+            return $session;
+        }
+
         if (self::syncBadgeFromIndex($folderPath)) {
-            $indexUnread = self::countUnseenInIndex($folderPath);
+            $indexUnread = self::countBadgeFromIndex($folderPath);
             $truth = max($indexUnread, $session);
             if ($truth !== $session) {
                 FolderCache::setUnreadCount($folderPath, $truth);
@@ -569,7 +607,7 @@ class MailCacheService
             return $session;
         }
 
-        $indexUnread = self::countUnseenInIndex($folderPath);
+        $indexUnread = self::countBadgeFromIndex($folderPath);
         $truth = max($indexUnread, $pageUnread);
 
         if ($truth !== $session) {
@@ -614,12 +652,18 @@ class MailCacheService
         $indexed = (int) ($row['c'] ?? 0);
 
         if ($imapTotal > 0 && $indexed < $imapTotal) {
-            return false;
+            if (folder_uses_draft_badge($folderPath)) {
+                self::reconcileSyncStateFromIndex($folderPath);
+                $imapTotal = $indexed;
+            } else {
+                return false;
+            }
         }
 
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
-        $indexUnread = self::countUnseenInIndex($folderPath);
-        FolderCache::setUnreadCount($folderPath, max($indexUnread, $session));
+        $indexUnread = self::countBadgeFromIndex($folderPath);
+        $truth = folder_uses_draft_badge($folderPath) ? $indexUnread : max($indexUnread, $session);
+        FolderCache::setUnreadCount($folderPath, $truth);
 
         return true;
     }
@@ -645,7 +689,7 @@ class MailCacheService
         }
 
         if (self::syncBadgeFromIndex($folderPath)) {
-            return self::countUnseenInIndex($folderPath);
+            return self::countBadgeFromIndex($folderPath);
         }
 
         FolderCache::refreshPaths([$folderPath]);
@@ -664,6 +708,7 @@ class MailCacheService
     {
         Database::query('DELETE FROM mail_index WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
         Database::query('DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
+        self::reconcileSyncStateFromIndex($folderPath);
     }
 
     /**
@@ -685,6 +730,24 @@ class MailCacheService
         Database::query(
             "DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
             $params
+        );
+        self::reconcileSyncStateFromIndex($folderPath);
+    }
+
+    /** Keep mail_sync_state totals aligned after local index removals. */
+    public static function reconcileSyncStateFromIndex(string $folderPath): void
+    {
+        $state = self::getSyncState($folderPath);
+        if ($state === null) {
+            return;
+        }
+
+        $indexed = self::countMessagesInIndex($folderPath);
+        Database::query(
+            'UPDATE mail_sync_state
+             SET imap_total = ?, headers_cached = LEAST(COALESCE(headers_cached, 0), ?)
+             WHERE folder_path = ?',
+            [$indexed, $indexed, $folderPath]
         );
     }
 

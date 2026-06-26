@@ -3063,10 +3063,17 @@
         }
         var label = document.getElementById('mail-count-label');
         if (label) {
+            var fromAttr = parseInt(label.getAttribute('data-unread') || '', 10);
+            if (!isNaN(fromAttr) && fromAttr > 0) {
+                return fromAttr;
+            }
             var title = label.getAttribute('title') || '';
-            if (title.indexOf('unread') >= 0) {
+            if (title.indexOf('unread') >= 0 || title.indexOf('draft') >= 0) {
                 return parseInt(label.textContent, 10) || 0;
             }
+        }
+        if (isDraftFolder()) {
+            return document.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]').length;
         }
         return countUnreadAmong(selectedMailUids());
     }
@@ -3108,6 +3115,23 @@
         }
     }
 
+    function isDraftFolder() {
+        return currentFolderKind() === 'draft';
+    }
+
+    function folderRemovalDelta(uids, allInFolder) {
+        if (isDraftFolder()) {
+            if (allInFolder) {
+                return folderUnreadCount();
+            }
+            return uids.length;
+        }
+        if (allInFolder) {
+            return folderUnreadCount();
+        }
+        return countUnreadAmong(uids);
+    }
+
     function bumpFolderUnread(delta) {
         if (!delta) return;
         var card = getListCard();
@@ -3120,6 +3144,9 @@
         var label = document.getElementById('mail-count-label');
         var total = label ? parseInt(label.getAttribute('data-total') || '0', 10) : 0;
         var unread = label ? parseInt(label.getAttribute('data-unread') || '0', 10) : 0;
+        if (isDraftFolder()) {
+            total = Math.max(0, total + delta);
+        }
         updateMailCount(total, Math.max(0, unread + delta));
     }
 
@@ -3206,7 +3233,7 @@
         var plain = card ? card.getAttribute('data-folder-plain') : '';
         if (!plain) return;
 
-        var delta = allInFolder ? folderUnreadCount() : countUnreadAmong(uids);
+        var delta = folderRemovalDelta(uids, allInFolder);
         if (delta <= 0) return;
 
         var counts = Object.assign({}, lastUnreadCounts);
@@ -3239,7 +3266,7 @@
         if (action === 'delete') {
             actionPath = 'message/bulk-trash';
             if (!allInFolder) {
-                payload.set('unread_delta', String(countUnreadAmong(uids)));
+                payload.set('unread_delta', String(folderRemovalDelta(uids, false)));
             }
             successMsg = deleteSuccessMessage(selectionCount);
         } else if (action === 'move') {
@@ -3251,7 +3278,7 @@
             actionPath = 'message/bulk-move';
             payload.set('target_folder', target.value);
             if (!allInFolder) {
-                payload.set('unread_delta', String(countUnreadAmong(uids)));
+                payload.set('unread_delta', String(folderRemovalDelta(uids, false)));
             }
             successMsg = isSpamFolderPath(target.value)
                 ? (selectionCount === 1 ? 'Message moved to Spam.' : 'Selected messages moved to Spam.')
@@ -4377,7 +4404,8 @@
             fireAndForgetAction('message/' + kind, unflagPayload);
             return Promise.resolve(true);
         } else if (kind === 'spam' || kind === 'trash' || kind === 'move') {
-            fields.unread_delta = wasUnread ? 1 : 0;
+            var affectsBadge = wasUnread || isDraftFolder();
+            fields.unread_delta = affectsBadge ? 1 : 0;
 
             var movePayload = new URLSearchParams();
             movePayload.set('_csrf', csrf);
@@ -4385,7 +4413,7 @@
 
             markUidsPendingRemoval([uid]);
             removeRowByUid(uid);
-            if (wasUnread) {
+            if (affectsBadge) {
                 bumpFolderUnread(-1);
                 if (kind === 'move' && extra.target_folder) {
                     var moveCounts = Object.assign({}, lastUnreadCounts);

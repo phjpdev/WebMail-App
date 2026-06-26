@@ -704,6 +704,65 @@ class ImapService
     }
 
     /**
+     * Sidebar badge source from IMAP: unread for most folders, total messages for Drafts.
+     *
+     * @param list<string> $paths
+     * @return array<string, int>
+     */
+    public function getFolderBadgeCounts(array $paths): array
+    {
+        if (!$this->ensureConnected()) {
+            return [];
+        }
+
+        $paths = array_values(array_unique(array_filter($paths)));
+        if ($paths === []) {
+            return [];
+        }
+
+        $counts = $this->getFolderUnreadCounts($paths);
+        $draftPaths = array_values(array_filter(
+            $paths,
+            static fn (string $path): bool => folder_uses_draft_badge($path)
+        ));
+
+        if ($draftPaths === []) {
+            return $counts;
+        }
+
+        foreach ($this->getFolderMessageCounts($draftPaths) as $path => $total) {
+            $counts[$path] = $total;
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @param list<string> $paths
+     * @return array<string, int>
+     */
+    public function getFolderMessageCounts(array $paths): array
+    {
+        if (!$this->ensureConnected()) {
+            return [];
+        }
+
+        $mailboxString = $this->getMailboxString();
+        $counts = [];
+
+        foreach ($paths as $path) {
+            $status = @imap_status(
+                $this->connection,
+                $mailboxString . $this->encodeFolderPath($path),
+                SA_MESSAGES
+            );
+            $counts[$path] = $status !== false ? (int) ($status->messages ?? 0) : 0;
+        }
+
+        return $counts;
+    }
+
+    /**
      * @return array{messages: list<array{uid: int, from: string, subject: string, date: string, seen: bool, size: int}>, total: int, page: int, per_page: int, total_pages: int}
      */
     public function searchMessages(string $path, string $query, int $page = 1, int $perPage = 50): array

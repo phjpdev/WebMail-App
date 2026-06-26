@@ -136,7 +136,7 @@ class FolderCache
             return;
         }
 
-        foreach ($imap->getFolderUnreadCounts($paths) as $path => $imapUnread) {
+        foreach ($imap->getFolderBadgeCounts($paths) as $path => $imapUnread) {
             $path = self::canonicalUnreadPath($path);
             if (!folder_shows_unread_badge($path)) {
                 $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = 0;
@@ -149,12 +149,16 @@ class FolderCache
 
             if (MailCacheService::hasFolderData($path) && !MailCacheService::badgeAheadOfIndex($path)) {
                 MailCacheService::syncBadgeFromIndex($path);
-                $indexUnread = MailCacheService::countUnseenInIndex($path);
+                $indexUnread = MailCacheService::countBadgeFromIndex($path);
             } elseif (MailCacheService::hasFolderData($path)) {
-                $indexUnread = MailCacheService::countUnseenInIndex($path);
+                $indexUnread = MailCacheService::countBadgeFromIndex($path);
             }
 
-            $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max($imapUnread, $indexUnread, $sessionUnread);
+            if (folder_uses_draft_badge($path) && MailCacheService::hasFolderData($path)) {
+                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $indexUnread;
+            } else {
+                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max($imapUnread, $indexUnread, $sessionUnread);
+            }
         }
 
         if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
@@ -434,7 +438,7 @@ class FolderCache
 
         $folders = $imap->listFolders();
         $paths = array_column($folders, 'path');
-        $unreadCounts = $imap->getFolderUnreadCounts($paths);
+        $unreadCounts = $imap->getFolderBadgeCounts($paths);
         $cache->set($folders, $unreadCounts);
 
         $result = [
@@ -463,7 +467,7 @@ class FolderCache
             return $data;
         }
 
-        $imapCounts = $imap->getFolderUnreadCounts($paths);
+        $imapCounts = $imap->getFolderBadgeCounts($paths);
         $data['unread_counts'] = array_merge(
             $data['unread_counts'] ?? [],
             $imapCounts

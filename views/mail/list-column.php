@@ -25,9 +25,11 @@
         $headerUnread = folder_shows_unread_badge($folderPath)
             ? (int) ($unreadCount ?? 0)
             : 0;
-        $headerTitle = $headerUnread > 0
-            ? $headerUnread . ' unread'
-            : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's');
+        $headerTitle = folder_uses_draft_badge($folderPath)
+            ? ($headerUnread === 1 ? '1 draft' : $headerUnread . ' drafts')
+            : ($headerUnread > 0
+                ? $headerUnread . ' unread'
+                : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's'));
         ?>
         <?php if ($headerUnread > 0): ?>
         <span class="page-header-count page-header-count--unread" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="<?= $headerUnread ?>" title="<?= e($headerTitle) ?>"><?= $headerUnread ?></span>
