@@ -671,6 +671,60 @@ function compose_context_folder(string $returnFolder, string $messageFolder, str
     return '';
 }
 
+/**
+ * Domains and contacts for compose recipient autocomplete.
+ *
+ * @return array{domains: list<string>, contacts: list<array{email: string, name: string, local: string}>}
+ */
+function compose_recipient_autocomplete_data(): array
+{
+    $domains = [];
+    $contacts = [];
+
+    foreach ((new App\Services\AliasService())->listActive() as $alias) {
+        $email = strtolower(trim((string) ($alias['email'] ?? '')));
+        if ($email === '' || !str_contains($email, '@')) {
+            continue;
+        }
+
+        [, $domain] = explode('@', $email, 2);
+        if ($domain !== '') {
+            $domains[$domain] = true;
+        }
+
+        $contacts[] = [
+            'email' => $email,
+            'name' => (string) ($alias['display_name'] ?? ''),
+            'local' => explode('@', $email, 2)[0],
+        ];
+    }
+
+    $mailbox = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
+    $primaryDomain = '';
+    if ($mailbox !== '' && str_contains($mailbox, '@')) {
+        $primaryDomain = substr(strrchr($mailbox, '@'), 1);
+    }
+
+    $domainList = array_keys($domains);
+    usort($domainList, static function (string $a, string $b) use ($primaryDomain): int {
+        if ($a === $primaryDomain) {
+            return -1;
+        }
+        if ($b === $primaryDomain) {
+            return 1;
+        }
+
+        return strcasecmp($a, $b);
+    });
+
+    usort($contacts, static fn (array $a, array $b): int => strcasecmp(
+        $a['name'] !== '' ? $a['name'] : $a['email'],
+        $b['name'] !== '' ? $b['name'] : $b['email']
+    ));
+
+    return ['domains' => $domainList, 'contacts' => $contacts];
+}
+
 function message_url(string $folderPath, int $uid): string
 {
     return folder_url($folderPath, 'message/' . $uid);

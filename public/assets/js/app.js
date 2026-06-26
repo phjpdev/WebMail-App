@@ -67,6 +67,7 @@
     var composePanelSeq = 0;
     var composePanelRestoreUid = null;
     var composePrefetchCache = {};
+    var COMPOSE_CACHE_VERSION = 2;
     var composePrefetchInFlight = {};
     var composePrefetchTimer = null;
     var bodyWarmKeys = {};
@@ -859,13 +860,18 @@
         }).catch(function () {});
     }
 
+    function composeCacheKey(path) {
+        return path + '|v' + COMPOSE_CACHE_VERSION;
+    }
+
     function prefetchComposeHtml(href) {
         if (!href || !useReadingPane() || mailSyncPaused) return null;
         var path = withEmbedParams(href);
-        if (composePrefetchCache[path] || composePrefetchInFlight[path]) {
-            return composePrefetchInFlight[path] || null;
+        var cacheKey = composeCacheKey(path);
+        if (composePrefetchCache[cacheKey] || composePrefetchInFlight[cacheKey]) {
+            return composePrefetchInFlight[cacheKey] || null;
         }
-        composePrefetchInFlight[path] = runBackgroundFetch(apiUrl(path), {
+        composePrefetchInFlight[cacheKey] = runBackgroundFetch(apiUrl(path), {
             credentials: 'same-origin',
             headers: { Accept: 'text/html' }
         })
@@ -874,15 +880,15 @@
                 return res.text();
             })
             .then(function (html) {
-                composePrefetchCache[path] = html;
-                delete composePrefetchInFlight[path];
+                composePrefetchCache[cacheKey] = html;
+                delete composePrefetchInFlight[cacheKey];
                 return html;
             })
             .catch(function () {
-                delete composePrefetchInFlight[path];
+                delete composePrefetchInFlight[cacheKey];
                 return null;
             });
-        return composePrefetchInFlight[path];
+        return composePrefetchInFlight[cacheKey];
     }
 
     function prefetchComposeFromRow(row) {
@@ -953,6 +959,7 @@
         composePanelRestoreUid = selected ? parseInt(selected.getAttribute('data-uid'), 10) : null;
 
         var path = withEmbedParams(href);
+        var cacheKey = composeCacheKey(path);
         var seq = ++composePanelSeq;
         setComposeOpen(true);
         if (triggerLink) setButtonLoading(triggerLink, true, loadingLabelForAction('compose'));
@@ -961,14 +968,14 @@
         var titleEl = document.getElementById('compose-panel-title');
         if (titleEl) titleEl.textContent = title || composeTitleFromPath(href);
 
-        var cached = composePrefetchCache[path];
+        var cached = composePrefetchCache[cacheKey];
         if (cached && body) {
             applyComposePanelHtml(body, cached);
             if (triggerLink) setButtonLoading(triggerLink, false);
             return;
         }
 
-        var inFlight = composePrefetchInFlight[path];
+        var inFlight = composePrefetchInFlight[cacheKey];
         if (inFlight && body) {
             body.innerHTML = '<div class="compose-panel-loading"><span class="reading-pane-spinner" aria-hidden="true"></span><span>Loading compose…</span></div>';
             inFlight.then(function (html) {
@@ -999,7 +1006,7 @@
             })
             .then(function (html) {
                 if (seq !== composePanelSeq) return;
-                composePrefetchCache[path] = html;
+                composePrefetchCache[cacheKey] = html;
                 applyComposePanelHtml(body, html);
             })
             .catch(function (err) {
@@ -3672,12 +3679,304 @@
         return true;
     }
 
+    function parseRecipientAutocompleteData(form) {
+        var data = { domains: [], contacts: [] };
+        if (!form) return data;
+        try {
+            if (form.dataset.recipientDomains) {
+                data.domains = JSON.parse(form.dataset.recipientDomains) || [];
+            }
+            if (form.dataset.recipientContacts) {
+                data.contacts = JSON.parse(form.dataset.recipientContacts) || [];
+            }
+        } catch (e) { /* ignore malformed JSON */ }
+
+        if (!data.domains.length || !data.contacts.length) {
+            var domainSet = {};
+            var contactMap = {};
+            form.querySelectorAll('#from_email option').forEach(function (opt) {
+                var email = (opt.value || '').trim().toLowerCase();
+                if (!email || email.indexOf('@') < 0) return;
+                var parts = email.split('@');
+                var local = parts[0];
+                var domain = parts.slice(1).join('@');
+                if (domain) domainSet[domain] = true;
+                var label = (opt.textContent || '').replace(/\s+/g, ' ').trim();
+                var name = label.replace(/\s*<[^>]+>\s*$/, '').trim();
+                contactMap[email] = {
+                    email: email,
+                    name: name || email,
+                    local: local
+                };
+            });
+            if (!data.domains.length) {
+                data.domains = Object.keys(domainSet);
+            }
+            if (!data.contacts.length) {
+                data.contacts = Object.keys(contactMap).map(function (key) {
+                    return contactMap[key];
+                });
+            }
+        }
+
+        return data;
+    }
+
+    function buildRecipientSuggestions(query, data) {
+        query = (query || '').trim().toLowerCase();
+        if (!query) return [];
+
+        var domains = data.domains || [];
+        var contacts = data.contacts || [];
+        var seen = {};
+        var results = [];
+
+        function push(item) {
+            var key = (item.email || '').toLowerCase();
+            if (!key || seen[key]) return;
+            seen[key] = true;
+            results.push(item);
+        }
+
+        contacts.forEach(function (c) {
+            var email = (c.email || '').toLowerCase();
+            var local = (c.local || email.split('@')[0] || '').toLowerCase();
+            var name = (c.name || '').toLowerCase();
+            var score = 4;
+            if (email.indexOf(query) === 0) score = 0;
+            else if (local.indexOf(query) === 0) score = 1;
+            else if (name.indexOf(query) === 0) score = 2;
+            else if (name.indexOf(query) > 0) score = 3;
+            else return;
+
+            push({
+                type: 'contact',
+                email: c.email,
+                name: c.name || c.email,
+                sub: c.email,
+                score: score
+            });
+        });
+
+        var at = query.indexOf('@');
+        if (at >= 0) {
+            var local = query.slice(0, at);
+            var domainPart = query.slice(at + 1);
+            if (local) {
+                domains.forEach(function (domain) {
+                    var d = domain.toLowerCase();
+                    if (domainPart && d.indexOf(domainPart) !== 0) return;
+                    var full = local + '@' + domain;
+                    push({
+                        type: 'domain',
+                        email: full,
+                        name: domain,
+                        sub: full,
+                        score: domainPart === '' ? 0 : (d === domainPart ? 0 : 1)
+                    });
+                });
+            }
+        }
+
+        results.sort(function (a, b) {
+            if (a.score !== b.score) return a.score - b.score;
+            return String(a.email).localeCompare(String(b.email));
+        });
+
+        return results.slice(0, 7);
+    }
+
+    function initRecipientAutocomplete(input, form, onAccepted) {
+        var data = parseRecipientAutocompleteData(form);
+        var fieldWrap = input.closest('.recipient-field');
+        var recipientsWrap = input.closest('.compose-recipients');
+        if (!fieldWrap) return { handleKeydown: function () { return false; }, close: function () {}, isOpen: function () { return false; } };
+
+        var portal = document.getElementById('compose-panel') || document.body;
+        var listEl = document.createElement('ul');
+        listEl.className = 'recipient-suggest';
+        listEl.setAttribute('role', 'listbox');
+        listEl.hidden = true;
+        portal.appendChild(listEl);
+
+        var suggestions = [];
+        var activeIndex = -1;
+        var mouseDownOnList = false;
+
+        function positionList() {
+            if (listEl.hidden) return;
+            var rect = input.getBoundingClientRect();
+            listEl.style.left = Math.round(rect.left) + 'px';
+            listEl.style.top = Math.round(rect.bottom + 4) + 'px';
+            listEl.style.width = Math.max(Math.round(rect.width), 280) + 'px';
+        }
+
+        function setSuggestOpen(open) {
+            if (recipientsWrap) {
+                recipientsWrap.classList.toggle('is-suggest-open', open);
+            }
+        }
+
+        function closeList() {
+            listEl.hidden = true;
+            listEl.innerHTML = '';
+            suggestions = [];
+            activeIndex = -1;
+            setSuggestOpen(false);
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-activedescendant');
+        }
+
+        function renderList() {
+            listEl.innerHTML = '';
+            if (!suggestions.length) {
+                closeList();
+                return;
+            }
+
+            var lastType = '';
+            suggestions.forEach(function (item, index) {
+                if (item.type !== lastType) {
+                    lastType = item.type;
+                    var label = document.createElement('li');
+                    label.className = 'recipient-suggest-label';
+                    label.textContent = item.type === 'domain' ? 'Domain' : 'Contacts';
+                    label.setAttribute('aria-hidden', 'true');
+                    listEl.appendChild(label);
+                }
+
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'recipient-suggest-item' + (index === activeIndex ? ' is-active' : '');
+                btn.setAttribute('role', 'option');
+                btn.id = 'recipient-suggest-' + (input.id || 'input') + '-' + index;
+                btn.setAttribute('data-index', String(index));
+
+                var initial = (item.name || item.email).charAt(0).toUpperCase();
+                var avatarClass = 'recipient-suggest-avatar' + (item.type === 'domain' ? ' recipient-suggest-avatar--domain' : '');
+                var avatarContent = item.type === 'domain' ? '@' : escapeHtml(initial);
+                var avatarStyle = item.type === 'domain' ? '' : ' style="background:' + avatarColor(item.email) + '"';
+
+                btn.innerHTML =
+                    '<span class="' + avatarClass + '"' + avatarStyle + '>' + avatarContent + '</span>' +
+                    '<span class="recipient-suggest-text">' +
+                        '<span class="recipient-suggest-name">' + escapeHtml(item.name) + '</span>' +
+                        '<span class="recipient-suggest-email">' + escapeHtml(item.sub) + '</span>' +
+                    '</span>' +
+                    (index === activeIndex ? '<span class="recipient-suggest-kbd">Tab</span>' : '');
+
+                btn.addEventListener('mousedown', function (e) {
+                    e.preventDefault();
+                    mouseDownOnList = true;
+                });
+                btn.addEventListener('click', function () {
+                    acceptSuggestion(index);
+                });
+
+                listEl.appendChild(btn);
+            });
+
+            listEl.hidden = false;
+            setSuggestOpen(true);
+            positionList();
+            input.setAttribute('aria-expanded', 'true');
+            if (activeIndex >= 0) {
+                input.setAttribute('aria-activedescendant', 'recipient-suggest-' + (input.id || 'input') + '-' + activeIndex);
+            }
+        }
+
+        function acceptSuggestion(index) {
+            var item = suggestions[index];
+            if (!item) return;
+            input.value = item.email;
+            closeList();
+            input.focus();
+            if (typeof onAccepted === 'function') {
+                onAccepted(item.email);
+            }
+        }
+
+        function updateSuggestions() {
+            suggestions = buildRecipientSuggestions(input.value, data);
+            activeIndex = suggestions.length ? 0 : -1;
+            if (suggestions.length) renderList();
+            else closeList();
+        }
+
+        input.setAttribute('aria-autocomplete', 'list');
+        input.setAttribute('aria-expanded', 'false');
+        input.setAttribute('autocomplete', 'off');
+
+        input.addEventListener('input', updateSuggestions);
+        input.addEventListener('focus', function () {
+            if (input.value.trim()) updateSuggestions();
+        });
+        input.addEventListener('blur', function () {
+            window.setTimeout(function () {
+                if (!mouseDownOnList) closeList();
+                mouseDownOnList = false;
+            }, 120);
+        });
+
+        window.addEventListener('resize', positionList);
+        var scrollParent = document.getElementById('compose-panel-body');
+        if (scrollParent) {
+            scrollParent.addEventListener('scroll', positionList, { passive: true });
+        }
+
+        return {
+            isOpen: function () {
+                return !listEl.hidden && suggestions.length > 0;
+            },
+            acceptActive: function () {
+                if (!this.isOpen() || activeIndex < 0) return false;
+                acceptSuggestion(activeIndex);
+                return true;
+            },
+            handleKeydown: function (e) {
+                if (!this.isOpen()) return false;
+
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    activeIndex = (activeIndex + 1) % suggestions.length;
+                    renderList();
+                    return true;
+                }
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    activeIndex = (activeIndex - 1 + suggestions.length) % suggestions.length;
+                    renderList();
+                    return true;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeList();
+                    return true;
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                    if (activeIndex >= 0) {
+                        e.preventDefault();
+                        acceptSuggestion(activeIndex);
+                        return true;
+                    }
+                }
+                return false;
+            },
+            close: closeList
+        };
+    }
+
     function initRecipientRow(row) {
         var field = row.getAttribute('data-field');
         var hidden = document.getElementById(field);
         var chipsEl = row.querySelector('.recipient-chips');
         var input = row.querySelector('.recipient-input');
         if (!hidden || !chipsEl || !input) return;
+
+        var form = row.closest('#compose-form');
+        var autocomplete = initRecipientAutocomplete(input, form, function () {
+            window.setTimeout(commitInput, 0);
+        });
 
         function syncHidden() {
             hidden.value = getChipEmails(chipsEl).join(', ');
@@ -3704,9 +4003,11 @@
         syncHidden();
 
         input.addEventListener('keydown', function (e) {
+            if (autocomplete.handleKeydown(e)) return;
             if (e.key === 'Enter' || e.key === 'Tab' || e.key === ',') {
                 if (input.value.trim()) {
                     e.preventDefault();
+                    autocomplete.close();
                     commitInput();
                 }
             } else if (e.key === 'Backspace' && input.value === '') {
@@ -3718,7 +4019,10 @@
             }
         });
 
-        input.addEventListener('blur', commitInput);
+        input.addEventListener('blur', function () {
+            autocomplete.close();
+            commitInput();
+        });
 
         input.addEventListener('paste', function (e) {
             var text = (e.clipboardData || window.clipboardData).getData('text');

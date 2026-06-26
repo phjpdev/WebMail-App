@@ -18,8 +18,11 @@
  * @var string $returnFolder
  */
 $embed = !empty($embed);
+$recipientAutocomplete = compose_recipient_autocomplete_data();
 ?>
-<form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form" id="compose-form" enctype="multipart/form-data">
+<form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form" id="compose-form" enctype="multipart/form-data"
+      data-recipient-domains="<?= e(json_encode($recipientAutocomplete['domains'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
+      data-recipient-contacts="<?= e(json_encode($recipientAutocomplete['contacts'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>">
     <?= csrf_field() ?>
     <input type="hidden" name="mode" value="<?= e($mode) ?>">
     <input type="hidden" name="body_html" id="body_html" value="<?= e($body_html ?? '') ?>">
