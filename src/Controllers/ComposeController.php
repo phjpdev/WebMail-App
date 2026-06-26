@@ -69,19 +69,51 @@ class ComposeController
         }
 
         $draftFolder = $this->resolveDraftsFolder();
-        if ($imap->appendMessage($draftFolder, $raw)) {
-            FolderCache::refreshPaths([$draftFolder]);
-            if (wants_json()) {
-                json_response([
-                    'ok' => true,
-                    'message' => 'Draft saved.',
-                    'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
-                ]);
-            }
-            flash('success', 'Draft saved.');
-        } else {
+        $existingDraftUid = (int) ($_POST['draft_uid'] ?? 0);
+        $existingDraftFolder = decode_folder_path($_POST['draft_folder'] ?? '');
+        if ($existingDraftFolder !== '' && !FolderCache::canAccess($existingDraftFolder)) {
+            $existingDraftFolder = '';
+            $existingDraftUid = 0;
+        }
+        if ($existingDraftUid > 0 && $existingDraftFolder === '') {
+            $existingDraftFolder = $draftFolder;
+        }
+
+        if (!$imap->appendMessage($draftFolder, $raw)) {
             $this->composeFail('Could not save draft: ' . $imap->getLastError());
         }
+
+        $isReplacement = $existingDraftUid > 0 && $existingDraftFolder !== '';
+        if ($isReplacement) {
+            if ($imap->moveMessage($existingDraftFolder, $existingDraftUid, trash_folder_path())) {
+                MailCacheService::removeMessage($existingDraftFolder, $existingDraftUid);
+            }
+        }
+
+        $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
+        MailCacheService::invalidateFolder($draftFolder);
+        try {
+            MailCacheService::syncFolderHeaders($imap, $draftFolder, $headerLimit);
+        } catch (\Throwable $e) {
+            app_log('Post-draft cache sync failed: ' . $e->getMessage());
+        }
+
+        if (!$isReplacement) {
+            FolderCache::bumpUnread($draftFolder, 1);
+        }
+        MailCacheService::reconcileBadgeFromIndex($draftFolder);
+        FolderCache::refreshPaths([$draftFolder]);
+        $unreadCounts = FolderCache::sidebarUnreadCounts();
+
+        if (wants_json()) {
+            json_response([
+                'ok' => true,
+                'message' => 'Draft saved.',
+                'draft_folder' => encode_folder_path($draftFolder),
+                'unread_counts' => $unreadCounts,
+            ]);
+        }
+        flash('success', 'Draft saved.');
 
         redirect('compose');
     }

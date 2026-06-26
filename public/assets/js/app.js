@@ -1205,7 +1205,15 @@
                     });
                 }).then(function (data) {
                     showToast('success', (data && data.message) || (isDraft ? 'Draft saved.' : 'Email sent.'));
-                    if (isDraft) return;
+                    if (isDraft) {
+                        if (data && data.unread_counts) {
+                            applyUnreadCounts(data.unread_counts);
+                        }
+                        if (currentFolderKind() === 'draft') {
+                            scheduleMailPoll(true);
+                        }
+                        return;
+                    }
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
                     closeComposePanel(false);
                     stopPaneMessageSync();
