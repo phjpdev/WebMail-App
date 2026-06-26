@@ -1014,7 +1014,7 @@ function mail_list_snippet(?string $plain, ?string $html = null, int $maxLen = 1
     $text = trim($text);
 
     if ($text === '') {
-        return '';
+        return mail_list_snippet_fallback($plain, $html, $maxLen);
     }
 
     if (mb_strlen($text) > $maxLen) {
@@ -1022,6 +1022,33 @@ function mail_list_snippet(?string $plain, ?string $html = null, int $maxLen = 1
     }
 
     return $text;
+}
+
+/**
+ * Fallback when quote-stripping leaves nothing (common on reply-only messages).
+ */
+function mail_list_snippet_fallback(?string $plain, ?string $html = null, int $maxLen = 140): string
+{
+    $raw = trim((string) $plain);
+    if ($raw === '' && $html !== null && trim($html) !== '') {
+        $raw = trim(html_entity_decode(strip_tags(
+            str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], ' ', $html),
+            ENT_QUOTES | ENT_HTML5,
+            'UTF-8'
+        )));
+    }
+
+    $raw = preg_replace('/\s+/u', ' ', $raw) ?? $raw;
+    $raw = trim($raw);
+    if ($raw === '') {
+        return '';
+    }
+
+    if (mb_strlen($raw) > $maxLen) {
+        return mb_substr($raw, 0, max(1, $maxLen - 1)) . '…';
+    }
+
+    return $raw;
 }
 
 /**

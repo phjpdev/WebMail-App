@@ -654,6 +654,45 @@ class MailController
     }
 
     /**
+     * Deferred list preview snippets for rows without cached bodies.
+     *
+     * @param array<string, string> $params
+     */
+    public function messageSnippets(array $params): void
+    {
+        requireAuth();
+        releaseSessionLock();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $folderPath = mail_folder_path($params['folderB64'] ?? '');
+        if ($folderPath === '' || !FolderCache::canAccess($folderPath)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'Access denied']);
+            return;
+        }
+
+        $raw = trim($_GET['uids'] ?? '');
+        if ($raw === '') {
+            echo json_encode(['ok' => true, 'snippets' => []]);
+            return;
+        }
+
+        $uids = array_values(array_unique(array_filter(array_map('intval', explode(',', $raw)), fn ($u) => $u > 0)));
+        $uids = array_slice($uids, 0, 20);
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
+            return;
+        }
+
+        $snippets = MailCacheService::resolveSnippetsForUids($imap, $folderPath, $uids);
+
+        echo json_encode(['ok' => true, 'snippets' => $snippets]);
+    }
+
+    /**
      * @param array<string, string> $params
      */
     public function messagePane(array $params): void

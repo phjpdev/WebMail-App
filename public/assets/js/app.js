@@ -91,6 +91,7 @@
     var paneMessageSyncInFlight = false;
     var afterSendBadgePollInFlight = false;
     var attachmentHintsTimer = null;
+    var listSnippetsTimer = null;
     var panePrefetchInFlight = {};
     var paneHoverPrefetchTimer = null;
     var paneHoverPrefetchUid = null;
@@ -628,6 +629,59 @@
         else meta.appendChild(span);
     }
 
+    function applySnippetToRow(uid, snippet) {
+        if (!snippet) return;
+        rowsForUid(uid).forEach(function (el) {
+            var node = el.querySelector('.mail-row-snippet');
+            if (!node) return;
+            node.textContent = snippet;
+            node.title = snippet;
+            node.removeAttribute('aria-hidden');
+        });
+    }
+
+    function loadListSnippets(root) {
+        if (isPostSendQuiet()) return;
+        root = root || document;
+        var card = root.querySelector ? root.querySelector('.mail-list-card[data-folder-b64]') : null;
+        if (!card) return;
+        var b64 = card.getAttribute('data-folder-b64');
+        var uids = [];
+        (root.querySelectorAll ? root.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]') : []).forEach(function (el) {
+            var node = el.querySelector('.mail-row-snippet');
+            if (!node || (node.textContent && node.textContent.trim() !== '')) return;
+            var uid = parseInt(el.getAttribute('data-uid'), 10);
+            if (uid) uids.push(uid);
+        });
+        if (!uids.length) return;
+        uids = uids.slice(0, 20);
+
+        runBackgroundFetch(apiUrl('folder/' + b64 + '/snippets?uids=' + uids.join(',')), {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        }).then(function (r) {
+            if (!r.ok) return null;
+            return r.json();
+        }).then(function (data) {
+            if (!data || !data.ok || !data.snippets) return;
+            Object.keys(data.snippets).forEach(function (uidKey) {
+                applySnippetToRow(parseInt(uidKey, 10), data.snippets[uidKey]);
+            });
+        }).catch(function () {});
+    }
+
+    function scheduleListSnippets(root) {
+        if (isPostSendQuiet()) {
+            window.setTimeout(function () { loadListSnippets(root || document); }, Math.max(0, postSendQuietUntil - Date.now()) + 500);
+            return;
+        }
+        if (listSnippetsTimer) window.clearTimeout(listSnippetsTimer);
+        listSnippetsTimer = window.setTimeout(function () {
+            listSnippetsTimer = null;
+            loadListSnippets(root);
+        }, 400);
+    }
+
     function loadAttachmentHints(root) {
         if (isPostSendQuiet()) return;
         root = root || document;
@@ -724,6 +778,7 @@
         initPerPageSelect();
         initMailSync();
         scheduleAttachmentHints(document);
+        scheduleListSnippets(document);
         prefetchUnreadInList(document);
     }
 
@@ -2632,6 +2687,7 @@
                         });
                         playNewMailSound();
                         notifyNewMail(newMessages.length);
+                        scheduleListSnippets(liveCard);
                     }
 
                     // Remove rows that no longer exist on the server (moved/deleted
@@ -4957,6 +5013,6 @@
         initGlobalFormLoading();
         initMobileReadSwipe();
         scheduleAttachmentHints(document);
-        requestNotificationPermission();
+        scheduleListSnippets(document);
     });
 })();

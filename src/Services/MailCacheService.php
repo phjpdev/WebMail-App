@@ -375,6 +375,67 @@ class MailCacheService
     }
 
     /**
+     * List preview snippets for visible rows — cache first, then light IMAP fetch.
+     *
+     * @param list<int> $uids
+     * @return array<int, string>
+     */
+    public static function resolveSnippetsForUids(ImapService $imap, string $folderPath, array $uids, int $limit = 20): array
+    {
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
+        $uids = array_slice($uids, 0, $limit);
+        if ($uids === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$folderPath], $uids);
+        $rows = Database::query(
+            "SELECT imap_uid, plain_body, html_body FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        )->fetchAll();
+
+        $byUid = [];
+        foreach ($rows as $row) {
+            $byUid[(int) $row['imap_uid']] = $row;
+        }
+
+        $result = [];
+        $missing = [];
+
+        foreach ($uids as $uid) {
+            $body = $byUid[$uid] ?? null;
+            if ($body !== null) {
+                $snippet = mail_list_snippet($body['plain_body'] ?? null, $body['html_body'] ?? null);
+                if ($snippet !== '') {
+                    $result[$uid] = $snippet;
+                    continue;
+                }
+            }
+            $missing[] = $uid;
+        }
+
+        if ($missing === [] || !$imap->openFolder($folderPath)) {
+            return $result;
+        }
+
+        foreach ($missing as $uid) {
+            $message = $imap->getMessageByUid($folderPath, $uid);
+            if ($message === null) {
+                continue;
+            }
+
+            self::saveBody($folderPath, $message);
+            $snippet = mail_list_snippet($message['plain'] ?? null, $message['html'] ?? null);
+            if ($snippet !== '') {
+                $result[$uid] = $snippet;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Add list snippets / draft recipients from cached bodies when missing.
      *
      * @param list<array<string, mixed>> $messages
