@@ -14,6 +14,11 @@ $isPane = !empty($isPane);
 $folderB64 = $folderB64 ?? encode_folder_path($folderPath);
 $uid = (int) ($message['uid'] ?? 0);
 $isFlagged = !empty($message['flagged']);
+$userSent = mail_is_sent_by_user($message['from'] ?? null);
+$displayFrom = trim((string) ($message['from'] ?? '')) !== '' ? trim((string) $message['from']) : '—';
+$displayTo = format_mail_recipients($message['to'] ?? null, !$userSent);
+$displayCc = !empty($message['cc']) ? format_mail_recipients($message['cc'], !$userSent) : '';
+$displayDate = format_mail_datetime($message['date'] ?? '') ?: '—';
 ?>
 
 <div class="mail-actions no-print" role="toolbar" aria-label="Message actions">
@@ -85,17 +90,38 @@ $isFlagged = !empty($message['flagged']);
     <?php endif; ?>
 </div>
 
-<dl class="detail-list mail-headers">
-    <dt>Subject</dt><dd><?= e($message['subject'] ?: '(no subject)') ?></dd>
-    <dt>From</dt><dd><?= e($message['from'] ?? '—') ?></dd>
-    <dt>To</dt><dd><?= e($message['to'] ?? '—') ?></dd>
-    <?php if (!empty($message['cc'])): ?>
-    <dt>Cc</dt><dd><?= e($message['cc']) ?></dd>
-    <?php endif; ?>
-    <dt>Delivered-To</dt><dd><?= e($message['delivered_to'] ?? '—') ?></dd>
-    <dt>Date</dt><dd><?= e(format_mail_datetime($message['date'] ?? '') ?: '—') ?></dd>
-    <dt>Reply as</dt><dd><code><?= e($replyFrom) ?></code></dd>
-</dl>
+<div class="mail-meta" role="group" aria-label="Message details">
+    <div class="mail-meta-grid">
+        <div class="mail-meta-row">
+            <span class="mail-meta-label">From</span>
+            <span class="mail-meta-value"><?= e($displayFrom) ?></span>
+        </div>
+        <div class="mail-meta-row">
+            <span class="mail-meta-label">To</span>
+            <span class="mail-meta-value"><?= e($displayTo) ?></span>
+        </div>
+        <?php if ($displayCc !== ''): ?>
+        <div class="mail-meta-row">
+            <span class="mail-meta-label">Cc</span>
+            <span class="mail-meta-value"><?= e($displayCc) ?></span>
+        </div>
+        <?php endif; ?>
+    </div>
+    <time class="mail-meta-date" datetime="<?= e($message['date'] ?? '') ?>"><?= e($displayDate) ?></time>
+</div>
+
+<div class="mail-body">
+    <h1 class="mail-message-subject"><?= e($message['subject'] ?: '(no subject)') ?></h1>
+    <div class="mail-body-content">
+        <?php if ($sanitizedHtml !== ''): ?>
+            <div class="mail-body-html"><?= $sanitizedHtml ?></div>
+        <?php elseif (!empty($message['plain'])): ?>
+            <pre class="mail-body-plain"><?= e($message['plain']) ?></pre>
+        <?php else: ?>
+            <p class="text-muted">(No message body)</p>
+        <?php endif; ?>
+    </div>
+</div>
 
 <?php if (!empty($message['attachments'])): ?>
 <div class="attachments">
@@ -121,13 +147,3 @@ $isFlagged = !empty($message['flagged']);
     </ul>
 </div>
 <?php endif; ?>
-
-<div class="mail-body">
-    <?php if ($sanitizedHtml !== ''): ?>
-        <div class="mail-body-html"><?= $sanitizedHtml ?></div>
-    <?php elseif (!empty($message['plain'])): ?>
-        <pre class="mail-body-plain"><?= e($message['plain']) ?></pre>
-    <?php else: ?>
-        <p class="text-muted">(No message body)</p>
-    <?php endif; ?>
-</div>

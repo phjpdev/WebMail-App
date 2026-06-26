@@ -8,7 +8,6 @@
         require base_path('views/partials/back-nav.php');
         ?>
     </nav>
-    <h2 class="read-subject-title"><?= e($message['subject'] ?: '(no subject)') ?></h2>
 </section>
 
 <section class="card mail-read-card print-area"

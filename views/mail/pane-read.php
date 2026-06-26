@@ -13,9 +13,6 @@
 $isPane = true;
 ?>
 <div class="reading-pane-inner print-area">
-    <div class="reading-pane-subject-bar">
-        <h3 class="reading-pane-subject"><?= e($message['subject'] ?: '(no subject)') ?></h3>
-    </div>
     <section class="card mail-read-card mail-read-card--pane"
         data-message-sync="1"
         data-folder-b64="<?= e($folderB64) ?>"

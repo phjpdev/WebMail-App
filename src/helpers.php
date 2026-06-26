@@ -1274,6 +1274,94 @@ function format_mail_from(?string $from): string
     return $from;
 }
 
+/**
+ * Email addresses that belong to the logged-in user (for read-view display).
+ *
+ * @return list<string>
+ */
+function mail_user_emails(?int $userId = null): array
+{
+    $aliasService = new App\Services\AliasService();
+
+    if ($userId === null) {
+        $user = App\Auth::user();
+        $userId = $user['id'] ?? null;
+    }
+
+    $emails = [];
+    $userAlias = strtolower(trim($aliasService->userAlias($userId)));
+    if ($userAlias !== '') {
+        $emails[] = $userAlias;
+    }
+
+    if ($userId !== null && $userId > 0) {
+        $rows = App\Database::query(
+            'SELECT email FROM aliases WHERE user_id = ? AND active = 1',
+            [$userId]
+        )->fetchAll();
+        foreach ($rows as $row) {
+            $email = strtolower(trim((string) ($row['email'] ?? '')));
+            if ($email !== '') {
+                $emails[] = $email;
+            }
+        }
+    }
+
+    return array_values(array_unique(array_filter($emails)));
+}
+
+/**
+ * True when the logged-in user sent the message (From matches one of their aliases).
+ */
+function mail_is_sent_by_user(?string $from, ?int $userId = null): bool
+{
+    $fromEmail = strtolower(normalize_email_token((string) $from));
+    if ($fromEmail === '') {
+        return false;
+    }
+
+    return in_array($fromEmail, mail_user_emails($userId), true);
+}
+
+/**
+ * Format To/Cc for read view — own addresses become "You" on inbound mail only.
+ */
+function format_mail_recipients(?string $header, bool $substituteSelf = true): string
+{
+    if ($header === null || trim($header) === '') {
+        return '—';
+    }
+
+    if (!$substituteSelf) {
+        return trim($header);
+    }
+
+    $own = mail_user_emails();
+    $parts = preg_split('/\s*,\s*/', $header) ?: [];
+    $out = [];
+    $youAdded = false;
+
+    foreach ($parts as $part) {
+        $part = trim($part);
+        if ($part === '') {
+            continue;
+        }
+
+        $email = strtolower(normalize_email_token($part));
+        if ($email !== '' && in_array($email, $own, true)) {
+            if (!$youAdded) {
+                $out[] = 'You';
+                $youAdded = true;
+            }
+            continue;
+        }
+
+        $out[] = $part;
+    }
+
+    return $out === [] ? '—' : implode(', ', $out);
+}
+
 function mail_avatar_initial(?string $from): string
 {
     $display = format_mail_from($from);
