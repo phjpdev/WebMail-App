@@ -13,11 +13,11 @@ class MailCacheService
      */
     public static function listFromCache(string $folderPath, int $page, int $perPage): ?array
     {
-        if (!self::hasFolderData($folderPath)) {
+        $state = self::getSyncState($folderPath);
+        if ($state === null || empty($state['last_sync_at'])) {
             return null;
         }
 
-        $state = self::getSyncState($folderPath);
         $total = (int) ($state['imap_total'] ?? 0);
         if ($total <= 0) {
             $row = Database::fetchOne(
@@ -28,7 +28,14 @@ class MailCacheService
         }
 
         if ($total === 0) {
-            return null;
+            return [
+                'messages' => [],
+                'total' => 0,
+                'page' => 1,
+                'per_page' => $perPage,
+                'total_pages' => 0,
+                'from_cache' => true,
+            ];
         }
 
         $totalPages = (int) max(1, (int) ceil($total / $perPage));
@@ -69,11 +76,17 @@ class MailCacheService
     public static function hasFolderData(string $folderPath): bool
     {
         $row = Database::fetchOne(
-            'SELECT 1 FROM mail_sync_state WHERE folder_path = ? AND headers_cached > 0 LIMIT 1',
+            'SELECT headers_cached, imap_total, last_sync_at
+             FROM mail_sync_state WHERE folder_path = ? LIMIT 1',
             [$folderPath]
         );
 
-        return $row !== null;
+        if ($row === null || empty($row['last_sync_at'])) {
+            return false;
+        }
+
+        return (int) ($row['headers_cached'] ?? 0) > 0
+            || (int) ($row['imap_total'] ?? 0) === 0;
     }
 
     /** Drop all cached mail for a folder (after admin deletes the mailbox). */

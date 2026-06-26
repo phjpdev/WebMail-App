@@ -65,7 +65,7 @@ class MailController
             exit;
         }
 
-        $context = $this->buildFolderListContext($folderPath, $params, ajaxFast: true);
+        $context = $this->buildFolderListContext($folderPath, $params);
         if ($context === null) {
             http_response_code(404);
             echo json_encode_safe(['ok' => false, 'error' => 'Folder not found']);
@@ -88,19 +88,19 @@ class MailController
      * @param array<string, string> $params
      * @return array<string, mixed>|null
      */
-    private function buildFolderListContext(string $folderPath, array $params, bool $ajaxFast = false): ?array
+    private function buildFolderListContext(string $folderPath, array $params): ?array
     {
         if ($folderPath === '') {
             return null;
         }
 
         $forceRefresh = ($params['refresh'] ?? $_GET['refresh'] ?? '') === '1';
-        $fastOpen = $ajaxFast && !$forceRefresh;
+        $cacheFirst = !$forceRefresh;
 
         FolderCache::load(skipUnreadRefresh: true);
 
-        if (!$fastOpen) {
-            $filterResult = $this->maybeRunFilter($folderPath, $forceRefresh);
+        if ($forceRefresh) {
+            $filterResult = $this->maybeRunFilter($folderPath, true);
             if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
                 FolderCache::syncUnreadBadges($folderPath);
             }
@@ -124,18 +124,14 @@ class MailController
 
         if ($imapConnected && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null && ($fastOpen || !$forceRefresh)) {
-                if (!MailCacheService::isStale($folderPath)) {
-                    $list = $cached;
-                    $list['from_cache'] = true;
-                    $servedFromCache = true;
-                } elseif ($fastOpen) {
+            if ($cached !== null && $cacheFirst) {
+                $list = $cached;
+                $list['from_cache'] = true;
+                if (MailCacheService::isStale($folderPath)) {
                     // Instant folder switch: show cached list, let the client poll refresh.
-                    $list = $cached;
-                    $list['from_cache'] = true;
                     $list['stale'] = true;
-                    $servedFromCache = true;
                 }
+                $servedFromCache = true;
             }
         }
 
@@ -281,7 +277,7 @@ class MailController
             return;
         }
 
-        $this->maybeRunFilter($this->filterSourceFolder());
+        FilterService::runBackground(false);
 
         echo json_encode([
             'ok' => true,
@@ -299,6 +295,18 @@ class MailController
             $this->filterSourceFolder(),
             'INBOX',
         ];
+        $primaryBuckets = sidebar_primary_folder_order();
+
+        foreach ($folders as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '') {
+                continue;
+            }
+            $bucket = sidebar_folder_bucket($path);
+            if (in_array($bucket, $primaryBuckets, true) || $bucket === 'other') {
+                $paths[] = $path;
+            }
+        }
 
         if ($activeFolderEncoded !== '') {
             $active = decode_folder_path($activeFolderEncoded);
@@ -307,17 +315,7 @@ class MailController
             }
         }
 
-        foreach ($folders as $folder) {
-            $path = $folder['path'];
-            $lower = strtolower($path);
-            if (str_contains($lower, 'sent') || str_contains($lower, 'draft')) {
-                $paths[] = $path;
-            }
-        }
-
-        $paths = array_values(array_unique(array_filter($paths)));
-
-        return array_slice($paths, 0, 8);
+        return array_values(array_unique(array_filter($paths)));
     }
 
     /**
