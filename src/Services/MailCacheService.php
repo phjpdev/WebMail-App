@@ -8,11 +8,46 @@ use App\Database;
 
 class MailCacheService
 {
+    /** @var array<string, string> lowercase path => mail_index folder_path */
+    private static array $indexFolderPathCache = [];
+
+    /**
+     * Folder path as stored in mail_index / mail_sync_state (case-insensitive lookup).
+     */
+    public static function indexFolderPath(string $folderPath): string
+    {
+        if ($folderPath === '') {
+            return '';
+        }
+
+        $lookup = strtolower($folderPath);
+        if (isset(self::$indexFolderPathCache[$lookup])) {
+            return self::$indexFolderPathCache[$lookup];
+        }
+
+        foreach (['mail_sync_state', 'mail_index'] as $table) {
+            $row = Database::fetchOne(
+                "SELECT folder_path FROM {$table} WHERE LOWER(folder_path) = ? LIMIT 1",
+                [$lookup]
+            );
+            if ($row !== null && ($row['folder_path'] ?? '') !== '') {
+                self::$indexFolderPathCache[$lookup] = (string) $row['folder_path'];
+
+                return self::$indexFolderPathCache[$lookup];
+            }
+        }
+
+        self::$indexFolderPathCache[$lookup] = FolderCache::resolvePath($folderPath);
+
+        return self::$indexFolderPathCache[$lookup];
+    }
+
     /**
      * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int, from_cache: bool}|null
      */
     public static function listFromCache(string $folderPath, int $page, int $perPage): ?array
     {
+        $folderPath = self::indexFolderPath($folderPath);
         $state = self::getSyncState($folderPath);
         if ($state === null || empty($state['last_sync_at'])) {
             return null;
@@ -215,6 +250,8 @@ class MailCacheService
      */
     public static function getSyncState(string $folderPath): ?array
     {
+        $folderPath = self::indexFolderPath($folderPath);
+
         return Database::fetchOne(
             'SELECT folder_path, imap_total, headers_cached, last_sync_at FROM mail_sync_state WHERE folder_path = ?',
             [$folderPath]
@@ -767,6 +804,7 @@ class MailCacheService
 
     public static function removeMessage(string $folderPath, int $uid): void
     {
+        $folderPath = self::indexFolderPath($folderPath);
         Database::query('DELETE FROM mail_index WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
         Database::query('DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
         self::reconcileSyncStateFromIndex($folderPath);
@@ -777,6 +815,7 @@ class MailCacheService
      */
     public static function removeMessages(string $folderPath, array $uids): void
     {
+        $folderPath = self::indexFolderPath($folderPath);
         $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
         if ($uids === []) {
             return;
@@ -870,6 +909,7 @@ class MailCacheService
      */
     public static function folderMessageUids(string $folderPath, string $searchQuery = ''): array
     {
+        $folderPath = self::indexFolderPath($folderPath);
         if ($folderPath === '') {
             return [];
         }

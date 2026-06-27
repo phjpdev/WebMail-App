@@ -3496,6 +3496,12 @@
             selectAll.addEventListener('change', function () {
                 if (!selectAll.checked) {
                     selectAllInFolder = false;
+                } else {
+                    var total = folderMessageTotal();
+                    var pageCount = pageMessageCount();
+                    if (total > 0 && total <= pageCount) {
+                        selectAllInFolder = true;
+                    }
                 }
                 document.querySelectorAll('.mail-check').forEach(function (cb) {
                     cb.checked = selectAll.checked;
@@ -3957,7 +3963,14 @@
         payload.set('_csrf', csrf);
         payload.set('folder', folderEnc);
         var allInFolder = selectAllInFolder;
-        var selectionCount = effectiveSelectionCount();
+        if (!allInFolder) {
+            var totalMsgs = folderMessageTotal();
+            var selectedCount = selectedMailUids().length;
+            if (totalMsgs > 0 && selectedCount >= totalMsgs) {
+                allInFolder = true;
+            }
+        }
+        var selectionCount = allInFolder ? folderMessageTotal() : (uids.length || selectedMailUids().length);
 
         if (allInFolder) {
             payload.set('all_in_folder', '1');

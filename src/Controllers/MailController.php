@@ -1118,6 +1118,9 @@ class MailController
         $uids = $this->resolveBulkUids($folderPath);
 
         if ($folderPath === '' || $uids === [] || $targetPath === '') {
+            if (wants_json()) {
+                json_response(['ok' => false, 'error' => 'Invalid bulk move request.'], 422);
+            }
             flash('error', 'Invalid bulk move request.');
             redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
         }
@@ -1137,6 +1140,9 @@ class MailController
         $uids = $this->resolveBulkUids($folderPath);
 
         if ($folderPath === '' || $uids === []) {
+            if (wants_json()) {
+                json_response(['ok' => false, 'error' => 'No messages selected to delete.'], 422);
+            }
             flash('error', 'Invalid bulk delete request.');
             redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
         }
@@ -1236,34 +1242,36 @@ class MailController
      */
     private function performMove(string $folderPath, array $uids, string $targetPath, string $redirect, ?string $successMsg = null): void
     {
-        $folderPath = FolderCache::resolvePath($folderPath);
+        $resolvedFolderPath = FolderCache::resolvePath($folderPath);
+        $indexFolderPath = MailCacheService::indexFolderPath($resolvedFolderPath);
         $targetPath = FolderCache::resolvePath($targetPath);
         $purgeSiblingCopies = strcasecmp($targetPath, spam_folder_path()) === 0;
 
         $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
         if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
-            $unreadDelta = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'];
+            $unreadDelta = (int) ($counts[$resolvedFolderPath] ?? $counts[$indexFolderPath] ?? 0);
         }
 
         if (wants_json()) {
-            MailCacheService::removeMessages($folderPath, $uids);
+            MailCacheService::removeMessages($indexFolderPath, $uids);
             if (!is_trash_folder($targetPath)) {
                 MailCacheService::invalidateFolder($targetPath);
             }
 
-            if (folder_uses_draft_badge($folderPath)) {
-                MailCacheService::reconcileBadgeFromIndex($folderPath);
+            if (folder_uses_draft_badge($resolvedFolderPath)) {
+                MailCacheService::reconcileBadgeFromIndex($indexFolderPath);
                 $counts = FolderCache::sidebarUnreadCounts();
             } elseif ($unreadDelta > 0) {
                 $unreadDelta = min($unreadDelta, count($uids));
-                $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
+                $counts = FolderCache::bumpUnread($resolvedFolderPath, -$unreadDelta);
                 if (folder_shows_unread_badge($targetPath)) {
                     $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
                 } else {
                     FolderCache::setUnreadCount($targetPath, 0);
                 }
             } else {
-                $counts = FolderCache::bumpUnread($folderPath, 0);
+                $counts = FolderCache::bumpUnread($resolvedFolderPath, 0);
             }
 
             json_response_then([
@@ -1273,8 +1281,8 @@ class MailController
                 'uids' => array_values($uids),
                 'target' => $targetPath,
                 'unread_counts' => $counts,
-            ], function () use ($folderPath, $uids, $targetPath, $purgeSiblingCopies): void {
-                $this->executeMoveOnServer($folderPath, $uids, $targetPath, $purgeSiblingCopies);
+            ], function () use ($resolvedFolderPath, $uids, $targetPath, $purgeSiblingCopies): void {
+                $this->executeMoveOnServer($resolvedFolderPath, $uids, $targetPath, $purgeSiblingCopies);
             });
         }
 
@@ -1291,13 +1299,13 @@ class MailController
             (new FolderCache())->clear();
         }
 
-        $result = $imap->moveMessages($folderPath, $uids, $targetPath);
+        $result = $imap->moveMessages($resolvedFolderPath, $uids, $targetPath);
         $moved = (int) ($result['moved'] ?? 0);
         $errors = (int) ($result['errors'] ?? 0);
         $movedUids = $result['uids'] ?? [];
 
         if ($movedUids !== []) {
-            MailCacheService::removeMessages($folderPath, $movedUids);
+            MailCacheService::removeMessages($indexFolderPath, $movedUids);
         }
 
         (new FolderCache())->clear();
@@ -1472,7 +1480,11 @@ class MailController
             $moveResult = $this->runMovesOnImap($imap, $folderPath, $chunk, $targetPath, false);
             ImapService::closeShared();
 
-            $movedUids = $moveResult['removed'][$folderPath] ?? [];
+            $imapFromPath = FolderCache::resolvePath($folderPath);
+            $movedUids = $moveResult['removed'][$imapFromPath] ?? [];
+            if ($movedUids === [] && !empty($moveResult['removed'])) {
+                $movedUids = array_merge(...array_values($moveResult['removed']));
+            }
             if ($movedUids !== []) {
                 $movedTotal += count($movedUids);
                 $removed[$folderPath] = array_merge($removed[$folderPath] ?? [], $movedUids);
@@ -1521,21 +1533,25 @@ class MailController
      */
     private function performPermanentDelete(string $folderPath, array $uids, string $redirect, ?string $successMsg = null): void
     {
+        $resolvedFolderPath = FolderCache::resolvePath($folderPath);
+        $indexFolderPath = MailCacheService::indexFolderPath($resolvedFolderPath);
+
         $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
         if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
-            $unreadDelta = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'];
+            $unreadDelta = (int) ($counts[$resolvedFolderPath] ?? $counts[$indexFolderPath] ?? 0);
         }
 
         if (wants_json()) {
-            MailCacheService::removeMessages($folderPath, $uids);
-            if (folder_uses_draft_badge($folderPath)) {
-                MailCacheService::reconcileBadgeFromIndex($folderPath);
+            MailCacheService::removeMessages($indexFolderPath, $uids);
+            if (folder_uses_draft_badge($resolvedFolderPath)) {
+                MailCacheService::reconcileBadgeFromIndex($indexFolderPath);
                 $counts = FolderCache::sidebarUnreadCounts();
             } elseif ($unreadDelta > 0) {
                 $unreadDelta = min($unreadDelta, count($uids));
-                $counts = FolderCache::bumpUnread($folderPath, -$unreadDelta);
+                $counts = FolderCache::bumpUnread($resolvedFolderPath, -$unreadDelta);
             } else {
-                $counts = FolderCache::bumpUnread($folderPath, 0);
+                $counts = FolderCache::bumpUnread($resolvedFolderPath, 0);
             }
 
             json_response_then([
@@ -1544,8 +1560,8 @@ class MailController
                 'errors' => 0,
                 'uids' => array_values($uids),
                 'unread_counts' => $counts,
-            ], function () use ($folderPath, $uids): void {
-                $this->executeDeleteOnServer($folderPath, $uids);
+            ], function () use ($resolvedFolderPath, $uids): void {
+                $this->executeDeleteOnServer($resolvedFolderPath, $uids);
             });
         }
 
@@ -1554,13 +1570,13 @@ class MailController
             $this->actionError($imap->getLastError(), $redirect);
         }
 
-        $result = $imap->deleteMessages($folderPath, $uids);
+        $result = $imap->deleteMessages($resolvedFolderPath, $uids);
         $deleted = (int) ($result['deleted'] ?? 0);
         $errors = (int) ($result['errors'] ?? 0);
         $deletedUids = $result['uids'] ?? [];
 
         if ($deletedUids !== []) {
-            MailCacheService::removeMessages($folderPath, $deletedUids);
+            MailCacheService::removeMessages($indexFolderPath, $deletedUids);
         }
 
         (new FolderCache())->clear();
@@ -1606,13 +1622,16 @@ class MailController
      */
     private function resolveBulkUids(string $folderPath): array
     {
+        $resolvedPath = FolderCache::resolvePath($folderPath);
+        $indexPath = MailCacheService::indexFolderPath($resolvedPath);
+
         if (($_POST['all_in_folder'] ?? '') === '1') {
-            if ($folderPath === '') {
+            if ($resolvedPath === '') {
                 return [];
             }
 
             $searchQuery = trim($_POST['q'] ?? '');
-            $cached = MailCacheService::folderMessageUids($folderPath, $searchQuery);
+            $cached = MailCacheService::folderMessageUids($indexPath, $searchQuery);
             if ($cached !== []) {
                 return $cached;
             }
@@ -1622,7 +1641,7 @@ class MailController
                 return [];
             }
 
-            return $imap->allMessageUids($folderPath, $searchQuery);
+            return $imap->allMessageUids($resolvedPath, $searchQuery);
         }
 
         $uids = array_map('intval', $_POST['uids'] ?? []);
