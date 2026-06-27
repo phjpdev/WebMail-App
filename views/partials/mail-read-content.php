@@ -14,7 +14,7 @@ $isPane = !empty($isPane);
 $folderB64 = $folderB64 ?? encode_folder_path($folderPath);
 $uid = (int) ($message['uid'] ?? 0);
 $isFlagged = !empty($message['flagged']);
-$thread = mail_build_conversation_thread($message, $sanitizedHtml, $replyFrom);
+$thread = mail_build_conversation_thread($message, $sanitizedHtml, $replyFrom, $folderPath, $uid);
 $threadDisplay = array_reverse($thread);
 $threadCount = count($threadDisplay);
 $messageAttachments = $message['attachments'] ?? [];
@@ -99,7 +99,7 @@ $messageAttachments = $message['attachments'] ?? [];
             <?php
             $isLatest = ($i === $threadCount - 1);
             $display = mail_thread_segment_display($segment, $replyFrom);
-            $attachments = $isLatest ? $messageAttachments : [];
+            $attachments = !empty($segment['is_current']) ? $messageAttachments : [];
             require base_path('views/partials/mail-thread-card.php');
             ?>
         <?php endforeach; ?>

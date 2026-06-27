@@ -1639,12 +1639,59 @@ function mail_split_conversation_plain(string $plain): array
 }
 
 /**
+ * Session key for replies sent while viewing a message (shown in the thread until reload).
+ */
+function mail_thread_reply_session_key(string $folderPath, int $uid): string
+{
+    return strtoupper(\App\Services\FolderCache::resolvePath($folderPath)) . '#' . $uid;
+}
+
+/**
+ * @param array{from?: string, to?: string, cc?: string, date?: string, body?: string, body_html?: string} $reply
+ */
+function mail_store_thread_reply(string $folderPath, int $uid, array $reply): void
+{
+    if ($folderPath === '' || $uid <= 0) {
+        return;
+    }
+
+    $key = mail_thread_reply_session_key($folderPath, $uid);
+    if (!isset($_SESSION['_mail_thread_replies']) || !is_array($_SESSION['_mail_thread_replies'])) {
+        $_SESSION['_mail_thread_replies'] = [];
+    }
+    if (!isset($_SESSION['_mail_thread_replies'][$key]) || !is_array($_SESSION['_mail_thread_replies'][$key])) {
+        $_SESSION['_mail_thread_replies'][$key] = [];
+    }
+
+    $_SESSION['_mail_thread_replies'][$key][] = $reply;
+}
+
+/**
+ * @return list<array{from?: string, to?: string, cc?: string, date?: string, body?: string, body_html?: string}>
+ */
+function mail_pending_thread_replies(string $folderPath, int $uid): array
+{
+    if ($folderPath === '' || $uid <= 0) {
+        return [];
+    }
+
+    $key = mail_thread_reply_session_key($folderPath, $uid);
+
+    return $_SESSION['_mail_thread_replies'][$key] ?? [];
+}
+
+/**
  * Build Outlook-style conversation segments (newest first).
  *
  * @return list<array<string, mixed>>
  */
-function mail_build_conversation_thread(array $message, string $sanitizedHtml = '', ?string $replyFrom = null): array
-{
+function mail_build_conversation_thread(
+    array $message,
+    string $sanitizedHtml = '',
+    ?string $replyFrom = null,
+    ?string $folderPath = null,
+    ?int $uid = null,
+): array {
     $plain = trim((string) ($message['plain'] ?? ''));
     if ($plain === '' && $sanitizedHtml !== '') {
         $plain = mail_plain_from_html($sanitizedHtml);
@@ -1696,6 +1743,27 @@ function mail_build_conversation_thread(array $message, string $sanitizedHtml = 
         $segment['snippet'] = mail_conversation_snippet((string) ($segment['body'] ?? ''));
     }
     unset($segment);
+
+    if ($folderPath !== null && $folderPath !== '' && $uid !== null && $uid > 0) {
+        $pending = mail_pending_thread_replies($folderPath, $uid);
+        foreach (array_reverse($pending) as $reply) {
+            $body = trim((string) ($reply['body'] ?? ''));
+            $bodyHtml = trim((string) ($reply['body_html'] ?? ''));
+            array_unshift($segments, [
+                'from' => (string) ($reply['from'] ?? ''),
+                'to' => (string) ($reply['to'] ?? ''),
+                'cc' => (string) ($reply['cc'] ?? ''),
+                'date' => (string) ($reply['date'] ?? ''),
+                'body' => $body,
+                'body_html' => $bodyHtml,
+                'quoted_plain' => '',
+                'quoted_html' => '',
+                'is_current' => false,
+                'is_sent_reply' => true,
+                'snippet' => mail_conversation_snippet($body),
+            ]);
+        }
+    }
 
     return $segments;
 }

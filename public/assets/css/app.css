@@ -1715,6 +1715,18 @@ a:hover {
     margin-bottom: 1rem;
 }
 
+.mail-message-compose-slot:empty {
+    display: none;
+}
+
+.mail-message-compose-slot .mail-inline-compose {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    border-top: 1px solid var(--color-border-subtle);
+}
+
 .mail-message-card--collapsed {
     cursor: pointer;
     transition: background 0.12s, box-shadow 0.12s;
@@ -5762,6 +5774,24 @@ body:has(.mail-workspace) {
 .compose-outlook-send:hover,
 .compose-outlook-send:focus-visible {
     background: var(--color-primary-hover);
+}
+
+.compose-outlook-send.is-loading {
+    cursor: wait;
+    pointer-events: none;
+    opacity: 0.92;
+}
+
+.compose-outlook-send.is-loading .btn-spinner {
+    border-color: rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+}
+
+.compose-outlook-discard:disabled,
+.compose-outlook-discard[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
 }
 
 .compose-outlook-discard {

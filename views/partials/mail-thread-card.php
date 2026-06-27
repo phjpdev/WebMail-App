@@ -86,7 +86,7 @@ $collapsed = !$isLatest && $hasBody;
             <?php endif; ?>
         </div>
 
-        <?php if ($isLatest && !empty($attachments)): ?>
+        <?php if (!empty($attachments)): ?>
         <div class="attachments attachments--message">
             <strong>Attachments</strong>
             <ul>
@@ -109,6 +109,10 @@ $collapsed = !$isLatest && $hasBody;
                 <?php endforeach; ?>
             </ul>
         </div>
+        <?php endif; ?>
+
+        <?php if ($isLatest && !empty($isPane)): ?>
+        <div class="mail-message-compose-slot" data-compose-slot></div>
         <?php endif; ?>
     </div>
 </article>

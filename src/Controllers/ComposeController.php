@@ -271,6 +271,23 @@ class ComposeController
             };
 
             if (wants_json()) {
+                if (in_array($mode, ['reply', 'reply-all'], true) && $folderPath !== '' && $uid > 0) {
+                    $split = compose_split_reply_body($plainBody);
+                    $composeHtml = '';
+                    if ($bodyHtml !== '') {
+                        $htmlSplit = mail_split_html_quote(HtmlSanitizer::sanitize($bodyHtml));
+                        $composeHtml = $htmlSplit['visible'];
+                    }
+                    mail_store_thread_reply($folderPath, $uid, [
+                        'from' => $fromEmail,
+                        'to' => $options['to'],
+                        'cc' => $options['cc'] ?? '',
+                        'date' => date('r'),
+                        'body' => mail_unquote_plain($split['compose']),
+                        'body_html' => $composeHtml,
+                    ]);
+                }
+
                 json_response_then([
                     'ok' => true,
                     'message' => 'Email sent successfully.',
