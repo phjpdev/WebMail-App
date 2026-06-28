@@ -235,6 +235,9 @@ function csrf_verify(): bool
 function verify_csrf_or_fail(): void
 {
     if (!csrf_verify()) {
+        if (wants_json()) {
+            json_response(['ok' => false, 'error' => 'Invalid security token. Please refresh the page and try again.'], 403);
+        }
         http_response_code(403);
         error_page(403, 'Invalid security token. Please go back and try again.');
         exit;
@@ -358,6 +361,70 @@ function finish_background(callable $after): void
     } catch (\Throwable $e) {
         app_log('Background task failed: ' . $e->getMessage());
     }
+}
+
+/**
+ * Fire-and-forget HTTP GET to this app (carries the current session cookie).
+ * On Apache mod_php the client connection stays open until the script ends, so
+ * heavy IMAP work must run in a separate request instead of finish_background().
+ */
+function dispatch_async_request(string $path, array $query = []): void
+{
+    if (PHP_SAPI === 'cli') {
+        return;
+    }
+
+    $targetUrl = url($path);
+    if ($query !== []) {
+        $targetUrl .= (str_contains($targetUrl, '?') ? '&' : '?') . http_build_query($query);
+    }
+
+    $parts = parse_url($targetUrl);
+    if ($parts === false || empty($parts['host'])) {
+        return;
+    }
+
+    $scheme = strtolower((string) ($parts['scheme'] ?? 'http'));
+    $host = (string) $parts['host'];
+    $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+    $pathAndQuery = ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
+
+    $cookie = '';
+    if (session_status() === PHP_SESSION_ACTIVE && session_id() !== '') {
+        $cookie = session_name() . '=' . session_id();
+    }
+
+    $errno = 0;
+    $errstr = '';
+    $remote = ($scheme === 'https' ? 'ssl://' : '') . $host;
+    $fp = @fsockopen($remote, $port, $errno, $errstr, 2);
+    if ($fp === false) {
+        app_log('dispatch_async_request connect failed: ' . $errstr);
+
+        return;
+    }
+
+    stream_set_timeout($fp, 2);
+
+    if ($scheme === 'https') {
+        @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+    }
+
+    $hostHeader = $host;
+    if (($scheme === 'http' && $port !== 80) || ($scheme === 'https' && $port !== 443)) {
+        $hostHeader .= ':' . $port;
+    }
+
+    $headers = "GET {$pathAndQuery} HTTP/1.1\r\n"
+        . "Host: {$hostHeader}\r\n"
+        . "Connection: Close\r\n";
+    if ($cookie !== '') {
+        $headers .= "Cookie: {$cookie}\r\n";
+    }
+    $headers .= "\r\n";
+
+    @fwrite($fp, $headers);
+    @fclose($fp);
 }
 
 /**

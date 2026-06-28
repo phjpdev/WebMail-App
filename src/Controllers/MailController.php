@@ -26,6 +26,7 @@ class MailController
     public function folder(array $params): void
     {
         requireAuth();
+        releaseSessionLock();
 
         $folderPath = mail_folder_path($params['folderB64'] ?? '');
         if ($folderPath === '') {
@@ -496,49 +497,87 @@ class MailController
         $afterSend = ($_GET['after_send'] ?? '') === '1';
 
         if ($afterSend) {
-            ensure_session_writable();
+            $pendingPaths = [];
+            $postSendAt = 0;
+            $destPaths = [];
+            $postSendFrom = '';
+            $postSendMessageId = null;
+            $shouldRunFilter = false;
+            $shouldReconcileInbox = false;
 
-            $pendingPaths = FolderCache::getPendingBadgePaths();
-            $postSendAt = (int) ($_SESSION['_post_send_at'] ?? 0);
-
-            if ($pendingPaths === [] && $postSendAt > 0 && $postSendAt + 90 > time()
-                && empty($_SESSION['_after_send_filter_ran'])) {
-                $_SESSION['_after_send_filter_ran'] = time();
-                FilterService::runBackground(true, 8);
+            with_session_write(function () use (
+                &$pendingPaths,
+                &$postSendAt,
+                &$destPaths,
+                &$postSendFrom,
+                &$postSendMessageId,
+                &$shouldRunFilter,
+                &$shouldReconcileInbox,
+            ): void {
                 $pendingPaths = FolderCache::getPendingBadgePaths();
+                $postSendAt = (int) ($_SESSION['_post_send_at'] ?? 0);
+
+                if ($pendingPaths === [] && $postSendAt > 0 && $postSendAt + 90 > time()
+                    && empty($_SESSION['_after_send_filter_ran'])) {
+                    $_SESSION['_after_send_filter_ran'] = time();
+                    $shouldRunFilter = true;
+                }
+
+                $destPaths = is_array($_SESSION['_post_send_dest_paths'] ?? null)
+                    ? $_SESSION['_post_send_dest_paths']
+                    : [];
+                $postSendFrom = (string) ($_SESSION['_post_send_from'] ?? config('mail')['mailbox_email'] ?? '');
+                $postSendMessageId = isset($_SESSION['_post_send_message_id'])
+                    ? (string) $_SESSION['_post_send_message_id']
+                    : null;
+
+                if ($destPaths !== [] && $postSendFrom !== '') {
+                    $lastInboxReconcile = (int) ($_SESSION['_inbox_reconcile_at'] ?? 0);
+                    if (time() - $lastInboxReconcile >= 15) {
+                        $_SESSION['_inbox_reconcile_at'] = time();
+                        $shouldReconcileInbox = true;
+                    }
+                }
+            });
+
+            if ($shouldRunFilter) {
+                FilterService::runBackground(true, 8);
+                with_session_write(function () use (&$pendingPaths): void {
+                    $pendingPaths = FolderCache::getPendingBadgePaths();
+                });
             }
 
             if ($pendingPaths !== []) {
                 FolderCache::refreshPaths($pendingPaths);
             }
 
-            $destPaths = is_array($_SESSION['_post_send_dest_paths'] ?? null)
-                ? $_SESSION['_post_send_dest_paths']
-                : [];
-            $postSendFrom = (string) ($_SESSION['_post_send_from'] ?? config('mail')['mailbox_email'] ?? '');
-            $postSendMessageId = isset($_SESSION['_post_send_message_id'])
-                ? (string) $_SESSION['_post_send_message_id']
-                : null;
-            if ($destPaths !== [] && $postSendFrom !== '') {
-                $lastInboxReconcile = (int) ($_SESSION['_inbox_reconcile_at'] ?? 0);
-                if (time() - $lastInboxReconcile >= 15) {
-                    $_SESSION['_inbox_reconcile_at'] = time();
-                    reconcile_inbox_after_outbound_send($destPaths, $postSendFrom, $postSendMessageId);
-                }
+            if ($shouldReconcileInbox) {
+                reconcile_inbox_after_outbound_send($destPaths, $postSendFrom, $postSendMessageId);
             }
 
-            $counts = FolderCache::sidebarUnreadCounts();
+            $counts = [];
+            with_session_write(function () use (&$counts, $pendingPaths, $postSendAt): void {
+                $counts = FolderCache::sidebarUnreadCounts();
 
-            if ($pendingPaths !== []) {
-                $allSet = true;
-                foreach ($pendingPaths as $path) {
-                    if ((int) ($counts[$path] ?? 0) <= 0) {
-                        $allSet = false;
-                        break;
+                if ($pendingPaths !== []) {
+                    $allSet = true;
+                    foreach ($pendingPaths as $path) {
+                        if ((int) ($counts[$path] ?? 0) <= 0) {
+                            $allSet = false;
+                            break;
+                        }
                     }
-                }
-                if ($allSet) {
-                    FolderCache::clearPendingBadgePaths();
+                    if ($allSet) {
+                        FolderCache::clearPendingBadgePaths();
+                        unset(
+                            $_SESSION['_post_send_at'],
+                            $_SESSION['_after_send_filter_ran'],
+                            $_SESSION['_post_send_dest_paths'],
+                            $_SESSION['_post_send_from'],
+                            $_SESSION['_post_send_message_id']
+                        );
+                    }
+                } elseif ($postSendAt > 0 && $postSendAt + 90 < time()) {
                     unset(
                         $_SESSION['_post_send_at'],
                         $_SESSION['_after_send_filter_ran'],
@@ -547,17 +586,8 @@ class MailController
                         $_SESSION['_post_send_message_id']
                     );
                 }
-            } elseif ($postSendAt > 0 && $postSendAt + 90 < time()) {
-                unset(
-                    $_SESSION['_post_send_at'],
-                    $_SESSION['_after_send_filter_ran'],
-                    $_SESSION['_post_send_dest_paths'],
-                    $_SESSION['_post_send_from'],
-                    $_SESSION['_post_send_message_id']
-                );
-            }
+            });
 
-            flush_session_for_poll();
             echo json_encode(['unread_counts' => $counts]);
 
             return;
@@ -795,6 +825,7 @@ class MailController
     public function read(array $params): void
     {
         requireAuth();
+        releaseSessionLock();
 
         $folderPath = mail_folder_path($params['folderB64'] ?? '');
         $uid = (int) ($params['uid'] ?? 0);

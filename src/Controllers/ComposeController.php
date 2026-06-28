@@ -234,77 +234,245 @@ class ComposeController
 
         $smtp = new SmtpService();
         if ($smtp->send($options)) {
-            unset($_SESSION[self::DRAFT_KEY], $_SESSION[self::FORWARD_KEY]);
-
-            $sentFolder = $this->resolveSentFolder();
+            $sentFolder = $this->resolveSentFolderFast();
             $sentMime = $smtp->getLastMime();
             $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
-            ensure_session_writable();
-            $_SESSION['_post_send_at'] = time();
-            unset($_SESSION['_after_send_filter_ran']);
-
             $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc, $fromEmail);
-            $_SESSION['_post_send_dest_paths'] = $destPaths;
-            $_SESSION['_post_send_from'] = $fromEmail;
-            $_SESSION['_post_send_message_id'] = extract_message_id_from_mime($sentMime);
-            foreach ($destPaths as $path) {
-                FolderCache::bumpUnread($path, 1);
-            }
-            if ($destPaths !== []) {
-                FolderCache::setPendingBadgePaths($destPaths);
-            }
-            if (count($destPaths) > 1) {
-                $sentMessageId = extract_message_id_from_mime($sentMime);
-                if ($sentMessageId !== null) {
-                    FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
+            $sentMessageId = extract_message_id_from_mime($sentMime);
+
+            $threadReply = null;
+            if (
+                in_array($mode, ['reply', 'reply-all'], true)
+                && $folderPath !== ''
+                && $uid > 0
+            ) {
+                $split = compose_split_reply_body($plainBody);
+                $composeHtml = '';
+                if ($bodyHtml !== '') {
+                    $htmlSplit = mail_split_html_quote(HtmlSanitizer::sanitize($bodyHtml));
+                    $composeHtml = $htmlSplit['visible'];
                 }
-            }
-
-            $this->deleteSourceDraftIfRequested();
-
-            $unreadCounts = FolderCache::sidebarUnreadCounts();
-            flush_session_for_poll();
-
-            $afterSend = function () use ($fromEmail, $returnFolder, $folderPath, $sentFolder, $sentMime, $destPaths): void {
-                $this->saveToSent($sentFolder, $sentMime);
-                $this->syncMailboxAfterSend($fromEmail, $returnFolder, $folderPath, $sentFolder, $destPaths, $sentMime);
-            };
-
-            if (wants_json()) {
-                if (in_array($mode, ['reply', 'reply-all'], true) && $folderPath !== '' && $uid > 0) {
-                    $split = compose_split_reply_body($plainBody);
-                    $composeHtml = '';
-                    if ($bodyHtml !== '') {
-                        $htmlSplit = mail_split_html_quote(HtmlSanitizer::sanitize($bodyHtml));
-                        $composeHtml = $htmlSplit['visible'];
-                    }
-                    mail_store_thread_reply($folderPath, $uid, [
+                $threadReply = [
+                    'folder_path' => $folderPath,
+                    'uid' => $uid,
+                    'reply' => [
                         'from' => $fromEmail,
                         'to' => $options['to'],
                         'cc' => $options['cc'] ?? '',
                         'date' => date('r'),
                         'body' => mail_unquote_plain($split['compose']),
                         'body_html' => $composeHtml,
-                    ]);
-                }
+                    ],
+                ];
+            }
 
-                json_response_then([
+            $postSendToken = $this->enqueuePostSendSync(
+                $fromEmail,
+                $returnFolder,
+                $folderPath,
+                $sentFolder,
+                $destPaths,
+                $sentMime,
+                $sentMessageId,
+                $mode,
+                $uid,
+                decode_folder_path($_POST['draft_folder'] ?? ''),
+                (int) ($_POST['draft_uid'] ?? 0),
+                $threadReply,
+            );
+
+            if (wants_json()) {
+                json_response([
                     'ok' => true,
                     'message' => 'Email sent successfully.',
                     'return_folder' => $contextFolder !== ''
                         ? encode_folder_path($contextFolder)
                         : '',
                     'draft_uid' => $draftUid > 0 ? $draftUid : null,
-                    'unread_counts' => $unreadCounts,
-                ], $afterSend);
+                    'post_send_token' => $postSendToken,
+                ]);
             }
 
+            dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
             flash('success', 'Email sent successfully.');
             $redirectFolder = $contextFolder !== '' ? $contextFolder : $sentFolder;
-            redirect_then('folder/' . encode_folder_path($redirectFolder), $afterSend);
+            redirect('folder/' . encode_folder_path($redirectFolder));
         }
 
         $this->composeFail($this->friendlySendError($smtp->getLastError()), $draft, $mode, $folderPath, $uid);
+    }
+
+    /**
+     * Background post-send sync (separate HTTP request so compose/send returns fast).
+     */
+    public function postSendDeferred(): void
+    {
+        requireAuth();
+        releaseSessionLock();
+
+        $token = trim((string) ($_GET['token'] ?? ''));
+        if ($token === '' || !preg_match('/^[a-f0-9]{32}$/', $token)) {
+            http_response_code(400);
+            exit;
+        }
+
+        $job = $this->claimPostSendJob($token);
+        if ($job === null) {
+            http_response_code(404);
+            exit;
+        }
+
+        ignore_user_abort(true);
+        @set_time_limit(120);
+
+        $this->applyPostSendSessionHints($job);
+
+        $mimePath = (string) ($job['mime_path'] ?? '');
+        $sentMime = ($mimePath !== '' && is_file($mimePath)) ? (string) file_get_contents($mimePath) : '';
+        if ($mimePath !== '') {
+            @unlink($mimePath);
+        }
+
+        $sentFolder = (string) ($job['sent_folder'] ?? '');
+        $this->saveToSent($sentFolder, $sentMime);
+        $this->deleteSourceDraft(
+            (string) ($job['draft_folder'] ?? ''),
+            (int) ($job['draft_uid'] ?? 0),
+        );
+        $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
+        $this->syncMailboxAfterSend(
+            (string) ($job['from_email'] ?? ''),
+            (string) ($job['return_folder'] ?? ''),
+            (string) ($job['folder_path'] ?? ''),
+            $sentFolder,
+            $destPaths,
+            $sentMime,
+            (string) ($job['mode'] ?? ''),
+            (int) ($job['uid'] ?? 0),
+        );
+
+        exit;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function claimPostSendJob(string $token): ?array
+    {
+        $jobPath = base_path('storage/post_send/' . $token . '.json');
+        if (!is_file($jobPath)) {
+            return null;
+        }
+
+        $raw = file_get_contents($jobPath);
+        @unlink($jobPath);
+        if ($raw === false || $raw === '') {
+            return null;
+        }
+
+        $job = json_decode($raw, true);
+
+        return is_array($job) ? $job : null;
+    }
+
+    /**
+     * @param array<string, mixed> $job
+     */
+    private function applyPostSendSessionHints(array $job): void
+    {
+        $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
+        $sentMessageId = isset($job['sent_message_id']) ? (string) $job['sent_message_id'] : null;
+        $fromEmail = (string) ($job['from_email'] ?? '');
+        $threadReply = is_array($job['thread_reply'] ?? null) ? $job['thread_reply'] : null;
+
+        with_session_write(function () use ($destPaths, $sentMessageId, $fromEmail, $threadReply): void {
+            unset($_SESSION[self::DRAFT_KEY], $_SESSION[self::FORWARD_KEY]);
+            $_SESSION['_post_send_at'] = time();
+            unset($_SESSION['_after_send_filter_ran']);
+            $_SESSION['_post_send_dest_paths'] = $destPaths;
+            $_SESSION['_post_send_from'] = $fromEmail;
+            $_SESSION['_post_send_message_id'] = $sentMessageId;
+            foreach ($destPaths as $path) {
+                FolderCache::bumpUnread($path, 1);
+            }
+            if ($destPaths !== []) {
+                FolderCache::setPendingBadgePaths($destPaths);
+            }
+            if (count($destPaths) > 1 && $sentMessageId !== null && $sentMessageId !== '') {
+                FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
+            }
+            if (
+                is_array($threadReply)
+                && !empty($threadReply['folder_path'])
+                && (int) ($threadReply['uid'] ?? 0) > 0
+                && is_array($threadReply['reply'] ?? null)
+            ) {
+                mail_store_thread_reply(
+                    (string) $threadReply['folder_path'],
+                    (int) $threadReply['uid'],
+                    $threadReply['reply'],
+                );
+            }
+        });
+    }
+
+    /**
+     * @param list<string> $destPaths
+     */
+    private function enqueuePostSendSync(
+        string $fromEmail,
+        string $returnFolder,
+        string $folderPath,
+        string $sentFolder,
+        array $destPaths,
+        string $sentMime,
+        ?string $sentMessageId,
+        string $mode,
+        int $uid,
+        string $draftFolder,
+        int $draftUid,
+        ?array $threadReply = null,
+    ): string {
+        $token = bin2hex(random_bytes(16));
+        $dir = base_path('storage/post_send');
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        $cutoff = time() - 3600;
+        foreach (glob($dir . '/*.json') ?: [] as $oldJobPath) {
+            $mtime = @filemtime($oldJobPath);
+            if ($mtime !== false && $mtime < $cutoff) {
+                $old = json_decode((string) file_get_contents($oldJobPath), true);
+                if (is_array($old)) {
+                    @unlink((string) ($old['mime_path'] ?? ''));
+                }
+                @unlink($oldJobPath);
+            }
+        }
+
+        $mimePath = $dir . '/' . $token . '.mime';
+        file_put_contents($mimePath, $sentMime);
+
+        $job = [
+            'created' => time(),
+            'from_email' => $fromEmail,
+            'return_folder' => $returnFolder,
+            'folder_path' => $folderPath,
+            'sent_folder' => $sentFolder,
+            'dest_paths' => $destPaths,
+            'sent_message_id' => $sentMessageId,
+            'mime_path' => $mimePath,
+            'mode' => $mode,
+            'uid' => $uid,
+            'draft_folder' => $draftFolder,
+            'draft_uid' => $draftUid,
+            'thread_reply' => $threadReply,
+        ];
+
+        file_put_contents($dir . '/' . $token . '.json', json_encode_safe($job));
+
+        return $token;
     }
 
     /**
@@ -742,18 +910,13 @@ class ComposeController
      */
     private function attachReplyHeaders(array &$options, string $folderPath, int $uid): void
     {
-        $imap = new ImapService();
-        if (!$imap->connect()) {
+        $messageId = MailCacheService::messageIdForUid($folderPath, $uid);
+        if ($messageId === null || $messageId === '') {
             return;
         }
 
-        // Only the Message-ID is needed here, so avoid downloading/parsing the
-        // whole message body again.
-        $headers = $imap->fetchFilterHeaders($folderPath, $uid);
-        if ($headers !== null && !empty($headers['message_id'])) {
-            $options['in_reply_to'] = $headers['message_id'];
-            $options['references'] = $headers['message_id'];
-        }
+        $options['in_reply_to'] = $messageId;
+        $options['references'] = $messageId;
     }
 
     private function isValidFrom(AliasService $aliasService, string $fromEmail): bool
@@ -969,8 +1132,28 @@ class ComposeController
         return 'INBOX.Drafts';
     }
 
+    private function resolveSentFolderFast(): string
+    {
+        $folders = $_SESSION['_folder_cache']['folders'] ?? [];
+        if (is_array($folders)) {
+            foreach ($folders as $folder) {
+                $path = (string) ($folder['path'] ?? '');
+                if ($path !== '' && str_contains(strtolower($path), 'sent')) {
+                    return $path;
+                }
+            }
+        }
+
+        return 'INBOX.Sent';
+    }
+
     private function resolveSentFolder(): string
     {
+        $fast = $this->resolveSentFolderFast();
+        if ($fast !== 'INBOX.Sent' || !empty($_SESSION['_folder_cache']['folders'])) {
+            return $fast;
+        }
+
         foreach (FolderCache::load(skipUnreadRefresh: true)['folders'] as $folder) {
             if (str_contains(strtolower($folder['path']), 'sent')) {
                 return $folder['path'];
@@ -1011,22 +1194,20 @@ class ComposeController
         string $sentFolder,
         array $destPaths = [],
         string $sentMime = '',
+        string $mode = '',
+        int $replyUid = 0,
     ): array {
-        ensure_session_writable();
-
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
         $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
         $sentMessageId = $sentMime !== '' ? extract_message_id_from_mime($sentMime) : null;
 
+        // Do not hold the session lock across filter/IMAP work — other compose
+        // requests would block until this background pass finishes.
         $filterResult = FilterService::runBackground(true, 15);
         $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
             ? $filterResult['refresh_paths']
             : [];
-
-        if (session_status() === PHP_SESSION_ACTIVE) {
-            session_write_close();
-        }
 
         $imap = new ImapService();
         if ($imap->connect()) {
@@ -1038,8 +1219,8 @@ class ComposeController
                 $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
             }
 
-            $replyUid = (int) ($_POST['uid'] ?? 0);
-            $mode = (string) ($_POST['mode'] ?? '');
+            $replyUid = $replyUid > 0 ? $replyUid : (int) ($_POST['uid'] ?? 0);
+            $mode = $mode !== '' ? $mode : (string) ($_POST['mode'] ?? '');
             if (
                 in_array($mode, ['reply', 'reply-all'], true)
                 && $folderPath !== ''
@@ -1075,30 +1256,31 @@ class ComposeController
             );
         }
 
-        ensure_session_writable();
-        $senderFolder = folder_for_alias_email($fromEmail);
-        $badgePaths = array_values(array_filter(
-            $routedPaths,
-            static fn (string $p): bool => folder_shows_unread_badge($p)
-        ));
-        if ($badgePaths === []) {
-            $badgePaths = FolderCache::getPendingBadgePaths();
-        }
-        if ($senderFolder !== null && folder_shows_unread_badge($senderFolder)) {
-            $badgePaths[] = $senderFolder;
-            $badgePaths = array_values(array_unique($badgePaths));
-        }
-        if ($badgePaths !== []) {
-            foreach ($badgePaths as $path) {
-                MailCacheService::reconcileBadgeFromIndex($path);
+        with_session_write(function () use ($routedPaths, $fromEmail, $destPaths, $inbox): void {
+            $senderFolder = folder_for_alias_email($fromEmail);
+            $badgePaths = array_values(array_filter(
+                $routedPaths,
+                static fn (string $p): bool => folder_shows_unread_badge($p)
+            ));
+            if ($badgePaths === []) {
+                $badgePaths = FolderCache::getPendingBadgePaths();
             }
-            FolderCache::refreshPaths($badgePaths);
-        }
+            if ($senderFolder !== null && folder_shows_unread_badge($senderFolder)) {
+                $badgePaths[] = $senderFolder;
+                $badgePaths = array_values(array_unique($badgePaths));
+            }
+            if ($badgePaths !== []) {
+                foreach ($badgePaths as $path) {
+                    MailCacheService::reconcileBadgeFromIndex($path);
+                }
+                FolderCache::refreshPaths($badgePaths);
+            }
 
-        if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
-            MailCacheService::reconcileBadgeFromIndex($inbox);
-            FolderCache::refreshPaths([$inbox]);
-        }
+            if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
+                MailCacheService::reconcileBadgeFromIndex($inbox);
+                FolderCache::refreshPaths([$inbox]);
+            }
+        });
 
         return [
             'context_folder' => $contextFolder,
@@ -1107,11 +1289,8 @@ class ComposeController
         ];
     }
 
-    private function deleteSourceDraftIfRequested(): void
+    private function deleteSourceDraft(string $draftFolder, int $draftUid): void
     {
-        $draftFolder = decode_folder_path($_POST['draft_folder'] ?? '');
-        $draftUid = (int) ($_POST['draft_uid'] ?? 0);
-
         if ($draftFolder === '' || $draftUid <= 0 || !FolderCache::canAccess($draftFolder)) {
             return;
         }

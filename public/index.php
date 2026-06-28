@@ -121,6 +121,7 @@ $router->get('/compose/forward', fn () => $composeController->forward());
 $router->get('/compose/edit-draft', fn () => $composeController->editDraft());
 $router->post('/compose/send', fn () => $composeController->send());
 $router->post('/compose/draft', fn () => $composeController->saveDraft());
+$router->get('/compose/post-send-deferred', fn () => $composeController->postSendDeferred());
 
 $router->get('/status', fn () => $dashboardController->status());
 $router->get('/status/check', fn () => $dashboardController->statusCheck());

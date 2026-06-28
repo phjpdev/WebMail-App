@@ -123,12 +123,30 @@ class FolderCache
             return;
         }
 
+        $paths = array_values(array_unique(array_filter(array_map(
+            static fn (string $path): string => self::canonicalUnreadPath($path),
+            $paths
+        ))));
+        if ($paths === []) {
+            return;
+        }
+
+        releaseSessionLock();
+
         $imap = new ImapService();
         if (!$imap->connect()) {
             return;
         }
 
-        foreach ($imap->getFolderBadgeCounts($paths) as $path => $imapUnread) {
+        $imapCounts = $imap->getFolderBadgeCounts($paths);
+
+        ensure_session_writable();
+        self::ensureCache();
+        if (!isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+            return;
+        }
+
+        foreach ($imapCounts as $path => $imapUnread) {
             $path = self::canonicalUnreadPath($path);
             if (!folder_shows_unread_badge($path)) {
                 $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = 0;

@@ -1830,20 +1830,32 @@
             var actionPath = draftAction ? normalizeComposePath(draftAction) : 'compose/send';
             var isDraft = actionPath.indexOf('draft') >= 0;
             var loadingLabel = isDraft ? 'Saving…' : 'Sending…';
-            var isPanelAjax = useReadingPane() && (form.closest('#compose-panel') || form.closest('#mail-inline-compose'));
+            var isPanelCompose = form.closest('#compose-panel') || form.closest('#mail-inline-compose');
+            var useComposeAjax = form.id === 'compose-form';
+            var isPanelAjax = useReadingPane() && isPanelCompose;
+            var useAjaxSubmit = isPanelAjax || useComposeAjax;
 
-            if (isPanelAjax) {
+            if (useAjaxSubmit) {
                 e.preventDefault();
 
                 var returnField = form.querySelector('#return_folder');
-                if (returnField && !returnField.value) {
+                if (returnField && !returnField.value && isPanelCompose) {
                     returnField.value = currentMailFolderEnc();
                 }
 
                 setComposeFormBusy(form, true, submitter, loadingLabel);
-                setComposeUiLocked(true);
+                setComposeActionsDisabled(true);
+                if (!isDraft) {
+                    mailSyncPaused = true;
+                    backgroundFetchQueue.length = 0;
+                }
 
                 var fd = new FormData(form);
+                var abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                var sendTimeoutMs = isDraft ? 90000 : 30000;
+                var sendTimeoutId = abortController
+                    ? window.setTimeout(function () { abortController.abort(); }, sendTimeoutMs)
+                    : null;
                 fetch(apiUrl(actionPath), {
                     method: 'POST',
                     credentials: 'same-origin',
@@ -1851,7 +1863,8 @@
                         'X-Requested-With': 'XMLHttpRequest',
                         Accept: 'application/json'
                     },
-                    body: fd
+                    body: fd,
+                    signal: abortController ? abortController.signal : undefined
                 }).then(function (res) {
                     return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
                         if (!res.ok || (data && data.ok === false)) {
@@ -1861,6 +1874,13 @@
                     });
                 }).then(function (data) {
                     showToast('success', (data && data.message) || (isDraft ? 'Draft saved.' : 'Email sent.'));
+                    if (!isDraft && data && data.post_send_token) {
+                        fetch(apiUrl('compose/post-send-deferred?token=' + encodeURIComponent(data.post_send_token)), {
+                            method: 'GET',
+                            credentials: 'same-origin',
+                            keepalive: true
+                        }).catch(function () { /* best-effort background sync */ });
+                    }
                     if (isDraft) {
                         if (data && data.unread_counts) {
                             applyUnreadCounts(data.unread_counts);
@@ -1891,6 +1911,9 @@
                         return;
                     }
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
+                    if (data && data.unread_counts) {
+                        applyUnreadCounts(data.unread_counts);
+                    }
                     var inlineCompose = form.closest('#mail-inline-compose');
                     if (inlineCompose) {
                         var restoreUid = composePanelRestoreUid;
@@ -1905,24 +1928,36 @@
                         }
                         return;
                     }
-                    closeComposePanel(false);
-                    stopPaneMessageSync();
-                    setPaneView('empty');
-                    beginPostSendQuiet(30000);
-                    afterSendBadgePolls = 0;
-                    window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+                    if (form.closest('#compose-panel')) {
+                        closeComposePanel(false);
+                        stopPaneMessageSync();
+                        setPaneView('empty');
+                        beginPostSendQuiet(30000);
+                        afterSendBadgePolls = 0;
+                        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+                        return;
+                    }
+                    var redirectPath = (data && data.return_folder) ? ('folder/' + data.return_folder) : '';
+                    window.location = apiUrl(redirectPath);
                 }).catch(function (err) {
-                    showToast('error', err.message || 'Action failed.');
+                    if (!isDraft) {
+                        mailSyncPaused = false;
+                    }
+                    var msg = err && err.name === 'AbortError'
+                        ? 'Sending timed out. The message may still have been delivered — check Sent and try again if needed.'
+                        : (err.message || 'Action failed.');
+                    showToast('error', msg);
                 }).finally(function () {
+                    if (sendTimeoutId) window.clearTimeout(sendTimeoutId);
                     setComposeFormBusy(form, false);
-                    setComposeUiLocked(false);
+                    setComposeActionsDisabled(false);
                 });
                 return;
             }
 
             if (submitter && submitter.tagName === 'BUTTON') {
                 setComposeFormBusy(form, true, submitter, loadingLabel);
-                setComposeUiLocked(true);
+                setComposeActionsDisabled(true);
             }
         });
     }
@@ -5004,7 +5039,7 @@
         }
 
         form.addEventListener('submit', function (e) {
-            if (form.dataset.ajaxBound && (form.closest('#compose-panel') || form.closest('#mail-inline-compose'))) {
+            if (form.dataset.ajaxBound) {
                 Object.keys(rows).forEach(function (key) {
                     var row = rows[key];
                     if (!row) return;
