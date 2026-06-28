@@ -928,6 +928,13 @@
         }).catch(function (err) {
             if (seq !== folderLoadSeq) return;
             if (err && err.name === 'AbortError') return;
+            var card = getListCard();
+            if (card) {
+                updateSidebarActive(
+                    card.getAttribute('data-folder-plain') || '',
+                    card.getAttribute('data-folder-b64') || ''
+                );
+            }
             showToast('error', err.message || 'Could not load folder.');
         }).finally(function () {
             if (seq !== folderLoadSeq) return;
@@ -945,8 +952,6 @@
 
             e.preventDefault();
             var b64 = link.getAttribute('data-folder-b64');
-            var path = link.getAttribute('data-folder-path');
-            if (path) updateSidebarActive(path, b64);
             loadFolderAjax(b64, true);
             if (window.innerWidth < 900) closeSidebar();
         });
@@ -955,6 +960,29 @@
     function currentMailFolderEnc() {
         var listCard = getListCard();
         return listCard ? (listCard.getAttribute('data-folder-path') || '') : '';
+    }
+
+    function isFolderListStale() {
+        var column = document.querySelector('.mail-list-column');
+        if (column && column.classList.contains('is-loading')) {
+            return true;
+        }
+        var card = getListCard();
+        var activeLink = document.querySelector('.sidebar-link.active[data-folder-b64]');
+        if (!card || !activeLink) {
+            return false;
+        }
+        var cardB64 = card.getAttribute('data-folder-b64') || '';
+        var sidebarB64 = activeLink.getAttribute('data-folder-b64') || '';
+        return cardB64 !== '' && sidebarB64 !== '' && cardB64 !== sidebarB64;
+    }
+
+    function guardFolderListReady(actionLabel) {
+        if (!isFolderListStale()) {
+            return true;
+        }
+        showToast('error', (actionLabel || 'Action') + ' is unavailable while the folder is loading.');
+        return false;
     }
 
     function normalizeComposePath(href) {
@@ -2035,12 +2063,29 @@
         return unread;
     }
 
-    function adjustMailCount(delta) {
+    function adjustMailCount(totalDelta, unreadDelta) {
         var label = document.getElementById('mail-count-label');
         if (!label) return;
         var total = parseInt(label.getAttribute('data-total') || '0', 10) || 0;
         var unread = parseInt(label.getAttribute('data-unread') || '0', 10) || 0;
-        updateMailCount(total, Math.max(0, unread + delta));
+        var newTotal = Math.max(0, total + (totalDelta || 0));
+        var newUnread = Math.max(0, unread + (unreadDelta || 0));
+        updateMailCount(newTotal, newUnread);
+        var card = getListCard();
+        if (card) card.setAttribute('data-total-messages', String(newTotal));
+        var pagination = document.querySelector('.mail-list-column .pagination');
+        if (pagination) {
+            if (newTotal === 0) {
+                pagination.hidden = true;
+            } else {
+                pagination.hidden = false;
+                var range = pagination.querySelector('.pagination-range');
+                if (range) {
+                    var perPage = parseInt((document.getElementById('per-page-select') || {}).value || '25', 10) || 25;
+                    range.textContent = '1–' + Math.min(newTotal, perPage) + ' of ' + newTotal;
+                }
+            }
+        }
     }
 
     var mailPoll = null;
@@ -2186,6 +2231,10 @@
 
     function removeRowByUid(uid) {
         markUidsPendingRemoval([uid]);
+        var wasUnread = false;
+        rowsForUid(uid).forEach(function (el) {
+            if (el.getAttribute('data-seen') === '0') wasUnread = true;
+        });
         var removed = false;
         rowsForUid(uid).forEach(function (el) {
             removed = true;
@@ -2193,7 +2242,7 @@
         });
         if (removed) {
             syncListEmptyState();
-            adjustMailCount(-1);
+            adjustMailCount(-1, wasUnread ? -1 : 0);
         }
     }
 
@@ -3714,6 +3763,9 @@
 
         var folderEnc = currentMailFolderEnc();
         if (!folderEnc) return;
+        if ((action === 'delete' || action === 'move') && !guardFolderListReady(action === 'delete' ? 'Delete' : 'Move')) {
+            return;
+        }
         var selectionCount = effectiveSelectionCount();
 
         if (action === 'reply' || action === 'reply-all' || action === 'forward') {
@@ -5186,6 +5238,11 @@
 
         var readCard = document.querySelector('.mail-read-card[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid)) + '"]');
         var folderUrl = readCard ? readCard.getAttribute('data-folder-url') : null;
+        var paneCard = readCard && readCard.closest('#reading-pane-body') ? readCard : null;
+        var destructive = kind === 'spam' || kind === 'trash' || kind === 'move';
+        if (destructive && !paneCard && !guardFolderListReady(kind === 'trash' ? 'Delete' : (kind === 'spam' ? 'Move to Spam' : 'Move'))) {
+            return Promise.resolve(false);
+        }
 
         // Detect unread state before we mutate/remove the row, so the server can
         // adjust the folder badge without a slow per-folder status sweep.

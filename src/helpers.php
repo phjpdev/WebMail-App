@@ -1639,6 +1639,236 @@ function mail_split_conversation_plain(string $plain): array
 }
 
 /**
+ * Tombstones for messages removed optimistically (hide until IMAP confirms).
+ * Persisted to disk so deletes survive session_write_close() on API handlers.
+ */
+function mail_removed_uids_key(string $folderPath): string
+{
+    return strtoupper(\App\Services\FolderCache::resolvePath($folderPath));
+}
+
+function mail_removed_uids_user_key(string $folderPath): string
+{
+    $user = \App\Auth::user();
+    $userId = (int) ($user['id'] ?? 0);
+    $folderKey = mail_removed_uids_key($folderPath);
+
+    if ($userId <= 0 || $folderKey === '') {
+        return '';
+    }
+
+    return $userId . ':' . $folderKey;
+}
+
+function mail_removed_uids_store_path(): string
+{
+    return base_path('storage/removed_uids.json');
+}
+
+/**
+ * @return array<string, array<string, int>>
+ */
+function mail_load_removed_uids_store(): array
+{
+    $path = mail_removed_uids_store_path();
+    if (!is_readable($path)) {
+        return [];
+    }
+
+    $decoded = json_decode((string) file_get_contents($path), true);
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $cutoff = time() - (30 * 86400);
+    foreach ($decoded as $storeKey => $uids) {
+        if (!is_array($uids)) {
+            unset($decoded[$storeKey]);
+            continue;
+        }
+        foreach ($uids as $uid => $ts) {
+            if ((int) $ts < $cutoff) {
+                unset($decoded[$storeKey][$uid]);
+            }
+        }
+        if ($decoded[$storeKey] === []) {
+            unset($decoded[$storeKey]);
+        }
+    }
+
+    return $decoded;
+}
+
+/**
+ * @param array<string, array<string, int>> $data
+ */
+function mail_save_removed_uids_store(array $data): void
+{
+    $path = mail_removed_uids_store_path();
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0755, true);
+    }
+
+    file_put_contents($path, json_encode($data, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+
+/**
+ * @return array<int, true> uid => true
+ */
+function mail_removed_uids_for_folder(string $folderPath): array
+{
+    $removed = [];
+    $storeKey = mail_removed_uids_user_key($folderPath);
+    if ($storeKey !== '') {
+        $store = mail_load_removed_uids_store();
+        foreach ($store[$storeKey] ?? [] as $uid => $ts) {
+            $uid = (int) $uid;
+            if ($uid > 0) {
+                $removed[$uid] = true;
+            }
+        }
+    }
+
+    $key = mail_removed_uids_key($folderPath);
+    if ($key !== '' && isset($_SESSION['_mail_removed_uids'][$key]) && is_array($_SESSION['_mail_removed_uids'][$key])) {
+        foreach ($_SESSION['_mail_removed_uids'][$key] as $uid => $ts) {
+            $uid = (int) $uid;
+            if ($uid > 0) {
+                $removed[$uid] = true;
+            }
+        }
+    }
+
+    return $removed;
+}
+
+/**
+ * @param list<int> $uids
+ */
+function mail_mark_uids_removed(string $folderPath, array $uids): void
+{
+    $key = mail_removed_uids_key($folderPath);
+    $storeKey = mail_removed_uids_user_key($folderPath);
+    if ($key === '' || $storeKey === '') {
+        return;
+    }
+
+    $now = time();
+    $store = mail_load_removed_uids_store();
+    if (!isset($store[$storeKey]) || !is_array($store[$storeKey])) {
+        $store[$storeKey] = [];
+    }
+
+    foreach ($uids as $uid) {
+        $uid = (int) $uid;
+        if ($uid <= 0) {
+            continue;
+        }
+        $store[$storeKey][(string) $uid] = $now;
+    }
+
+    mail_save_removed_uids_store($store);
+
+    ensure_session_writable();
+    if (!isset($_SESSION['_mail_removed_uids']) || !is_array($_SESSION['_mail_removed_uids'])) {
+        $_SESSION['_mail_removed_uids'] = [];
+    }
+    if (!isset($_SESSION['_mail_removed_uids'][$key]) || !is_array($_SESSION['_mail_removed_uids'][$key])) {
+        $_SESSION['_mail_removed_uids'][$key] = [];
+    }
+    foreach ($uids as $uid) {
+        $uid = (int) $uid;
+        if ($uid > 0) {
+            $_SESSION['_mail_removed_uids'][$key][$uid] = $now;
+        }
+    }
+    session_write_close();
+}
+
+function mail_is_uid_removed(string $folderPath, int $uid): bool
+{
+    if ($folderPath === '' || $uid <= 0) {
+        return false;
+    }
+
+    return isset(mail_removed_uids_for_folder($folderPath)[$uid]);
+}
+
+/**
+ * @param list<int> $uids
+ */
+function mail_clear_removed_uids(string $folderPath, array $uids): void
+{
+    $key = mail_removed_uids_key($folderPath);
+    $storeKey = mail_removed_uids_user_key($folderPath);
+    if ($key === '' || $storeKey === '') {
+        return;
+    }
+
+    $store = mail_load_removed_uids_store();
+    if (isset($store[$storeKey]) && is_array($store[$storeKey])) {
+        foreach ($uids as $uid) {
+            unset($store[$storeKey][(string) (int) $uid]);
+        }
+        if ($store[$storeKey] === []) {
+            unset($store[$storeKey]);
+        }
+        mail_save_removed_uids_store($store);
+    }
+
+    with_session_write(function () use ($key, $uids): void {
+        if (!isset($_SESSION['_mail_removed_uids'][$key])) {
+            return;
+        }
+        foreach ($uids as $uid) {
+            unset($_SESSION['_mail_removed_uids'][$key][(int) $uid]);
+        }
+        if ($_SESSION['_mail_removed_uids'][$key] === []) {
+            unset($_SESSION['_mail_removed_uids'][$key]);
+        }
+    });
+}
+
+/**
+ * @param array{messages: list<array<string, mixed>>, total: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages: list<array<string, mixed>>, total: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function mail_filter_removed_messages(string $folderPath, array $list): array
+{
+    $removed = mail_removed_uids_for_folder($folderPath);
+    if ($removed === [] || !isset($list['messages'])) {
+        return $list;
+    }
+
+    $before = count($list['messages']);
+    $filtered = [];
+    foreach ($list['messages'] as $msg) {
+        $uid = (int) ($msg['uid'] ?? 0);
+        if ($uid > 0 && isset($removed[$uid])) {
+            continue;
+        }
+        $filtered[] = $msg;
+    }
+
+    if ($before !== count($filtered)) {
+        $list['total'] = max(0, (int) ($list['total'] ?? 0) - ($before - count($filtered)));
+        if (isset($list['per_page'], $list['total_pages'])) {
+            $perPage = max(1, (int) $list['per_page']);
+            $list['total_pages'] = (int) max(1, (int) ceil($list['total'] / $perPage));
+        }
+    } elseif ($filtered === [] && $removed !== []) {
+        $list['total'] = 0;
+        $list['total_pages'] = 0;
+        $list['page'] = 1;
+    }
+
+    $list['messages'] = $filtered;
+
+    return $list;
+}
+
+/**
  * Session key for replies sent while viewing a message (shown in the thread until reload).
  */
 function mail_thread_reply_session_key(string $folderPath, int $uid): string

@@ -54,7 +54,7 @@ class MailCacheService
         }
 
         $total = (int) ($state['imap_total'] ?? 0);
-        $indexed = self::countMessagesInIndex($folderPath);
+        $indexed = self::countListableMessagesInIndex($folderPath);
         if ($indexed > 0 || self::hasFolderData($folderPath)) {
             $total = $indexed;
         } elseif ($total <= 0) {
@@ -62,14 +62,14 @@ class MailCacheService
         }
 
         if ($total === 0) {
-            return [
+            return mail_filter_removed_messages($folderPath, [
                 'messages' => [],
                 'total' => 0,
                 'page' => 1,
                 'per_page' => $perPage,
                 'total_pages' => 0,
                 'from_cache' => true,
-            ];
+            ]);
         }
 
         $totalPages = (int) max(1, (int) ceil($total / $perPage));
@@ -97,14 +97,14 @@ class MailCacheService
             $messages[] = self::indexRowToMessage($row, $folderPath);
         }
 
-        return [
+        return mail_filter_removed_messages($folderPath, [
             'messages' => $messages,
             'total' => $total,
             'page' => $page,
             'per_page' => $perPage,
             'total_pages' => $totalPages,
             'from_cache' => true,
-        ];
+        ]);
     }
 
     public static function hasFolderData(string $folderPath): bool
@@ -149,6 +149,7 @@ class MailCacheService
 
     public static function invalidateFolder(string $folderPath): void
     {
+        $folderPath = self::indexFolderPath($folderPath);
         if ($folderPath === '') {
             return;
         }
@@ -193,6 +194,38 @@ class MailCacheService
         );
 
         return (int) ($row['c'] ?? 0);
+    }
+
+    /** Message count in the index excluding session tombstones (pending deletes). */
+    public static function countListableMessagesInIndex(string $folderPath): int
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '') {
+            return 0;
+        }
+
+        $removed = mail_removed_uids_for_folder($folderPath);
+        if ($removed === []) {
+            return self::countMessagesInIndex($folderPath);
+        }
+
+        $rows = Database::query(
+            'SELECT imap_uid FROM mail_index WHERE folder_path = ?',
+            [$folderPath]
+        )->fetchAll();
+        if ($rows === []) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid > 0 && !isset($removed[$uid])) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     /** Sidebar badge value from mail_index (unread or draft total). */
@@ -285,7 +318,8 @@ class MailCacheService
             self::upsertIndexRow($folderPath, $msg);
         }
 
-        self::touchSyncState($folderPath, $imapTotal, count($messages));
+        $indexed = self::countListableMessagesInIndex($folderPath);
+        self::touchSyncState($folderPath, $indexed, $indexed);
     }
 
     /**
@@ -295,6 +329,10 @@ class MailCacheService
     {
         $uid = (int) ($msg['uid'] ?? 0);
         if ($uid <= 0) {
+            return;
+        }
+
+        if (mail_is_uid_removed($folderPath, $uid)) {
             return;
         }
 
@@ -815,23 +853,42 @@ class MailCacheService
      */
     public static function removeMessages(string $folderPath, array $uids): void
     {
-        $folderPath = self::indexFolderPath($folderPath);
+        $resolved = FolderCache::resolvePath($folderPath);
+        $indexPath = self::indexFolderPath($resolved);
         $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
         if ($uids === []) {
             return;
         }
 
         $placeholders = implode(',', array_fill(0, count($uids), '?'));
-        $params = array_merge([$folderPath], $uids);
-        Database::query(
-            "DELETE FROM mail_index WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
-            $params
-        );
-        Database::query(
-            "DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
-            $params
-        );
-        self::reconcileSyncStateFromIndex($folderPath);
+        $paths = array_values(array_unique(array_filter([$indexPath, $resolved, $folderPath])));
+
+        foreach ($paths as $path) {
+            $params = array_merge([$path], $uids);
+            Database::query(
+                "DELETE FROM mail_index WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+                $params
+            );
+            Database::query(
+                "DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+                $params
+            );
+        }
+
+        $lookup = strtolower($indexPath !== '' ? $indexPath : $resolved);
+        if ($lookup !== '') {
+            $params = array_merge([$lookup], $uids);
+            Database::query(
+                "DELETE FROM mail_index WHERE LOWER(folder_path) = ? AND imap_uid IN ({$placeholders})",
+                $params
+            );
+            Database::query(
+                "DELETE FROM mail_bodies WHERE LOWER(folder_path) = ? AND imap_uid IN ({$placeholders})",
+                $params
+            );
+        }
+
+        self::reconcileSyncStateFromIndex($indexPath !== '' ? $indexPath : $resolved);
     }
 
     /** Keep mail_sync_state totals aligned after local index removals. */
@@ -842,12 +899,12 @@ class MailCacheService
             return;
         }
 
-        $indexed = self::countMessagesInIndex($folderPath);
+        $listable = self::countListableMessagesInIndex($folderPath);
         Database::query(
             'UPDATE mail_sync_state
              SET imap_total = ?, headers_cached = LEAST(COALESCE(headers_cached, 0), ?)
              WHERE folder_path = ?',
-            [$indexed, $indexed, $folderPath]
+            [$listable, $listable, $folderPath]
         );
     }
 
@@ -882,10 +939,10 @@ class MailCacheService
         }
 
         try {
-            $rows = Database::fetchAll(
+            $rows = Database::query(
                 'SELECT folder_path, imap_uid FROM mail_bodies WHERE message_id = ?',
                 [$messageId]
-            );
+            )->fetchAll();
         } catch (\Throwable) {
             return [];
         }
@@ -917,18 +974,18 @@ class MailCacheService
         $query = trim($searchQuery);
         if ($query !== '') {
             $like = '%' . $query . '%';
-            $rows = Database::fetchAll(
+            $rows = Database::query(
                 'SELECT imap_uid FROM mail_index
                  WHERE folder_path = ?
                    AND (subject LIKE ? OR from_addr LIKE ?)
                  ORDER BY msg_date DESC',
                 [$folderPath, $like, $like]
-            );
+            )->fetchAll();
         } else {
-            $rows = Database::fetchAll(
+            $rows = Database::query(
                 'SELECT imap_uid FROM mail_index WHERE folder_path = ? ORDER BY msg_date DESC',
                 [$folderPath]
-            );
+            )->fetchAll();
         }
 
         if ($rows === []) {
