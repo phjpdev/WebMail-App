@@ -500,6 +500,7 @@
 
     function openMessageInPaneNow(uid, pushHistory) {
         if (!uid) return;
+        cancelPostSendBackgroundWork();
         if (!useReadingPane()) {
             var row = rowsForUid(uid)[0];
             if (row) {
@@ -529,7 +530,6 @@
         if (!url) return;
 
         var seq = ++paneLoadSeq;
-        mailSyncPaused = true;
         showPanePreviewFromRow(uid);
         setSelectedRow(uid);
 
@@ -558,11 +558,6 @@
                 setPaneView('empty');
                 announceLive('Could not load message.');
                 showToast('error', err.message || 'Could not load message.');
-            })
-            .finally(function () {
-                if (seq === paneLoadSeq) {
-                    mailSyncPaused = false;
-                }
             });
     }
 
@@ -938,9 +933,22 @@
         }, delayMs || 0);
     }
 
+    function cancelPostSendBackgroundWork() {
+        afterSendBadgePolls = afterSendBadgeDelays.length;
+        clearPostSendFolderPolls();
+        postSendQuietUntil = 0;
+        setMailListLoading(false);
+        if (mailPollAbort) {
+            try { mailPollAbort.abort(); } catch (e) { /* ignore */ }
+            mailPollAbort = null;
+            mailPollInFlight = false;
+        }
+    }
+
     function loadFolderAjax(folderB64, pushHistory, forceRefresh) {
         if (!folderB64 || !document.getElementById('mail-workspace')) return;
 
+        cancelPostSendBackgroundWork();
         stopMailSync();
         if (folderFetchAbort) {
             try { folderFetchAbort.abort(); } catch (e) { /* ignore */ }
@@ -1002,8 +1010,9 @@
 
             reinitMailListColumn();
             if (data.list_loading) {
-                setMailListLoading(true);
-                window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
+                var syncCard = getListCard();
+                if (syncCard) syncCard.classList.add('is-syncing');
+                window.setTimeout(function () { scheduleMailPoll(true, false); }, 0);
                 startPostSendFolderPolls([folderB64]);
             } else {
                 window.setTimeout(function () { scheduleMailPoll(true, false); }, 250);
@@ -3494,17 +3503,15 @@
     function startPostSendFolderPolls(folderB64List) {
         if (!folderB64List || !folderB64List.length) return;
         clearPostSendFolderPolls();
-        [600, 1500, 3500, 7000, 12000, 20000].forEach(function (delay) {
+        var delays = [500, 1500, 3500];
+        delays.forEach(function (delay, index) {
             postSendFolderPollTimers.push(window.setTimeout(function () {
                 var card = getListCard();
                 var currentB64 = card ? card.getAttribute('data-folder-b64') : '';
                 if (!currentB64 || folderB64List.indexOf(currentB64) < 0) return;
-                scheduleMailPoll(true, true);
+                scheduleMailPoll(true, index === delays.length - 1);
             }, delay));
         });
-        postSendFolderPollTimers.push(window.setTimeout(function () {
-            setMailListLoading(false);
-        }, 32000));
     }
 
     function setMailListLoading(loading) {
@@ -3633,19 +3640,18 @@
             applyCorrespondentFolders(data.correspondent_folders);
         }
 
-        beginPostSendQuiet(5000);
+        beginPostSendQuiet(2500);
         afterSendBadgePolls = 0;
         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
 
         var pollFolders = collectPostSendPollFolders(data, form);
         if (pollFolders.length) {
-            setMailListLoading(true);
+            var card = getListCard();
+            if (card) card.classList.add('is-syncing');
             startPostSendFolderPolls(pollFolders);
         }
 
-        scheduleMailPoll(true, true);
-        window.setTimeout(function () { scheduleMailPoll(true, true); }, 1200);
-        window.setTimeout(function () { scheduleMailPoll(true, true); }, 3500);
+        window.setTimeout(function () { scheduleMailPoll(true, false); }, 400);
     }
 
     function applyPostSendUnreadCounts(counts) {
@@ -3680,7 +3686,7 @@
         afterSendBadgePolls++;
         afterSendBadgePollInFlight = true;
 
-        fetch(apiUrl('folders/unread?after_send=1&filter=1'), {
+        fetch(apiUrl('folders/unread?after_send=1'), {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })

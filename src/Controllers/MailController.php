@@ -101,7 +101,7 @@ class MailController
 
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
-        if ($forceRefresh) {
+        if ($forceRefresh && !$this->shouldSkipPostSendFilter()) {
             $filterResult = $this->maybeRunFilter($folderPath, true);
             if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
                 FolderCache::syncUnreadBadges($folderPath);
@@ -167,11 +167,16 @@ class MailController
         }
 
         if ($imapConnected && $query === '') {
-            $folderUnread = MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
-            if (folder_uses_draft_badge($folderPath)) {
-                MailCacheService::reconcileSyncStateFromIndex($folderPath);
-                $folderUnread = MailCacheService::countBadgeFromIndex($folderPath);
-                FolderCache::setUnreadCount($folderPath, $folderUnread);
+            if ($servedFromCache && $cacheFirst) {
+                // Fast folder switch: keep session badge; client poll reconciles after sync.
+                $folderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
+            } else {
+                $folderUnread = MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+                if (folder_uses_draft_badge($folderPath)) {
+                    MailCacheService::reconcileSyncStateFromIndex($folderPath);
+                    $folderUnread = MailCacheService::countBadgeFromIndex($folderPath);
+                    FolderCache::setUnreadCount($folderPath, $folderUnread);
+                }
             }
             if (!isset($folderData['unread_counts']) || !is_array($folderData['unread_counts'])) {
                 $folderData['unread_counts'] = [];
@@ -239,6 +244,14 @@ class MailController
         $source = $this->filterSourceFolder();
 
         return $folderPath === $source || strtoupper($folderPath) === 'INBOX';
+    }
+
+    /** Skip redundant filter runs while post-send-deferred is still syncing. */
+    private function shouldSkipPostSendFilter(): bool
+    {
+        $at = (int) ($_SESSION['_post_send_at'] ?? 0);
+
+        return $at > 0 && (time() - $at) < 25;
     }
 
     /**
@@ -407,6 +420,10 @@ class MailController
         $forceFilter = ($_GET['filter'] ?? '') === '1';
         $forceRefresh = ($_GET['force'] ?? '') === '1';
 
+        if ($forceFilter && $this->shouldSkipPostSendFilter()) {
+            $forceFilter = false;
+        }
+
         if ($forceFilter || (!$light && !$forceRefresh)) {
             $filterResult = $this->maybeRunFilter($folderPath, $forceFilter);
             if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
@@ -427,8 +444,7 @@ class MailController
             $needsHeaderSync = $forceRefresh
                 || $forceFilter
                 || MailCacheService::isStale($folderPath)
-                || MailCacheService::badgeAheadOfIndex($folderPath)
-                || in_array($folderPath, FolderCache::getPendingBadgePaths(), true);
+                || MailCacheService::badgeAheadOfIndex($folderPath);
             if ($needsHeaderSync) {
                 MailCacheService::syncFolderHeaders($imap, $folderPath);
                 $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
@@ -489,13 +505,10 @@ class MailController
     {
         $list = mail_filter_removed_messages($folderPath, $list);
 
-        if (trim($_GET['q'] ?? '') === '') {
+        if (trim($_GET['q'] ?? '') === '' && !$light) {
             MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
             if (MailCacheService::hasFolderData($folderPath) && !MailCacheService::badgeAheadOfIndex($folderPath)) {
                 FolderCache::clearPendingBadgePath($folderPath);
-            }
-            if (($_GET['filter'] ?? '') === '1') {
-                MailCacheService::reconcileAllIndexedBadges();
             }
         }
 
@@ -562,11 +575,6 @@ class MailController
 
         // Fast path: session badge counts only (post-send-deferred handles IMAP/filter work).
         if ($light || $afterSend) {
-            if ($afterSend) {
-                foreach (FolderCache::getPendingBadgePaths() as $path) {
-                    MailCacheService::reconcileBadgeFromIndex($path);
-                }
-            }
             echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
 
             return;
@@ -1023,11 +1031,10 @@ class MailController
             $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
         }
 
-        MailCacheService::reconcileBadgeFromIndex($folderPath);
-        if ($markRead) {
+        if ($markRead && $wasUnread) {
             FolderCache::clearPendingBadgePath($folderPath);
         }
-        $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+        $unreadCounts = FolderCache::sidebarUnreadCounts();
 
         $aliasService = new AliasService();
         $userId = Auth::user()['id'] ?? null;
