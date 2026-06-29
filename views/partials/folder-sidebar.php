@@ -55,6 +55,9 @@ foreach ($grouped['other'] as $folder) {
         break;
     }
 }
+if (!$foldersOpen && $grouped['other'] !== [] && ($sessionUser['role'] ?? '') === 'employee') {
+    $foldersOpen = true;
+}
 
 ?>
 

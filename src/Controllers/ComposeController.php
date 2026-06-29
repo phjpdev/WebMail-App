@@ -291,6 +291,11 @@ class ComposeController
                 });
             }
 
+            foreach ($destPaths as $destPath) {
+                mail_note_employee_correspondent((string) $destPath);
+            }
+            mail_note_correspondents_from_addresses($to, $cc, $bcc);
+
             if (wants_json()) {
                 json_response([
                     'ok' => true,

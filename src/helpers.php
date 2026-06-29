@@ -661,6 +661,353 @@ function employee_linked_inbox_path(?array $user = null): ?string
 }
 
 /**
+ * @return array{path: string, name: string}|null
+ */
+function folder_registry_meta(string $path): ?array
+{
+    if ($path === '') {
+        return null;
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            'SELECT imap_path, display_name FROM folders WHERE active = 1 AND LOWER(imap_path) = LOWER(?) LIMIT 1',
+            [$path]
+        );
+    } catch (\Throwable) {
+        return null;
+    }
+
+    if ($row === null || empty($row['imap_path'])) {
+        return null;
+    }
+
+    return [
+        'path' => (string) $row['imap_path'],
+        'name' => (string) ($row['display_name'] ?? preg_replace('/^INBOX\./i', '', (string) $row['imap_path'])),
+    ];
+}
+
+/**
+ * Remember a correspondent employee folder (e.g. Support) for the sidebar.
+ */
+function mail_note_employee_correspondent(string $folderPath): void
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return;
+    }
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return;
+    }
+
+    if (!isset($_SESSION['_employee_correspondents']) || !is_array($_SESSION['_employee_correspondents'])) {
+        $_SESSION['_employee_correspondents'] = [];
+    }
+
+    $_SESSION['_employee_correspondents'][$folderPath] = time();
+}
+
+/**
+ * @return list<array{path: string, email: string, name: string}>
+ */
+function employee_other_mailboxes(int $userId, string $ownPrefix): array
+{
+    try {
+        $rows = App\Database::query(
+            "SELECT f.imap_path, f.display_name, LOWER(a.email) AS email
+             FROM folders f
+             INNER JOIN aliases a ON a.default_folder_id = f.id AND a.active = 1
+             WHERE f.folder_type = 'employee' AND f.active = 1
+               AND LOWER(f.imap_path) <> LOWER(?)",
+            [$ownPrefix]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $mailboxes = [];
+    foreach ($rows as $row) {
+        $path = (string) ($row['imap_path'] ?? '');
+        if ($path === '' || strcasecmp($path, $ownPrefix) === 0) {
+            continue;
+        }
+
+        $email = strtolower(trim((string) ($row['email'] ?? '')));
+        if ($email === '') {
+            continue;
+        }
+
+        $mailboxes[] = [
+            'path' => $path,
+            'email' => $email,
+            'name' => (string) ($row['display_name'] ?? preg_replace('/^INBOX\./', '', $path)),
+        ];
+    }
+
+    return $mailboxes;
+}
+
+function employee_has_correspondence_with(
+    string $ownPrefix,
+    string $correspondentPath,
+    string $correspondentEmail,
+    int $userId,
+): bool {
+    $emailLike = '%' . strtolower($correspondentEmail) . '%';
+    $ownLike = strtolower($ownPrefix) . '.%';
+
+    try {
+        $inbound = App\Database::fetchOne(
+            'SELECT 1 FROM mail_index
+             WHERE (LOWER(folder_path) = LOWER(?) OR LOWER(folder_path) LIKE ?)
+               AND LOWER(from_addr) LIKE ?
+             LIMIT 1',
+            [$ownPrefix, $ownLike, $emailLike]
+        );
+        if ($inbound !== null) {
+            return true;
+        }
+
+        $outbound = App\Database::fetchOne(
+            'SELECT 1 FROM mail_bodies
+             WHERE (LOWER(folder_path) = LOWER(?) OR LOWER(folder_path) LIKE ?)
+               AND LOWER(to_addrs) LIKE ?
+             LIMIT 1',
+            [$ownPrefix, $ownLike, $emailLike]
+        );
+        if ($outbound !== null) {
+            return true;
+        }
+
+        foreach (mail_user_emails($userId) as $userEmail) {
+            $fromLike = '%' . strtolower($userEmail) . '%';
+            $inCorrespondent = App\Database::fetchOne(
+                'SELECT 1 FROM mail_index
+                 WHERE LOWER(folder_path) = LOWER(?) AND LOWER(from_addr) LIKE ?
+                 LIMIT 1',
+                [$correspondentPath, $fromLike]
+            );
+            if ($inCorrespondent !== null) {
+                return true;
+            }
+        }
+    } catch (\Throwable) {
+        return false;
+    }
+
+    return false;
+}
+
+/**
+ * Employee folders for people the user has emailed or received mail from.
+ *
+ * @return list<string>
+ */
+function employee_correspondent_folder_paths(?int $userId = null): array
+{
+    static $cache = [];
+
+    $user = App\Auth::user();
+    if ($userId === null) {
+        $userId = (int) ($user['id'] ?? 0);
+    }
+
+    if ($userId <= 0 || $user === null || ($user['role'] ?? '') !== 'employee') {
+        return [];
+    }
+
+    if (array_key_exists($userId, $cache)) {
+        return $cache[$userId];
+    }
+
+    $ownPrefix = employee_linked_inbox_path($user);
+    if ($ownPrefix === null || $ownPrefix === '') {
+        $cache[$userId] = [];
+
+        return [];
+    }
+
+    $paths = [];
+    $session = $_SESSION['_employee_correspondents'] ?? [];
+    if (is_array($session)) {
+        foreach ($session as $path => $ts) {
+            if (is_string($path) && $path !== '' && (int) $ts > 0) {
+                $paths[] = \App\Services\FolderCache::resolvePath($path);
+            }
+        }
+    }
+
+    foreach (employee_other_mailboxes($userId, $ownPrefix) as $mailbox) {
+        if (employee_has_correspondence_with(
+            $ownPrefix,
+            $mailbox['path'],
+            $mailbox['email'],
+            $userId,
+        )) {
+            $paths[] = $mailbox['path'];
+        }
+    }
+
+    $unique = [];
+    foreach ($paths as $path) {
+        if ($path === '' || strcasecmp($path, $ownPrefix) === 0) {
+            continue;
+        }
+        $key = strtoupper($path);
+        if (!isset($unique[$key])) {
+            $unique[$key] = $path;
+        }
+    }
+
+    $cache[$userId] = array_values($unique);
+
+    return $cache[$userId];
+}
+
+function employee_can_access_correspondent_folder(string $path): bool
+{
+    foreach (employee_correspondent_folder_paths() as $allowed) {
+        if (strcasecmp($path, $allowed) === 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * True when viewing another employee's mailbox (e.g. Jean opened Support).
+ */
+function employee_is_correspondent_folder(string $folderPath): bool
+{
+    $own = employee_linked_inbox_path();
+    if ($own === null || $own === '') {
+        return false;
+    }
+
+    if (strcasecmp($folderPath, $own) === 0) {
+        return false;
+    }
+
+    return employee_can_access_correspondent_folder($folderPath);
+}
+
+function employee_correspondent_folder_name(string $folderPath): ?string
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return null;
+    }
+
+    $meta = folder_registry_meta($folderPath);
+
+    return $meta['name'] ?? null;
+}
+
+/**
+ * Conversation subject for list/read (strip Re:/Fwd: in correspondent folders).
+ */
+function mail_display_subject(array $msg, string $folderPath): string
+{
+    $subject = (string) ($msg['subject'] ?? '');
+    if ($subject === '') {
+        return '(no subject)';
+    }
+
+    if (employee_is_correspondent_folder($folderPath)) {
+        $base = mail_normalize_thread_subject($subject);
+
+        return $base !== '' ? $base : $subject;
+    }
+
+    return $subject;
+}
+
+/**
+ * @param array<string, mixed> $msg
+ */
+function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$msg): void
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return;
+    }
+
+    $name = employee_correspondent_folder_name($folderPath);
+    if ($name !== null && $name !== '') {
+        $msg['list_from'] = $name;
+    }
+
+    $base = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+    if ($base !== '') {
+        $msg['subject'] = $base;
+    }
+}
+
+/**
+ * @param array<string, mixed> $message
+ */
+function mail_note_correspondents_from_message(array $message): void
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return;
+    }
+
+    foreach (['from', 'to', 'cc'] as $field) {
+        $header = (string) ($message[$field] ?? '');
+        if ($header === '') {
+            continue;
+        }
+        $parsed = parse_email_list($header);
+        foreach ($parsed['valid'] as $email) {
+            $folder = folder_for_alias_email(normalize_email_token($email));
+            if ($folder !== null) {
+                mail_note_employee_correspondent($folder);
+            }
+        }
+    }
+}
+
+function mail_note_correspondents_from_addresses(string $to, string $cc = '', string $bcc = ''): void
+{
+    foreach ([$to, $cc, $bcc] as $header) {
+        if (trim($header) === '') {
+            continue;
+        }
+        $parsed = parse_email_list($header);
+        foreach ($parsed['valid'] as $email) {
+            $folder = folder_for_alias_email(normalize_email_token($email));
+            if ($folder !== null) {
+                mail_note_employee_correspondent($folder);
+            }
+        }
+    }
+}
+
+/**
+ * @param array<string, mixed> $msg
+ */
+function mail_note_correspondent_from_list_message(array $msg): void
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return;
+    }
+
+    $from = normalize_email_token((string) ($msg['from'] ?? ''));
+    if ($from === '') {
+        return;
+    }
+
+    $folder = folder_for_alias_email($from);
+    if ($folder !== null) {
+        mail_note_employee_correspondent($folder);
+    }
+}
+
+/**
  * Default folder after login: employees land on their linked folder, admins on INBOX.
  */
 function default_mail_folder(): string
@@ -1097,8 +1444,13 @@ function format_mail_date(?string $date): string
 
 function folder_icon_type(string $path): string
 {
+    $employeeInbox = employee_linked_inbox_path();
+    if ($employeeInbox !== null && strcasecmp($path, $employeeInbox) === 0) {
+        return 'inbox';
+    }
+
     $lower = strtolower($path);
-    if ($path === 'INBOX') {
+    if ($path === 'INBOX' || strcasecmp($path, 'INBOX') === 0) {
         return 'inbox';
     }
     if (str_contains($lower, 'sent')) {
@@ -2250,6 +2602,17 @@ function mail_first_recipient_email(?string $header): string
  */
 function mail_thread_collapsed_preview(array $segment, string $folderPath): string
 {
+    if (employee_is_correspondent_folder($folderPath)) {
+        if (!mail_thread_segment_is_user_sent($segment, $folderPath)) {
+            return 'To: You';
+        }
+
+        $email = mail_first_recipient_email((string) ($segment['to'] ?? ''));
+        if ($email !== '') {
+            return $email;
+        }
+    }
+
     if (mail_thread_segment_is_user_sent($segment, $folderPath)) {
         $email = mail_first_recipient_email((string) ($segment['to'] ?? ''));
         if ($email !== '') {
@@ -2362,6 +2725,10 @@ function mail_find_cached_thread_replies(string $folderPath, int $uid, array $me
 function mail_enrich_list_with_thread_preview(string $folderPath, array &$msg): void
 {
     if (is_draft_folder($folderPath) || is_sent_folder($folderPath)) {
+        return;
+    }
+
+    if (employee_is_correspondent_folder($folderPath)) {
         return;
     }
 
@@ -2618,6 +2985,10 @@ function mail_thread_segment_is_user_sent(array $segment, string $folderPath): b
     $from = (string) ($segment['from'] ?? '');
     if ($from === '' || !mail_is_sent_by_user($from)) {
         return false;
+    }
+
+    if (employee_is_correspondent_folder($folderPath)) {
+        return true;
     }
 
     // Quoted earlier messages in a thread that we sent.

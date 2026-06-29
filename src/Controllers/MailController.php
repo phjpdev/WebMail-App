@@ -949,6 +949,8 @@ class MailController
         bool $markRead,
         ?callable &$deferred,
     ): ?array {
+        mail_note_correspondents_from_message($message);
+
         $wasUnread = empty($message['seen']);
 
         if ($wasUnread && $markRead) {

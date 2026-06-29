@@ -91,7 +91,7 @@ $messageAttachments = $message['attachments'] ?? [];
 
 <div class="mail-read-content<?= $threadCount > 1 ? ' is-thread-expanded' : '' ?>">
     <div class="mail-read-subject-bar">
-        <h1 class="mail-read-subject"><?= e($message['subject'] ?: '(no subject)') ?></h1>
+        <h1 class="mail-read-subject"><?= e(mail_display_subject($message, $folderPath)) ?></h1>
     </div>
 
     <div class="mail-thread" data-mail-thread>

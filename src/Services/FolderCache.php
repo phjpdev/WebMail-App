@@ -586,6 +586,44 @@ class FolderCache
             }
         }
 
+        $existing = [];
+        foreach ($filtered as $folder) {
+            $existing[strtoupper((string) $folder['path'])] = true;
+        }
+
+        foreach ($data['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '' || isset($existing[strtoupper($path)])) {
+                continue;
+            }
+            if (!employee_can_access_correspondent_folder($path)) {
+                continue;
+            }
+            $filtered[] = $folder;
+            $counts[$path] = $data['unread_counts'][$path] ?? 0;
+            $existing[strtoupper($path)] = true;
+        }
+
+        foreach (employee_correspondent_folder_paths() as $corrPath) {
+            if ($corrPath === '' || isset($existing[strtoupper($corrPath)])) {
+                continue;
+            }
+            $meta = folder_registry_meta($corrPath);
+            if ($meta === null) {
+                continue;
+            }
+            $resolved = self::resolvePath($meta['path']);
+            $filtered[] = [
+                'path' => $resolved,
+                'name' => $meta['name'],
+                'delimiter' => '.',
+            ];
+            $counts[$resolved] = $data['unread_counts'][$resolved]
+                ?? $data['unread_counts'][$meta['path']]
+                ?? 0;
+            $existing[strtoupper($resolved)] = true;
+        }
+
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
@@ -707,7 +745,11 @@ class FolderCache
             return false;
         }
 
-        return $this->isWithinEmployeeMailbox($path, $mailboxPrefix);
+        if ($this->isWithinEmployeeMailbox($path, $mailboxPrefix)) {
+            return true;
+        }
+
+        return employee_can_access_correspondent_folder($path);
     }
 
     /**

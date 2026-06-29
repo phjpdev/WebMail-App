@@ -562,7 +562,9 @@ class MailCacheService
                 }
             }
 
+            mail_enrich_correspondent_folder_list_row($folderPath, $msg);
             mail_enrich_list_with_thread_preview($folderPath, $msg);
+            mail_note_correspondent_from_list_message($msg);
         }
         unset($msg);
 
