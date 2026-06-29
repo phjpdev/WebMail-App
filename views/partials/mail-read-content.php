@@ -105,7 +105,16 @@ $messageAttachments = $message['attachments'] ?? [];
                 : [];
             $showThreadHistoryToggle = $threadHistorySegments !== [];
             $display = mail_thread_segment_display($segment, $replyFrom, $folderPath);
-            $attachments = !empty($segment['is_current']) ? $messageAttachments : [];
+            $attachments = is_array($segment['attachments'] ?? null) ? $segment['attachments'] : [];
+            if ($attachments === [] && !empty($segment['is_current'])) {
+                $attachments = $messageAttachments;
+            }
+            $cardFolder = (string) ($segment['folder_path'] ?? $folderPath);
+            $cardUid = (int) ($segment['imap_uid'] ?? 0);
+            if ($cardUid <= 0 && !empty($segment['is_current'])) {
+                $cardUid = $uid;
+                $cardFolder = $folderPath;
+            }
             require base_path('views/partials/mail-thread-card.php');
             ?>
         <?php endforeach; ?>

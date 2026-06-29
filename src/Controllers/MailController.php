@@ -1041,13 +1041,36 @@ class MailController
 
         $folderPath = mail_folder_path($_GET['folder'] ?? '');
         $uid = (int) ($_GET['uid'] ?? 0);
-        $partId = $_GET['part'] ?? '';
+        $partId = (string) ($_GET['part'] ?? '');
         $inline = ($_GET['disposition'] ?? '') === 'inline';
+        $threadPending = ($_GET['thread_pending'] ?? '') === '1';
 
         if ($folderPath === '' || $uid <= 0 || $partId === '') {
             error_page(404);
         }
         assert_folder_access($folderPath);
+
+        if ($threadPending) {
+            $pending = mail_load_thread_reply_attachment($folderPath, $uid, $partId);
+            if ($pending === null) {
+                error_page(404, 'Attachment not found.');
+            }
+
+            $mime = $this->safeAttachmentMime($pending['mime'] ?? '', $pending['filename'] ?? '');
+            $canInline = $inline && (str_starts_with($mime, 'image/') || $mime === 'application/pdf');
+            $filename = $this->safeAttachmentName($pending['filename'] ?? 'attachment');
+
+            header('Content-Type: ' . $mime);
+            header('X-Content-Type-Options: nosniff');
+            header(
+                'Content-Disposition: ' . ($canInline ? 'inline' : 'attachment')
+                . '; filename="' . $filename . '"'
+                . "; filename*=UTF-8''" . rawurlencode($filename)
+            );
+            header('Content-Length: ' . strlen($pending['content']));
+            echo $pending['content'];
+            exit;
+        }
 
         $imap = new ImapService();
         if (!$imap->connect()) {

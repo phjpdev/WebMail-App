@@ -256,6 +256,11 @@ class ComposeController
                     $htmlSplit = mail_split_html_quote(HtmlSanitizer::sanitize($bodyHtml));
                     $composeHtml = $htmlSplit['visible'];
                 }
+                $replyAttachments = mail_persist_thread_reply_attachments(
+                    $folderPath,
+                    $uid,
+                    $attachments['files'] ?? [],
+                );
                 $threadReply = [
                     'folder_path' => $folderPath,
                     'uid' => $uid,
@@ -266,6 +271,7 @@ class ComposeController
                         'date' => date('r'),
                         'body' => mail_unquote_plain($split['compose']),
                         'body_html' => $composeHtml,
+                        'attachments' => $replyAttachments,
                     ],
                 ];
             }

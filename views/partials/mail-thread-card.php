@@ -108,18 +108,35 @@ $hasQuoted = $isLatest && !$collapsed && !$showThreadHistoryToggle && ($quotedPl
             <ul>
                 <?php foreach ($attachments as $att): ?>
                     <?php
-                    $baseUrl = url('attachment?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid . '&part=' . urlencode($att['id']));
-                    $isPreview = str_starts_with($att['mime'], 'image/') || $att['mime'] === 'application/pdf';
+                    $attId = (string) ($att['id'] ?? '');
+                    $attPending = !empty($att['pending']);
+                    $attFolder = $cardFolder ?? $folderPath;
+                    $attUid = (int) ($cardUid ?? $uid);
+                    $filename = (string) ($att['filename'] ?? 'attachment');
+                    $mime = (string) ($att['mime'] ?? 'application/octet-stream');
+                    $size = (int) ($att['size'] ?? 0);
+                    if ($attPending && $attUid > 0 && $attId !== '') {
+                        $baseUrl = url('attachment?thread_pending=1&folder=' . encode_folder_path($attFolder) . '&uid=' . $attUid . '&part=' . urlencode($attId));
+                    } elseif ($attUid > 0 && $attId !== '') {
+                        $baseUrl = url('attachment?folder=' . encode_folder_path($attFolder) . '&uid=' . $attUid . '&part=' . urlencode($attId));
+                    } else {
+                        $baseUrl = '';
+                    }
+                    $isPreview = str_starts_with($mime, 'image/') || $mime === 'application/pdf';
                     ?>
                     <li>
-                        <a href="<?= e($baseUrl) ?>"><?= e($att['filename']) ?> (<?= number_format($att['size'] / 1024, 1) ?> KB)</a>
+                        <?php if ($baseUrl !== ''): ?>
+                        <a href="<?= e($baseUrl) ?>"><?= e($filename) ?><?= $size > 0 ? ' (' . number_format($size / 1024, 1) . ' KB)' : '' ?></a>
                         <?php if ($isPreview): ?>
                             · <a href="<?= e($baseUrl . '&disposition=inline') ?>" target="_blank" rel="noopener">Preview</a>
                         <?php endif; ?>
+                        <?php else: ?>
+                        <?= e($filename) ?><?= $size > 0 ? ' (' . number_format($size / 1024, 1) . ' KB)' : '' ?>
+                        <?php endif; ?>
                     </li>
-                    <?php if (str_starts_with($att['mime'], 'image/')): ?>
+                    <?php if ($baseUrl !== '' && str_starts_with($mime, 'image/')): ?>
                     <li class="attachment-preview">
-                        <img src="<?= e($baseUrl . '&disposition=inline') ?>" alt="<?= e($att['filename']) ?>" loading="lazy">
+                        <img src="<?= e($baseUrl . '&disposition=inline') ?>" alt="<?= e($filename) ?>" loading="lazy">
                     </li>
                     <?php endif; ?>
                 <?php endforeach; ?>

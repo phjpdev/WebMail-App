@@ -1248,6 +1248,7 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
             'body_html' => $composeHtml,
             'folder_path' => $indexPath,
             'imap_uid' => $rowUid,
+            'attachments' => mail_attachments_from_body($body),
         ];
     }
 
@@ -1370,7 +1371,7 @@ function mail_dedupe_thread_entries(array $entries): array
 function mail_pending_replies_for_thread_context(array $context, string $baseSubject, string $folderPath, int $uid): array
 {
     $baseSubject = mail_normalize_thread_subject($baseSubject);
-    $pending = mail_pending_thread_replies($folderPath, $uid);
+    $pending = mail_tag_pending_reply_sources(mail_pending_thread_replies($folderPath, $uid), $folderPath, $uid);
 
     $folders = array_values(array_unique(array_filter([
         \App\Services\FolderCache::resolvePath($folderPath),
@@ -1392,12 +1393,39 @@ function mail_pending_replies_for_thread_context(array $context, string $baseSub
             }
             $pending = mail_merge_thread_replies(array_merge(
                 $pending,
-                mail_pending_thread_replies($path, $msgUid),
+                mail_tag_pending_reply_sources(mail_pending_thread_replies($path, $msgUid), $path, $msgUid),
             ));
         }
     }
 
     return $pending;
+}
+
+/**
+ * @param list<array<string, mixed>> $replies
+ * @return list<array<string, mixed>>
+ */
+function mail_tag_pending_reply_sources(array $replies, string $folderPath, int $uid): array
+{
+    if ($replies === []) {
+        return [];
+    }
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    foreach ($replies as &$reply) {
+        if (!is_array($reply)) {
+            continue;
+        }
+        if (empty($reply['folder_path'])) {
+            $reply['folder_path'] = $folderPath;
+        }
+        if (empty($reply['imap_uid'])) {
+            $reply['imap_uid'] = $uid;
+        }
+    }
+    unset($reply);
+
+    return $replies;
 }
 
 /**
@@ -1420,7 +1448,7 @@ function mail_merge_pending_into_thread_entries(
 
     $pending = $context !== null && $baseSubject !== null && $baseSubject !== ''
         ? mail_pending_replies_for_thread_context($context, $baseSubject, $folderPath, $uid)
-        : mail_pending_thread_replies($folderPath, $uid);
+        : mail_tag_pending_reply_sources(mail_pending_thread_replies($folderPath, $uid), $folderPath, $uid);
 
     if ($pending === []) {
         return $entries;
@@ -1449,6 +1477,9 @@ function mail_merge_pending_into_thread_entries(
             'body' => $body,
             'body_html' => (string) ($reply['body_html'] ?? ''),
             'is_pending_reply' => true,
+            'folder_path' => (string) ($reply['folder_path'] ?? $folderPath),
+            'imap_uid' => (int) ($reply['imap_uid'] ?? $uid),
+            'attachments' => is_array($reply['attachments'] ?? null) ? $reply['attachments'] : [],
         ];
     }
 
@@ -2374,6 +2405,10 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
     $snippet = mail_conversation_snippet((string) ($latest['body'] ?? ''));
     if ($snippet !== '') {
         $msg['snippet'] = $snippet;
+    }
+
+    if (is_array($latest['attachments'] ?? null) && $latest['attachments'] !== []) {
+        $msg['has_attachment'] = true;
     }
 
     $latestFrom = format_mail_from((string) ($latest['from'] ?? ''));
@@ -4098,6 +4133,144 @@ function mail_normalize_thread_body(string $body): string
 }
 
 /**
+ * @return list<array{id?: string, filename?: string, size?: int, mime?: string, pending?: bool}>
+ */
+function mail_attachments_from_body(?array $body): array
+{
+    if ($body === null) {
+        return [];
+    }
+
+    $attachments = $body['attachments'] ?? [];
+
+    return is_array($attachments) ? $attachments : [];
+}
+
+function mail_thread_reply_attachments_dir(string $folderPath, int $uid): string
+{
+    $userId = (int) (App\Auth::user()['id'] ?? 0);
+    $key = preg_replace('/[^a-zA-Z0-9._#-]/', '_', mail_thread_reply_session_key($folderPath, $uid));
+
+    return base_path('storage/thread_replies/' . ($userId > 0 ? (string) $userId : 'guest') . '/att/' . $key);
+}
+
+/**
+ * Copy uploaded compose attachments for optimistic thread display before IMAP sync.
+ *
+ * @param list<array{path?: string, name?: string}> $uploadFiles
+ * @return list<array{id: string, filename: string, size: int, mime: string, pending: bool}>
+ */
+function mail_persist_thread_reply_attachments(string $folderPath, int $uid, array $uploadFiles): array
+{
+    if ($folderPath === '' || $uid <= 0 || $uploadFiles === []) {
+        return [];
+    }
+
+    $dir = mail_thread_reply_attachments_dir($folderPath, $uid);
+    if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+        return [];
+    }
+
+    mail_clear_thread_reply_attachments($folderPath, $uid, false);
+
+    $out = [];
+    foreach (array_values($uploadFiles) as $i => $file) {
+        $src = (string) ($file['path'] ?? '');
+        $name = (string) ($file['name'] ?? 'attachment');
+        if ($src === '' || !is_readable($src)) {
+            continue;
+        }
+
+        $safeName = preg_replace('/[^\w.\- ]+/u', '_', $name) ?: 'attachment';
+        $dest = $dir . '/' . $i . '_' . $safeName;
+        if (!@copy($src, $dest)) {
+            continue;
+        }
+
+        $mime = 'application/octet-stream';
+        if (function_exists('mime_content_type')) {
+            $detected = mime_content_type($dest);
+            if (is_string($detected) && $detected !== '') {
+                $mime = $detected;
+            }
+        }
+
+        $out[] = [
+            'id' => (string) $i,
+            'filename' => $name,
+            'size' => (int) (filesize($dest) ?: 0),
+            'mime' => $mime,
+            'pending' => true,
+        ];
+    }
+
+    return $out;
+}
+
+/**
+ * @return array{content: string, filename: string, mime: string}|null
+ */
+function mail_load_thread_reply_attachment(string $folderPath, int $uid, string $partId): ?array
+{
+    if ($folderPath === '' || $uid <= 0 || $partId === '') {
+        return null;
+    }
+
+    $dir = mail_thread_reply_attachments_dir($folderPath, $uid);
+    if (!is_dir($dir)) {
+        return null;
+    }
+
+    $matches = glob($dir . '/' . preg_replace('/[^0-9]/', '', $partId) . '_*') ?: [];
+    if ($matches === []) {
+        return null;
+    }
+
+    $path = $matches[0];
+    $content = file_get_contents($path);
+    if ($content === false) {
+        return null;
+    }
+
+    $filename = preg_replace('/^\d+_/', '', basename($path)) ?: 'attachment';
+    $mime = 'application/octet-stream';
+    if (function_exists('mime_content_type')) {
+        $detected = mime_content_type($path);
+        if (is_string($detected) && $detected !== '') {
+            $mime = $detected;
+        }
+    }
+
+    return [
+        'content' => $content,
+        'filename' => $filename,
+        'mime' => $mime,
+    ];
+}
+
+function mail_clear_thread_reply_attachments(string $folderPath, int $uid, bool $removeDir = true): void
+{
+    if ($folderPath === '' || $uid <= 0) {
+        return;
+    }
+
+    $dir = mail_thread_reply_attachments_dir($folderPath, $uid);
+    if (!is_dir($dir)) {
+        return;
+    }
+
+    foreach (glob($dir . '/*') ?: [] as $file) {
+        if (is_file($file)) {
+            @unlink($file);
+        }
+    }
+
+    if ($removeDir) {
+        @rmdir($dir);
+    }
+}
+
+/**
  * @param array<string, mixed> $segment
  */
 function mail_thread_segment_fingerprint(array $segment): string
@@ -4140,6 +4313,7 @@ function mail_clear_thread_reply_cache(string $folderPath, int $uid): void
     $key = mail_thread_reply_session_key($folderPath, $uid);
     unset($_SESSION['_mail_thread_replies'][$key]);
     @unlink(mail_thread_reply_cache_file($folderPath, $uid));
+    mail_clear_thread_reply_attachments($folderPath, $uid);
 }
 
 /**
@@ -4476,6 +4650,7 @@ function mail_find_correspondent_inbound_for_subject(
             'folder_path' => $ownInbox,
             'imap_uid' => $rowUid,
             'is_inbound_reply' => true,
+            'attachments' => mail_attachments_from_body($body),
         ];
     }
 
@@ -4569,6 +4744,7 @@ function mail_find_correspondent_outbound_for_subject(
             'folder_path' => $indexPath,
             'imap_uid' => $rowUid,
             'is_outbound' => true,
+            'attachments' => mail_attachments_from_body($body),
         ];
     }
 
@@ -4646,6 +4822,8 @@ function mail_build_correspondent_conversation_thread(
             'is_inbound_reply' => !empty($entry['is_inbound_reply']),
             'is_pending_reply' => !empty($entry['is_pending_reply']),
             'imap_uid' => $entryUid,
+            'folder_path' => $entryFolder,
+            'attachments' => is_array($entry['attachments'] ?? null) ? $entry['attachments'] : [],
             'snippet' => mail_conversation_snippet((string) ($entry['body'] ?? '')),
         ];
     }
@@ -4844,6 +5022,9 @@ function mail_build_conversation_thread(
     $segments[0]['cc'] = (string) ($message['cc'] ?? '');
     $segments[0]['date'] = (string) ($message['date'] ?? '');
     $segments[0]['is_current'] = true;
+    $segments[0]['folder_path'] = $folderPath;
+    $segments[0]['imap_uid'] = $uid;
+    $segments[0]['attachments'] = mail_attachments_from_body($message);
 
     $fullSplit = compose_split_reply_body($plain);
     $htmlSplit = mail_split_html_quote($sanitizedHtml);
@@ -4926,6 +5107,10 @@ function mail_build_conversation_thread(
                 'is_current' => false,
                 'is_sent_reply' => !empty($reply['is_inbound_reply']) ? false : true,
                 'is_inbound_reply' => !empty($reply['is_inbound_reply']),
+                'is_pending_reply' => !empty($reply['is_pending_reply']),
+                'folder_path' => (string) ($reply['folder_path'] ?? $folderPath),
+                'imap_uid' => (int) ($reply['imap_uid'] ?? 0),
+                'attachments' => is_array($reply['attachments'] ?? null) ? $reply['attachments'] : [],
                 'snippet' => mail_conversation_snippet($body),
             ]);
         }
