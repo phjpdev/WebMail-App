@@ -1325,8 +1325,10 @@ function trash_folder_path(): string
 
 function spam_folder_path(): string
 {
+    // Canonical spam folder is "Junk" (the server / Apple Mail special-use
+    // folder); fall back to a "Spam" folder only if no Junk exists.
     return \App\Services\FolderCache::resolvePath(
-        resolve_system_folder(['spam'], 'INBOX.Spam')
+        resolve_system_folder(['junk', 'spam'], 'INBOX.Junk')
     );
 }
 
@@ -1594,10 +1596,9 @@ function folder_icon_type(string $path): string
     if (str_contains($lower, 'archive')) {
         return 'archive';
     }
-    if (str_contains($lower, 'junk')) {
-        return 'junk';
-    }
-    if (str_contains($lower, 'spam')) {
+    // Junk and Spam share one canonical "Spam" identity (icon + bucket) so the
+    // UI never shows two near-identical spam folders.
+    if (str_contains($lower, 'junk') || str_contains($lower, 'spam')) {
         return 'spam';
     }
 
@@ -1627,10 +1628,8 @@ function sidebar_folder_bucket(string $path): string
     if (str_contains($lower, 'archive')) {
         return 'archive';
     }
-    if (str_contains($lower, 'junk')) {
-        return 'junk';
-    }
-    if (str_contains($lower, 'spam')) {
+    // Junk folders are bucketed as Spam so there is a single canonical spam slot.
+    if (str_contains($lower, 'junk') || str_contains($lower, 'spam')) {
         return 'spam';
     }
     if (str_contains($lower, 'trash')) {
@@ -1645,7 +1644,7 @@ function sidebar_folder_bucket(string $path): string
  */
 function sidebar_primary_folder_order(): array
 {
-    return ['inbox', 'sent', 'drafts', 'archive', 'junk', 'spam', 'trash'];
+    return ['inbox', 'sent', 'drafts', 'archive', 'spam', 'trash'];
 }
 
 function sidebar_folder_label(array $folder, string $bucket): string
@@ -1656,7 +1655,7 @@ function sidebar_folder_label(array $folder, string $bucket): string
         'drafts' => 'Drafts',
         'archive' => 'Archive',
         'junk' => 'Junk',
-        'spam' => 'Spam',
+        'spam' => 'Junk',
         'trash' => 'Trash',
     ];
 
@@ -1669,6 +1668,46 @@ function sidebar_folder_label(array $folder, string $bucket): string
     }
 
     return preg_replace('/^INBOX\./', '', $folder['name']);
+}
+
+/**
+ * Hierarchy depth and leaf label for a custom ("other") sidebar folder, so it
+ * can be nested under any ancestor folder that is also shown in the sidebar.
+ * Example: "INBOX.test1.test1-sub1" under "INBOX.test1" → depth 1, "test1-sub1".
+ *
+ * @param array{path: string, name: string, delimiter?: string} $folder
+ * @param array<string, bool> $presentPaths  Lowercased paths shown in the same group.
+ * @return array{0: int, 1: string}  [depth, leaf label]
+ */
+function sidebar_folder_nesting(array $folder, array $presentPaths, string $delimiter = '.'): array
+{
+    $path = $folder['path'];
+    if ($delimiter === '' || !str_contains($path, $delimiter)) {
+        return [0, sidebar_folder_label($folder, 'other')];
+    }
+
+    $segments = explode($delimiter, $path);
+    $depth = 0;
+    $nearestAncestor = '';
+    $prefix = '';
+
+    for ($i = 0, $last = count($segments) - 1; $i < $last; $i++) {
+        $prefix = $prefix === '' ? $segments[$i] : $prefix . $delimiter . $segments[$i];
+        // INBOX is the implicit root, never a visible parent folder.
+        if (strcasecmp($prefix, 'INBOX') === 0) {
+            continue;
+        }
+        if (isset($presentPaths[strtolower($prefix)])) {
+            $depth++;
+            $nearestAncestor = $prefix;
+        }
+    }
+
+    $leaf = $nearestAncestor !== ''
+        ? substr($path, strlen($nearestAncestor) + strlen($delimiter))
+        : sidebar_folder_label($folder, 'other');
+
+    return [$depth, $leaf];
 }
 
 function is_trash_folder(string $path): bool
@@ -1693,11 +1732,11 @@ function mail_list_snippet(?string $plain, ?string $html = null, int $maxLen = 1
 {
     $text = trim((string) $plain);
     if ($text === '' && $html !== null && trim($html) !== '') {
-        $text = trim(html_entity_decode(strip_tags(
-            str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], "\n", $html),
+        $text = trim(html_entity_decode(
+            strip_tags(str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], "\n", $html)),
             ENT_QUOTES | ENT_HTML5,
             'UTF-8'
-        )));
+        ));
     }
 
     if ($text === '') {
@@ -1744,11 +1783,11 @@ function mail_list_snippet_fallback(?string $plain, ?string $html = null, int $m
 {
     $raw = trim((string) $plain);
     if ($raw === '' && $html !== null && trim($html) !== '') {
-        $raw = trim(html_entity_decode(strip_tags(
-            str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], ' ', $html),
+        $raw = trim(html_entity_decode(
+            strip_tags(str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], ' ', $html)),
             ENT_QUOTES | ENT_HTML5,
             'UTF-8'
-        )));
+        ));
     }
 
     $raw = preg_replace('/\s+/u', ' ', $raw) ?? $raw;
@@ -2136,11 +2175,11 @@ function mail_unquote_plain(string $text): string
 
 function mail_plain_from_html(string $html): string
 {
-    return trim(html_entity_decode(strip_tags(
-        str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], "\n", $html),
+    return trim(html_entity_decode(
+        strip_tags(str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>', '</li>'], "\n", $html)),
         ENT_QUOTES | ENT_HTML5,
         'UTF-8'
-    )));
+    ));
 }
 
 function mail_conversation_snippet(string $body, int $maxLen = 120): string
@@ -3185,6 +3224,66 @@ function mail_avatar_initials_from_header(?string $from): string
     }
 
     return mb_strtoupper(mb_substr($name, 0, 2));
+}
+
+/**
+ * Load draft message fields for the edit-draft compose form.
+ *
+ * @return array{
+ *     to: string,
+ *     cc: string,
+ *     bcc: string,
+ *     subject: string,
+ *     body: string,
+ *     body_html: string,
+ *     from_email: string,
+ *     draftFolder: string,
+ *     draftUid: int
+ * }|null
+ */
+function compose_draft_form_context(string $folderPath, int $uid): ?array
+{
+    if ($folderPath === '' || $uid <= 0 || !is_draft_folder($folderPath)) {
+        return null;
+    }
+
+    $imap = new \App\Services\ImapService();
+    if (!$imap->connect()) {
+        return null;
+    }
+
+    $message = $imap->getMessageByUid($folderPath, $uid);
+    if ($message === null) {
+        return null;
+    }
+
+    $cached = \App\Services\MailCacheService::getBody($folderPath, $uid);
+    $aliasService = new \App\Services\AliasService();
+    $userId = \App\Auth::user()['id'] ?? null;
+    $savedFrom = (string) ($cached['from'] ?? '');
+    $mimeFrom = (string) ($message['from'] ?? '');
+    $fromEmail = $aliasService->resolveAllowedFrom(
+        $savedFrom !== '' ? $savedFrom : $mimeFrom,
+        $userId
+    );
+
+    $sessionUser = \App\Auth::user();
+    if ($sessionUser !== null && ($sessionUser['role'] ?? '') === 'employee') {
+        $fromEmail = $aliasService->userAlias((int) ($sessionUser['id'] ?? 0));
+    }
+
+    return [
+        'to' => (string) ($message['to'] ?? ''),
+        'cc' => (string) ($message['cc'] ?? ''),
+        'bcc' => (string) ($message['bcc'] ?? ''),
+        'subject' => (string) ($message['subject'] ?? ''),
+        'body' => (string) ($cached['plain'] ?? $message['plain'] ?? ''),
+        'body_html' => (string) ($cached['html'] ?? $message['html'] ?? ''),
+        'from_email' => $fromEmail,
+        'folderPath' => $folderPath,
+        'draftFolder' => $folderPath,
+        'draftUid' => $uid,
+    ];
 }
 
 function compose_split_reply_body(string $body): array

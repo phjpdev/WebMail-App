@@ -655,40 +655,13 @@ class ComposeController
         }
         assert_folder_access($folderPath);
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            flash('error', $imap->getLastError());
-            redirect('folder/' . encode_folder_path($folderPath));
-        }
-
-        $message = $imap->getMessageByUid($folderPath, $uid);
-        if ($message === null) {
+        $defaults = compose_draft_form_context($folderPath, $uid);
+        if ($defaults === null) {
             flash('error', 'Draft not found.');
             redirect('folder/' . encode_folder_path($folderPath));
         }
 
-        $cached = MailCacheService::getBody($folderPath, $uid);
-        $aliasService = new AliasService();
-        $userId = Auth::user()['id'] ?? null;
-        $savedFrom = (string) ($cached['from'] ?? '');
-        $mimeFrom = (string) ($message['from'] ?? '');
-        $fromEmail = $aliasService->resolveAllowedFrom(
-            $savedFrom !== '' ? $savedFrom : $mimeFrom,
-            $userId
-        );
-
-        $this->showForm('compose', [
-            'to' => $message['to'] ?? '',
-            'cc' => $message['cc'] ?? '',
-            'bcc' => '',
-            'subject' => $message['subject'] ?? '',
-            'body' => (string) ($cached['plain'] ?? $message['plain'] ?? ''),
-            'body_html' => (string) ($cached['html'] ?? $message['html'] ?? ''),
-            'from_email' => $fromEmail,
-            // Carry the source draft so it can be removed once re-sent.
-            'draftFolder' => $folderPath,
-            'draftUid' => $uid,
-        ]);
+        $this->showForm('edit-draft', $defaults);
     }
 
     /**
@@ -1038,11 +1011,11 @@ class ComposeController
         $plain = $this->resolveDraftPlainBody($body, $bodyHtml);
         $html = HtmlSanitizer::sanitize($bodyHtml);
         if ($html !== '' && $plain === '') {
-            $plain = trim(html_entity_decode(strip_tags(
-                str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>'], "\n", $html),
+            $plain = trim(html_entity_decode(
+                strip_tags(str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>'], "\n", $html)),
                 ENT_QUOTES | ENT_HTML5,
                 'UTF-8'
-            )));
+            ));
         }
 
         $msgId = '<draft.' . bin2hex(random_bytes(8)) . '@webmail.local>';
@@ -1089,11 +1062,11 @@ class ComposeController
             return '';
         }
 
-        return trim(html_entity_decode(strip_tags(
-            str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>'], "\n", $bodyHtml),
+        return trim(html_entity_decode(
+            strip_tags(str_replace(['<br>', '<br/>', '<br />', '</div>', '</p>'], "\n", $bodyHtml)),
             ENT_QUOTES | ENT_HTML5,
             'UTF-8'
-        )));
+        ));
     }
 
     private function applyDraftRecipients(PHPMailer $mail, string $to, string $cc, string $from): void

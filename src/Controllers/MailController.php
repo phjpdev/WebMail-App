@@ -698,6 +698,29 @@ class MailController
 
         $prefetch = ($_GET['prefetch'] ?? '') === '1';
         $deferred = null;
+
+        if (is_draft_folder($folderPath)) {
+            $draftContext = compose_draft_form_context($folderPath, $uid);
+            if ($draftContext === null) {
+                http_response_code(404);
+                echo json_encode(['ok' => false, 'error' => 'Draft not found']);
+                return;
+            }
+
+            $html = view_string('mail/pane-draft', $draftContext);
+            json_response([
+                'ok' => true,
+                'uid' => $uid,
+                'subject' => $draftContext['subject'] !== '' ? $draftContext['subject'] : '(no subject)',
+                'seen' => true,
+                'was_unread' => false,
+                'html' => $html,
+                'is_draft_editor' => true,
+                'unread_counts' => FolderCache::sidebarUnreadCounts(),
+                'folder_unread' => (int) (FolderCache::sidebarUnreadCounts()[$folderPath] ?? 0),
+            ]);
+        }
+
         $context = $this->loadMessageContext($folderPath, $uid, markRead: !$prefetch, deferred: $deferred);
         if ($context === null) {
             http_response_code(404);
@@ -783,6 +806,10 @@ class MailController
 
         if ($folderPath === '' || $uid <= 0) {
             error_page(404);
+        }
+
+        if (is_draft_folder($folderPath)) {
+            redirect('compose/edit-draft?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid);
         }
 
         $context = $this->loadMessageContext($folderPath, $uid);

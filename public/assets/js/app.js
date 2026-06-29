@@ -463,6 +463,22 @@
         }
 
         var card = bodyEl.querySelector('.mail-read-card[data-uid]');
+        var draftPane = bodyEl.querySelector('.draft-editor-pane');
+        if (draftPane) {
+            initComposeForm(bodyEl);
+            var subjectInput = bodyEl.querySelector('#subject');
+            var editor = bodyEl.querySelector('#body-editor');
+            window.setTimeout(function () {
+                if (subjectInput && subjectInput.value.trim() === '' && subjectInput.focus) {
+                    subjectInput.focus();
+                } else if (editor && editor.focus) {
+                    editor.focus();
+                }
+            }, 50);
+            announceLive('Draft loaded: ' + (data.subject || 'Draft'));
+            return;
+        }
+
         bindReadViewCard(card);
         bindComposeLinks(card);
         bindMessageSyncCard(card);
@@ -1773,7 +1789,7 @@
 
     function composeFormActionsEl(form) {
         if (!form) return null;
-        return form.querySelector('.compose-form-actions') || form.querySelector('.compose-outlook-actions');
+        return form.querySelector('.compose-form-actions') || form.querySelector('.compose-outlook-actions') || form.querySelector('.compose-draft-actions');
     }
 
     function setComposeFormBusy(form, busy, activeBtn, loadingLabel) {
@@ -1841,6 +1857,8 @@
                 e.preventDefault();
                 if (form.closest('#mail-inline-compose')) {
                     closeInlineCompose(false);
+                } else if (form.closest('.draft-editor-pane')) {
+                    clearReadingPane();
                 } else {
                     closeComposePanel(true);
                 }
@@ -1857,13 +1875,14 @@
 
             var submitter = e.submitter;
             if (!submitter) {
-                submitter = form.querySelector('.compose-outlook-send, .compose-form-actions button[type="submit"]:not([formaction*="draft"])');
+                submitter = form.querySelector('.compose-outlook-send, .compose-draft-send, .compose-form-actions button[type="submit"]:not([formaction*="draft"])');
             }
             var draftAction = submitter && submitter.getAttribute('formaction');
             var actionPath = draftAction ? normalizeComposePath(draftAction) : 'compose/send';
             var isDraft = actionPath.indexOf('draft') >= 0;
             var loadingLabel = isDraft ? 'Saving…' : 'Sending…';
-            var isPanelCompose = form.closest('#compose-panel') || form.closest('#mail-inline-compose');
+            var draftPaneEl = form.closest('.draft-editor-pane');
+            var isPanelCompose = form.closest('#compose-panel') || form.closest('#mail-inline-compose') || draftPaneEl;
             var useComposeAjax = form.id === 'compose-form';
             var isPanelAjax = useReadingPane() && isPanelCompose;
             var useAjaxSubmit = isPanelAjax || useComposeAjax;
@@ -1936,11 +1955,30 @@
                                 draftUidField.name = 'draft_uid';
                                 form.appendChild(draftUidField);
                             }
+                            var previousUid = parseInt(draftUidField.value || '0', 10);
                             draftUidField.value = String(data.draft_uid);
+                            if (draftPaneEl && previousUid && previousUid !== data.draft_uid) {
+                                removeRowByUid(previousUid);
+                            }
+                            if (draftPaneEl) {
+                                draftPaneEl.setAttribute('data-draft-uid', String(data.draft_uid));
+                            }
                         }
                         if (currentFolderKind() === 'draft') {
                             scheduleMailPoll(true);
                         }
+                        mailSyncPaused = false;
+                        return;
+                    }
+                    if (draftPaneEl) {
+                        var sentDraftUid = parseInt((form.querySelector('input[name="draft_uid"]') || {}).value || '0', 10);
+                        if (sentDraftUid) removeRowByUid(sentDraftUid);
+                        clearReadingPane();
+                        mailSyncPaused = false;
+                        beginPostSendQuiet(30000);
+                        afterSendBadgePolls = 0;
+                        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+                        scheduleMailPoll(true);
                         return;
                     }
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
@@ -1999,6 +2037,18 @@
         });
     }
 
+    function initDraftEditor(root) {
+        var form = root.querySelector ? root.querySelector('.compose-form--draft') : null;
+        if (!form) return;
+        var subjectInput = form.querySelector('#subject');
+        var titleEl = form.querySelector('.compose-draft-title');
+        if (subjectInput && titleEl) {
+            subjectInput.addEventListener('input', function () {
+                titleEl.textContent = subjectInput.value.trim() || '(no subject)';
+            });
+        }
+    }
+
     function initComposeForm(root) {
         root = root || document;
         initRichEditor(root);
@@ -2006,6 +2056,7 @@
         initFileUpload(root);
         initComposeQuotedToggle(root);
         initOutlookInlineCompose(root);
+        initDraftEditor(root);
         var form = root.querySelector ? root.querySelector('#compose-form') : document.getElementById('compose-form');
         if (form) {
             var returnField = form.querySelector('#return_folder');
@@ -5261,22 +5312,6 @@
         }
 
         form.addEventListener('submit', function (e) {
-            if (form.dataset.ajaxBound) {
-                Object.keys(rows).forEach(function (key) {
-                    var row = rows[key];
-                    if (!row) return;
-                    row.commitInput();
-                    row.syncHidden();
-                });
-                var toHidden = form.querySelector('#to');
-                if (toHidden && !toHidden.value.trim()) {
-                    e.preventDefault();
-                    showToast('error', 'At least one To address is required.');
-                    if (rows.to && rows.to.input) rows.to.input.focus();
-                }
-                return;
-            }
-
             Object.keys(rows).forEach(function (key) {
                 var row = rows[key];
                 if (!row) return;
@@ -5284,11 +5319,26 @@
                 row.syncHidden();
             });
 
+            // Saving a draft is never blocked by empty fields (Gmail/Outlook behavior).
+            var submitter = e.submitter;
+            var isDraft = !!(submitter && /draft/.test(submitter.getAttribute('formaction') || ''));
+            if (isDraft) return;
+
             var toHidden = form.querySelector('#to');
             if (toHidden && !toHidden.value.trim()) {
                 e.preventDefault();
-                showToast('error', 'At least one To address is required.');
+                e.stopImmediatePropagation();
+                showToast('error', 'Please add at least one recipient.');
                 if (rows.to && rows.to.input) rows.to.input.focus();
+                return;
+            }
+
+            var subjectField = form.querySelector('#subject');
+            if (subjectField && !subjectField.value.trim()) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                showToast('error', 'Please add a subject before sending.');
+                subjectField.focus();
             }
         });
     }

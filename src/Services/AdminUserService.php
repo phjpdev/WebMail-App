@@ -210,7 +210,6 @@ class AdminUserService
             ['suffix' => 'Drafts', 'display_name' => 'Drafts', 'folder_type' => 'other'],
             ['suffix' => 'Archive', 'display_name' => 'Archive', 'folder_type' => 'other'],
             ['suffix' => 'Junk', 'display_name' => 'Junk', 'folder_type' => 'spam'],
-            ['suffix' => 'Spam', 'display_name' => 'Spam', 'folder_type' => 'spam'],
             ['suffix' => 'Trash', 'display_name' => 'Trash', 'folder_type' => 'trash'],
         ];
 

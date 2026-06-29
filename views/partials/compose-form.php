@@ -18,15 +18,21 @@
  * @var string $returnFolder
  */
 $embed = !empty($embed);
-$outlookInline = $embed && in_array($mode, ['reply', 'reply-all', 'forward', 'edit-draft'], true);
 $recipientAutocomplete = compose_recipient_autocomplete_data();
+
+if ($mode === 'edit-draft') {
+    require base_path('views/partials/compose-form-draft.php');
+    return;
+}
+
+$outlookInline = $embed && in_array($mode, ['reply', 'reply-all', 'forward'], true);
 
 if ($outlookInline) {
     require base_path('views/partials/compose-form-outlook-inline.php');
     return;
 }
 ?>
-<form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form" id="compose-form" enctype="multipart/form-data"
+<form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form" id="compose-form" enctype="multipart/form-data" novalidate
       data-recipient-domains="<?= e(json_encode($recipientAutocomplete['domains'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
       data-recipient-contacts="<?= e(json_encode($recipientAutocomplete['contacts'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
       data-send-as-email="<?= e($from_email) ?>">

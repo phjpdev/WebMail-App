@@ -1424,6 +1424,10 @@ class ImapService
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($path);
 
         if (@imap_createmailbox($this->connection, $mailbox)) {
+            // Subscribe so the folder is listed by clients that honor LSUB
+            // (e.g. Apple Mail) — otherwise a created folder appears "missing".
+            @imap_subscribe($this->connection, $mailbox);
+
             return true;
         }
 
@@ -1460,6 +1464,10 @@ class ImapService
         $newMailbox = $this->getMailboxString() . $this->encodeFolderPath($newPath);
 
         if (@imap_renamemailbox($this->connection, $oldMailbox, $newMailbox)) {
+            // Keep the renamed folder subscribed so it stays listed in clients.
+            @imap_unsubscribe($this->connection, $oldMailbox);
+            @imap_subscribe($this->connection, $newMailbox);
+
             return true;
         }
 

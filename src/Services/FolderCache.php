@@ -545,7 +545,9 @@ class FolderCache
         }
 
         $cache = new self();
-        if (!$cache->isRegisteredActivePath($path)) {
+        // IMAP is the source of truth: a folder may be opened if it actually
+        // exists on the mail server — not only if it was registered in the DB.
+        if (!$cache->serverHasPath($path)) {
             return false;
         }
 
@@ -564,7 +566,7 @@ class FolderCache
      */
     private function filterForUser(array $data): array
     {
-        $data = $this->filterByRegistry($data);
+        $data = $this->enrichFromRegistry($data);
 
         $user = Auth::user();
         if ($user === null) {
@@ -691,8 +693,23 @@ class FolderCache
      */
     private function isEmployeePersonalSubfolder(string $path, array $employeeRoots): bool
     {
+        // Only suppress the app's own auto-provisioned system subfolders
+        // (Sent/Drafts/Archive/Junk/Spam/Trash) directly under an employee root.
+        // Real client/work subfolders the team created (e.g. "2025 Tax Filing")
+        // must stay visible so the admin sees the full mailbox tree.
+        $systemLeaves = ['sent', 'drafts', 'archive', 'junk', 'spam', 'trash'];
+
         foreach ($employeeRoots as $root) {
-            if ($this->isWithinEmployeeMailbox($path, $root, subfoldersOnly: true)) {
+            $prefix = rtrim($root, '.') . '.';
+            if (
+                strlen($path) <= strlen($prefix)
+                || strncasecmp($path, $prefix, strlen($prefix)) !== 0
+            ) {
+                continue;
+            }
+
+            $leaf = strtolower(substr($path, strlen($prefix)));
+            if (in_array($leaf, $systemLeaves, true)) {
                 return true;
             }
         }
@@ -784,9 +801,25 @@ class FolderCache
         return $registry;
     }
 
-    private function isRegisteredActivePath(string $path): bool
+    /**
+     * True when the folder exists on the IMAP server (case-insensitive). Uses
+     * the cached folder list, falling back to a live server check so a folder
+     * created earlier in the same request is reachable before the cache warms.
+     */
+    private function serverHasPath(string $path): bool
     {
-        return isset($this->registeredActiveFolders()[strtoupper($path)]);
+        if ($path === '') {
+            return false;
+        }
+
+        self::warmPathResolveCache();
+        if (isset(self::$pathResolveCache[strtoupper($path)])) {
+            return true;
+        }
+
+        $imap = new ImapService();
+
+        return $imap->connect() && $imap->folderExistsOnServer($path);
     }
 
     /**
@@ -874,47 +907,46 @@ class FolderCache
     }
 
     /**
-     * Keep only mailboxes that exist in the admin folder registry and still
-     * exist on the IMAP server. Orphan IMAP folders (e.g. after admin delete)
-     * must not appear in the sidebar.
+     * IMAP is the source of truth for which folders exist. Keep every folder the
+     * server reports and only *enrich* it from the admin registry (a friendlier
+     * display name when one was configured). Folders that exist on the server but
+     * were never registered still appear — this is what makes the webmail
+     * auto-discover the real mailbox tree without any manual folder setup.
      *
      * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
-    private function filterByRegistry(array $data): array
+    private function enrichFromRegistry(array $data): array
     {
         $registry = $this->registeredActiveFolders();
-        if ($registry === []) {
-            $data['folders'] = [];
-            $data['unread_counts'] = [];
 
-            return $data;
-        }
-
-        $filtered = [];
+        $folders = [];
         $counts = [];
         $seen = [];
 
         foreach ($data['folders'] as $folder) {
-            $imapPath = (string) $folder['path'];
-            $key = strtoupper($imapPath);
-            if (!isset($registry[$key]) || isset($seen[$key])) {
+            $imapPath = (string) ($folder['path'] ?? '');
+            if ($imapPath === '') {
                 continue;
             }
 
+            $key = strtoupper($imapPath);
+            if (isset($seen[$key])) {
+                continue;
+            }
             $seen[$key] = true;
-            $entry = $registry[$key];
-            // Keep the exact IMAP path for open/list operations; registry only supplies the label.
-            $folder['name'] = $entry['display_name'];
-            $filtered[] = $folder;
-            $counts[$imapPath] = (int) (
-                $data['unread_counts'][$imapPath]
-                ?? $data['unread_counts'][$entry['path']]
-                ?? 0
-            );
+
+            // Registry only supplies a nicer label; the exact IMAP path is kept
+            // for open/list/move operations.
+            if (isset($registry[$key]) && (string) ($registry[$key]['display_name'] ?? '') !== '') {
+                $folder['name'] = (string) $registry[$key]['display_name'];
+            }
+
+            $folders[] = $folder;
+            $counts[$imapPath] = (int) ($data['unread_counts'][$imapPath] ?? 0);
         }
 
-        $data['folders'] = $filtered;
+        $data['folders'] = $folders;
         $data['unread_counts'] = self::sanitizeUnreadCounts($counts);
 
         return $data;

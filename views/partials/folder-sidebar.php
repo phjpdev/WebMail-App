@@ -14,24 +14,40 @@ foreach (($sidebarFolders ?? $folders ?? []) as $folder) {
     $grouped[sidebar_folder_bucket($folder['path'])][] = $folder;
 }
 
+// Show a single canonical spam folder. Spam mail is consolidated into one
+// folder (Junk), so any second spam/junk folder is hidden to avoid duplicates.
+if (count($grouped['spam']) > 1) {
+    $canonicalSpam = strtoupper(spam_folder_path());
+    $primarySpam = [];
+    foreach ($grouped['spam'] as $spamFolder) {
+        if ($primarySpam === [] && strtoupper((string) $spamFolder['path']) === $canonicalSpam) {
+            $primarySpam[] = $spamFolder;
+        }
+    }
+    if ($primarySpam === []) {
+        $primarySpam[] = $grouped['spam'][0];
+    }
+    $grouped['spam'] = $primarySpam;
+}
+
 $composeHref = url('compose');
 $composeActive = $activeFolder ?? '';
 if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
     $composeHref = url('compose') . '?return_folder=' . rawurlencode(encode_folder_path($composeActive));
 }
 
-$renderFolderLink = static function (array $folder, string $bucket) use ($activeFolder, $unreadCounts): void {
-    $displayName = sidebar_folder_label($folder, $bucket);
+$renderFolderLink = static function (array $folder, string $bucket, int $depth = 0, ?string $leafLabel = null) use ($activeFolder, $unreadCounts): void {
+    $displayName = $leafLabel ?? sidebar_folder_label($folder, $bucket);
     $isActive = strcasecmp($activeFolder ?? '', $folder['path']) === 0;
     $icon = folder_icon_type($folder['path']);
     $unread = folder_shows_unread_badge($folder['path'])
         ? (int) ($unreadCounts[$folder['path']] ?? 0)
         : 0;
     ?>
-    <a class="sidebar-link<?= $isActive ? ' active' : '' ?>"
+    <a class="sidebar-link<?= $isActive ? ' active' : '' ?><?= $depth > 0 ? ' is-nested' : '' ?>"
        href="<?= e(folder_url($folder['path'])) ?>"
        data-folder-path="<?= e($folder['path']) ?>"
-       data-folder-b64="<?= e(encode_folder_path($folder['path'])) ?>"
+       data-folder-b64="<?= e(encode_folder_path($folder['path'])) ?>"<?= $depth > 0 ? ' style="--folder-depth: ' . $depth . ';"' : '' ?>
        data-ajax-folder="1">
         <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
         <span class="sidebar-link-text"><?= e($displayName) ?></span>
@@ -90,9 +106,20 @@ if (!$foldersOpen && $grouped['other'] !== [] && ($sessionUser['role'] ?? '') ==
                     <?php endif; ?>
                 </button>
                 <div class="sidebar-group-items">
-                    <?php foreach ($grouped['other'] as $folder): ?>
-                        <?php $renderFolderLink($folder, 'other'); ?>
-                    <?php endforeach; ?>
+                    <?php
+                    // Nest custom folders under any parent also shown here, using
+                    // the IMAP hierarchy delimiter (e.g. test1 → test1-sub1).
+                    $otherFolders = $grouped['other'];
+                    usort($otherFolders, static fn ($a, $b) => strcasecmp($a['path'], $b['path']));
+                    $presentOther = [];
+                    foreach ($otherFolders as $f) {
+                        $presentOther[strtolower($f['path'])] = true;
+                    }
+                    foreach ($otherFolders as $folder):
+                        [$depth, $leaf] = sidebar_folder_nesting($folder, $presentOther, $folder['delimiter'] ?? '.');
+                        $renderFolderLink($folder, 'other', $depth, $leaf);
+                    endforeach;
+                    ?>
                 </div>
             </div>
         <?php endif; ?>

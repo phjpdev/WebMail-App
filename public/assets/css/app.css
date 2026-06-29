@@ -3607,6 +3607,10 @@ body.modal-open {
     padding-left: 0.65rem;
 }
 
+.sidebar-group.is-collapsible .sidebar-group-items .sidebar-link.is-nested {
+    padding-left: calc(0.65rem + var(--folder-depth, 0) * 0.95rem);
+}
+
 .sidebar-divider {
     height: 1px;
     margin: 0.5rem 0.75rem;
@@ -6119,6 +6123,10 @@ body:has(.mail-workspace) {
         padding-left: 0.55rem;
     }
 
+    .sidebar-group.is-collapsible .sidebar-group-items .sidebar-link.is-nested {
+        padding-left: calc(0.55rem + var(--folder-depth, 0) * 0.85rem);
+    }
+
     .sidebar-footer {
         flex-shrink: 0;
         padding: 0.35rem 0.25rem 0.5rem;
@@ -6456,4 +6464,175 @@ body:has(.mail-workspace) {
         width: 0 !important;
         height: 0 !important;
     }
+}
+
+/* Draft editor (reading pane) */
+.reading-pane-inner--draft {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+.draft-editor-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+}
+
+.compose-form--draft {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+}
+
+.compose-draft-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    background: var(--color-surface);
+}
+
+.compose-draft-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 1rem 1.25rem 0.75rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.compose-draft-badge {
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.compose-draft-title {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.02em;
+    color: var(--color-text);
+    word-break: break-word;
+}
+
+.compose-draft-fields {
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.compose-draft-fields .compose-send-as {
+    display: grid;
+    grid-template-columns: 4.5rem 1fr;
+    gap: 0.375rem 0.75rem;
+    align-items: center;
+    margin: 0;
+    padding: 0.625rem 1.25rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.compose-draft-fields .compose-send-as label {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+}
+
+.compose-draft-fields .compose-send-as-static {
+    font-size: 0.875rem;
+    color: var(--color-text);
+}
+
+.compose-recipients--draft .compose-recipient-row {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+}
+
+.compose-draft-subject-row {
+    display: grid;
+    grid-template-columns: 4.5rem 1fr;
+    gap: 0.375rem 0.75rem;
+    align-items: center;
+    padding: 0.625rem 1.25rem;
+}
+
+.compose-draft-subject-input {
+    width: 100%;
+    border: none;
+    background: transparent;
+    font-size: 0.9375rem;
+    color: var(--color-text);
+    padding: 0.25rem 0;
+    outline: none;
+}
+
+.compose-draft-subject-input::placeholder {
+    color: var(--color-text-muted);
+}
+
+.compose-draft-subject-input:focus {
+    outline: none;
+}
+
+.compose-draft-editor-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 12rem;
+    padding: 0 1.25rem;
+}
+
+.compose-draft-editor {
+    flex: 1;
+    min-height: 10rem;
+    padding: 0.75rem 0;
+    border: none;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+}
+
+.compose-draft-editor:focus {
+    outline: none;
+}
+
+.compose-draft-attach {
+    padding: 0 1.25rem 0.5rem;
+}
+
+.compose-draft-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem 1rem;
+    border-top: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-alt);
+}
+
+.compose-draft-send {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.reading-pane-body:has(.draft-editor-pane) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.reading-pane-body:has(.draft-editor-pane) .reading-pane-inner--draft {
+    flex: 1;
 }

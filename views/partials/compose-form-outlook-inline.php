@@ -37,7 +37,7 @@ $composeBody = $bodyParts['compose'];
 $quotedBody = $bodyParts['quoted'];
 $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
 ?>
-<form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form compose-form--outlook-inline" id="compose-form" enctype="multipart/form-data"
+<form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form compose-form--outlook-inline" id="compose-form" enctype="multipart/form-data" novalidate
       data-recipient-domains="<?= e(json_encode($recipientAutocomplete['domains'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
       data-recipient-contacts="<?= e(json_encode($recipientAutocomplete['contacts'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
       data-send-as-email="<?= e($from_email) ?>"
