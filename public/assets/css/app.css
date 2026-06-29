@@ -1692,6 +1692,39 @@ a:hover {
     padding-top: 0.875rem;
 }
 
+.mail-thread-history-wrap {
+    margin-top: 0.75rem;
+}
+
+.mail-thread-inline-history {
+    max-height: none;
+    padding: 0.5rem 0.875rem 0.75rem;
+    background: var(--color-surface);
+    border-color: var(--color-border-subtle);
+}
+
+.mail-thread-inline-sep {
+    margin: 0 0 0.75rem;
+    border: none;
+    border-top: 1px solid var(--color-border);
+}
+
+.mail-thread-inline-meta {
+    margin-bottom: 0.625rem;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--color-text-secondary);
+}
+
+.mail-thread-inline-meta strong {
+    color: var(--color-text);
+    font-weight: 600;
+}
+
+.mail-thread-inline-body {
+    margin: 0;
+}
+
 .mail-read-subject {
     margin: 0;
     font-size: 1.25rem;

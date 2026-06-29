@@ -961,19 +961,37 @@ class MailController
 
         mail_note_correspondents_from_message($message);
 
-        $wasUnread = empty($message['seen']);
+        $wasUnread = !MailCacheService::effectiveSeen($folderPath, $uid);
 
         if ($wasUnread && $markRead) {
             $message['seen'] = true;
-            MailCacheService::updateIndexSeen($folderPath, $uid, true);
-            $unreadCounts = FolderCache::bumpUnread($folderPath, -1);
+            MailCacheService::markReadForUser($folderPath, $uid);
 
-            $deferred = static function () use ($folderPath, $uid): void {
-                $imap = new ImapService();
-                if ($imap->connect()) {
-                    $imap->markSeen($folderPath, $uid);
+            if (employee_is_correspondent_folder($folderPath)) {
+                mail_mark_correspondent_inbound_read($folderPath, $uid, $message);
+            }
+
+            if (MailCacheService::readUpdatesImapState($folderPath)) {
+                MailCacheService::updateIndexSeen($folderPath, $uid, true);
+                $unreadCounts = FolderCache::bumpUnread($folderPath, -1);
+
+                $deferred = static function () use ($folderPath, $uid): void {
+                    $imap = new ImapService();
+                    if ($imap->connect()) {
+                        $imap->markSeen($folderPath, $uid);
+                    }
+                };
+            } else {
+                $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+                if (employee_is_correspondent_folder($folderPath)) {
+                    MailCacheService::reconcileBadgeFromIndex($folderPath);
+                    $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
                 }
-            };
+            }
+        } elseif (!$wasUnread) {
+            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+        } else {
+            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
         }
 
         $aliasService = new AliasService();
@@ -1863,17 +1881,39 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $alreadySeen = MailCacheService::indexSeenState($folderPath, $uid);
+        $alreadySeen = MailCacheService::effectiveSeen($folderPath, $uid);
 
-        MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
+        if ($seen) {
+            MailCacheService::markReadForUser($folderPath, $uid);
+            if (employee_is_correspondent_folder($folderPath)) {
+                $message = MailCacheService::getBody($folderPath, $uid) ?? [];
+                mail_mark_correspondent_inbound_read($folderPath, $uid, $message);
+            }
+            if (MailCacheService::readUpdatesImapState($folderPath)) {
+                MailCacheService::updateIndexSeen($folderPath, $uid, true);
+            }
+        } else {
+            MailCacheService::markUnreadForUser($folderPath, $uid);
+            if (MailCacheService::readUpdatesImapState($folderPath)) {
+                MailCacheService::updateIndexSeen($folderPath, $uid, false);
+            }
+        }
 
         $delta = 0;
-        if ($seen && $alreadySeen === false) {
+        if ($seen && !$alreadySeen && MailCacheService::readUpdatesImapState($folderPath)) {
             $delta = -1;
-        } elseif (!$seen && $alreadySeen === true) {
+        } elseif (!$seen && $alreadySeen && MailCacheService::readUpdatesImapState($folderPath)) {
             $delta = 1;
         }
-        $counts = FolderCache::bumpUnread($folderPath, $delta);
+
+        if ($delta !== 0) {
+            $counts = FolderCache::bumpUnread($folderPath, $delta);
+        } elseif (employee_is_correspondent_folder($folderPath) || MailCacheService::usesPerUserRead($folderPath)) {
+            MailCacheService::reconcileBadgeFromIndex($folderPath);
+            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+        } else {
+            $counts = FolderCache::bumpUnread($folderPath, 0);
+        }
 
         if (wants_json()) {
             json_response_then([
@@ -1882,6 +1922,9 @@ class MailController
                 'uid' => $uid,
                 'unread_counts' => $counts,
             ], function () use ($folderPath, $uid, $seen): void {
+                if (!MailCacheService::readUpdatesImapState($folderPath)) {
+                    return;
+                }
                 $imap = new ImapService();
                 if (!$imap->connect()) {
                     app_log('Background mark seen failed: ' . $imap->getLastError());
@@ -1896,12 +1939,14 @@ class MailController
             });
         }
 
-        $imap = new ImapService();
-        if ($imap->connect()) {
-            if ($seen) {
-                $imap->markSeen($folderPath, $uid);
-            } else {
-                $imap->markUnseen($folderPath, $uid);
+        if (MailCacheService::readUpdatesImapState($folderPath)) {
+            $imap = new ImapService();
+            if ($imap->connect()) {
+                if ($seen) {
+                    $imap->markSeen($folderPath, $uid);
+                } else {
+                    $imap->markUnseen($folderPath, $uid);
+                }
             }
         }
 
@@ -1971,8 +2016,21 @@ class MailController
             ? -MailCacheService::countUnreadAmongUids($folderPath, $uids)
             : MailCacheService::countSeenAmongUids($folderPath, $uids);
 
-        MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
-        $counts = $this->unreadCountsAfterSeenChange($folderPath, $delta);
+        foreach ($uids as $uid) {
+            if ($seen) {
+                MailCacheService::markReadForUser($folderPath, $uid);
+            } else {
+                MailCacheService::markUnreadForUser($folderPath, $uid);
+            }
+        }
+
+        if (MailCacheService::readUpdatesImapState($folderPath)) {
+            MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
+            $counts = $this->unreadCountsAfterSeenChange($folderPath, $delta);
+        } else {
+            MailCacheService::reconcileBadgeFromIndex($folderPath);
+            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+        }
 
         if (wants_json()) {
             json_response_then([
@@ -1981,6 +2039,9 @@ class MailController
                 'uids' => $uids,
                 'unread_counts' => $counts,
             ], function () use ($folderPath, $uids, $seen): void {
+                if (!MailCacheService::readUpdatesImapState($folderPath)) {
+                    return;
+                }
                 $imap = new ImapService();
                 if (!$imap->connect()) {
                     app_log('Background bulk seen failed: ' . $imap->getLastError());
@@ -1995,12 +2056,14 @@ class MailController
             });
         }
 
-        $imap = new ImapService();
-        if ($imap->connect()) {
-            if ($seen) {
-                $imap->markSeenBulk($folderPath, $uids);
-            } else {
-                $imap->markUnseenBulk($folderPath, $uids);
+        if (MailCacheService::readUpdatesImapState($folderPath)) {
+            $imap = new ImapService();
+            if ($imap->connect()) {
+                if ($seen) {
+                    $imap->markSeenBulk($folderPath, $uids);
+                } else {
+                    $imap->markUnseenBulk($folderPath, $uids);
+                }
             }
         }
 

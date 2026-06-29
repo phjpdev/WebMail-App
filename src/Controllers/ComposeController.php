@@ -580,16 +580,14 @@ class ComposeController
         }
 
         $aliasService = new AliasService();
-        $quoted = $this->buildQuotedBody($message);
-        // Default the From to the alias the message was received on, falling back
-        // to the logged-in user's own alias when nothing matches.
-        $replyFrom = $aliasService->resolveReplyAlias($message['delivered_to'] ?? null, $message['to'] ?? null)
-            ?? $aliasService->userAlias(Auth::user()['id'] ?? null);
+        $quoted = mail_build_reply_quoted_body($message, $folderPath);
+        $replyFrom = mail_resolve_reply_from($message, $folderPath);
+        $replyTo = mail_resolve_reply_to($message, $folderPath);
 
         if ($mode === 'reply') {
             $subject = $this->replySubject($message['subject'] ?? '');
             $this->showForm('reply', [
-                'to' => $message['from'] ?? '',
+                'to' => $replyTo,
                 'cc' => '',
                 'bcc' => '',
                 'subject' => $subject,
@@ -603,9 +601,9 @@ class ComposeController
 
         if ($mode === 'reply-all') {
             $subject = $this->replySubject($message['subject'] ?? '');
-            $cc = $this->buildReplyAllCc($message, $replyFrom);
+            $cc = $this->buildReplyAllCc($message, $replyFrom, $folderPath, $replyTo);
             $this->showForm('reply-all', [
-                'to' => $message['from'] ?? '',
+                'to' => $replyTo,
                 'cc' => $cc,
                 'bcc' => '',
                 'subject' => $subject,
@@ -727,7 +725,7 @@ class ComposeController
     /**
      * @param array<string, mixed> $message
      */
-    private function buildReplyAllCc(array $message, string $replyFrom): string
+    private function buildReplyAllCc(array $message, string $replyFrom, string $folderPath = '', string $replyTo = ''): string
     {
         $aliasService = new AliasService();
         $ownEmails = array_map(
@@ -736,6 +734,11 @@ class ComposeController
         );
         $ownEmails[] = strtolower(config('mail')['mailbox_email']);
         $ownEmails[] = strtolower($replyFrom);
+
+        $replyToEmail = strtolower(normalize_email_token($replyTo));
+        if ($replyToEmail !== '') {
+            $ownEmails[] = $replyToEmail;
+        }
 
         $recipients = [];
         foreach (parse_email_list(($message['to'] ?? '') . ',' . ($message['cc'] ?? ''))['valid'] as $email) {

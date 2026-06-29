@@ -1070,6 +1070,56 @@ function employee_filter_correspondent_list(string $folderPath, array $list): ar
 
     $list['messages'] = $filtered;
 
+    return employee_group_correspondent_list_by_thread($folderPath, $list);
+}
+
+/**
+ * One list row per conversation thread in correspondent folders (latest message only).
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_group_correspondent_list_by_thread(string $folderPath, array $list): array
+{
+    if (!employee_is_correspondent_folder($folderPath) || !isset($list['messages']) || !is_array($list['messages'])) {
+        return $list;
+    }
+
+    if ($list['messages'] === []) {
+        return $list;
+    }
+
+    $groups = [];
+    foreach ($list['messages'] as $msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+        $key = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+        if ($key === '') {
+            $key = 'uid:' . (int) ($msg['uid'] ?? 0);
+        }
+
+        $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+        if (!isset($groups[$key]) || $msgTs >= (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)) {
+            $groups[$key] = $msg;
+        }
+    }
+
+    $merged = array_values($groups);
+    usort($merged, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+
+        return $bTs <=> $aTs;
+    });
+
+    $list['messages'] = $merged;
+    $list['total'] = count($merged);
+    if (isset($list['per_page'])) {
+        $perPage = max(1, (int) $list['per_page']);
+        $list['total_pages'] = (int) max(1, (int) ceil(count($merged) / $perPage));
+    }
+
     return $list;
 }
 
@@ -1188,6 +1238,113 @@ function employee_correspondent_folder_name(string $folderPath): ?string
 }
 
 /**
+ * Reply-To address when composing in a correspondent folder (e.g. Support).
+ */
+function mail_correspondent_reply_address(string $folderPath): string
+{
+    $corrEmail = alias_email_for_folder($folderPath);
+    if ($corrEmail === null || $corrEmail === '') {
+        return '';
+    }
+
+    $aliasService = new App\Services\AliasService();
+    $name = employee_correspondent_folder_name($folderPath);
+    if ($name === null || $name === '') {
+        $name = $aliasService->getDisplayName($corrEmail);
+    }
+
+    if ($name !== '' && strcasecmp($name, $corrEmail) !== 0) {
+        return $name . ' <' . $corrEmail . '>';
+    }
+
+    return $corrEmail;
+}
+
+/**
+ * Resolve the To header for a reply (handles correspondent-folder threads).
+ *
+ * @param array<string, mixed> $message
+ */
+function mail_resolve_reply_to(array $message, string $folderPath): string
+{
+    $from = trim((string) ($message['from'] ?? ''));
+
+    if (employee_is_correspondent_folder($folderPath) && mail_is_sent_by_user($from)) {
+        return mail_correspondent_reply_address($folderPath);
+    }
+
+    return $from;
+}
+
+/**
+ * Resolve the From alias for a reply.
+ *
+ * @param array<string, mixed> $message
+ */
+function mail_resolve_reply_from(array $message, string $folderPath): string
+{
+    $aliasService = new App\Services\AliasService();
+    $userId = App\Auth::user()['id'] ?? null;
+
+    if (employee_is_correspondent_folder($folderPath)) {
+        return $aliasService->userAlias($userId);
+    }
+
+    return $aliasService->resolveReplyAlias($message['delivered_to'] ?? null, $message['to'] ?? null)
+        ?? $aliasService->userAlias($userId);
+}
+
+/**
+ * Quoted body for a reply — in correspondent folders, quote the latest inbound
+ * reply from the correspondent when the indexed row is the user's outbound copy.
+ *
+ * @param array<string, mixed> $message
+ */
+function mail_build_reply_quoted_body(array $message, string $folderPath): string
+{
+    $uid = (int) ($message['uid'] ?? 0);
+    if (
+        employee_is_correspondent_folder($folderPath)
+        && $uid > 0
+        && mail_is_sent_by_user((string) ($message['from'] ?? ''))
+    ) {
+        $inbound = mail_find_correspondent_inbound_replies($folderPath, $uid, $message);
+        if ($inbound !== []) {
+            $latest = $inbound[count($inbound) - 1];
+
+            return mail_format_quoted_reply_body([
+                'plain' => $latest['body'] ?? '',
+                'html' => $latest['body_html'] ?? '',
+                'date' => $latest['date'] ?? '',
+                'from' => $latest['from'] ?? '',
+            ]);
+        }
+    }
+
+    return mail_format_quoted_reply_body($message);
+}
+
+/**
+ * @param array<string, mixed> $message
+ */
+function mail_format_quoted_reply_body(array $message): string
+{
+    $plain = rtrim((string) ($message['plain'] ?? strip_tags((string) ($message['html'] ?? ''))));
+    $lines = explode("\n", $plain);
+    $quoted = array_map(static fn (string $line): string => '> ' . $line, $lines);
+    while ($quoted !== [] && trim($quoted[array_key_last($quoted)], '> ') === '') {
+        array_pop($quoted);
+    }
+
+    return sprintf(
+        "On %s, %s wrote:\n%s",
+        $message['date'] ?? '',
+        $message['from'] ?? '',
+        implode("\n", $quoted)
+    );
+}
+
+/**
  * Conversation subject for list/read (strip Re:/Fwd: in correspondent folders).
  */
 function mail_display_subject(array $msg, string $folderPath): string
@@ -1227,6 +1384,48 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
 
     if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
         $msg['seen'] = true;
+    }
+
+    $uid = (int) ($msg['uid'] ?? 0);
+    if ($uid <= 0) {
+        return;
+    }
+
+    if ($base === '') {
+        return;
+    }
+
+    $threadEntries = array_merge(
+        mail_find_correspondent_outbound_for_subject($folderPath, $base),
+        mail_find_correspondent_inbound_for_subject($folderPath, $base),
+    );
+    if ($threadEntries === []) {
+        return;
+    }
+
+    usort($threadEntries, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+
+        return $aTs <=> $bTs;
+    });
+
+    $latest = $threadEntries[count($threadEntries) - 1];
+    if ($base !== '') {
+        $msg['subject'] = count($threadEntries) > 1 ? 'Re: ' . $base : $base;
+    }
+
+    $snippet = mail_conversation_snippet((string) ($latest['body'] ?? ''));
+    if ($snippet !== '') {
+        $msg['snippet'] = $snippet;
+    }
+
+    if (!empty($latest['is_inbound_reply'])) {
+        $replyFolder = (string) ($latest['folder_path'] ?? '');
+        $replyUid = (int) ($latest['imap_uid'] ?? 0);
+        if ($replyFolder !== '' && $replyUid > 0) {
+            $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid);
+        }
     }
 }
 
@@ -3107,6 +3306,380 @@ function mail_find_cached_thread_replies(string $folderPath, int $uid, array $me
 }
 
 /**
+ * Inbound replies from a correspondent (e.g. Support) stored in the viewer's own
+ * mailbox — used to show full threads inside correspondent folders.
+ *
+ * @param array<string, mixed> $message
+ * @return list<array{from?: string, to?: string, cc?: string, date?: string, body?: string, body_html?: string, folder_path?: string, imap_uid?: int, is_inbound_reply?: bool}>
+ */
+function mail_find_correspondent_inbound_replies(string $folderPath, int $uid, array $message): array
+{
+    if ($uid <= 0 || !employee_is_correspondent_folder($folderPath)) {
+        return [];
+    }
+
+    $baseSubject = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+    if ($baseSubject === '') {
+        return [];
+    }
+
+    $afterDate = trim((string) ($message['date'] ?? ''));
+
+    return mail_find_correspondent_inbound_for_subject($folderPath, $baseSubject, $afterDate !== '' ? $afterDate : null);
+}
+
+/**
+ * Inbound replies from the correspondent alias in the employee's own mailbox.
+ *
+ * @return list<array{from?: string, to?: string, cc?: string, date?: string, body?: string, body_html?: string, folder_path?: string, imap_uid?: int, is_inbound_reply?: bool}>
+ */
+function mail_find_correspondent_inbound_for_subject(
+    string $folderPath,
+    string $baseSubject,
+    ?string $afterDate = null,
+): array {
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return [];
+    }
+
+    $corrEmail = alias_email_for_folder($folderPath);
+    if ($corrEmail === null || $corrEmail === '') {
+        return [];
+    }
+    $corrEmail = strtolower(trim($corrEmail));
+
+    $ownInbox = employee_linked_inbox_path();
+    if ($ownInbox === null || $ownInbox === '') {
+        return [];
+    }
+    $ownInbox = \App\Services\FolderCache::resolvePath($ownInbox);
+
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    if ($baseSubject === '') {
+        return [];
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date
+             FROM mail_index i
+             WHERE LOWER(i.folder_path) = LOWER(?)
+             ORDER BY i.msg_date ASC',
+            [$ownInbox]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $replies = [];
+    foreach ($rows as $row) {
+        $rowUid = (int) ($row['imap_uid'] ?? 0);
+        if ($rowUid <= 0) {
+            continue;
+        }
+
+        $fromRaw = (string) ($row['from_addr'] ?? '');
+        $fromEmail = strtolower(normalize_email_token($fromRaw));
+        if ($fromEmail !== $corrEmail && !str_contains(strtolower($fromRaw), $corrEmail)) {
+            continue;
+        }
+
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+            continue;
+        }
+
+        $sentDate = trim((string) ($row['msg_date'] ?? ''));
+        if ($afterDate !== null && $afterDate !== '' && $sentDate !== '' && strtotime($sentDate) <= strtotime($afterDate)) {
+            continue;
+        }
+
+        $body = \App\Services\MailCacheService::getBody($ownInbox, $rowUid);
+        if ($body === null) {
+            continue;
+        }
+
+        $plain = trim((string) ($body['plain'] ?? ''));
+        if ($plain === '') {
+            continue;
+        }
+
+        $split = compose_split_reply_body($plain);
+        $composePlain = mail_unquote_plain($split['compose'] !== '' ? $split['compose'] : $plain);
+        if ($composePlain === '') {
+            continue;
+        }
+
+        $composeHtml = '';
+        $html = trim((string) ($body['html'] ?? ''));
+        if ($html !== '') {
+            $htmlSplit = mail_split_html_quote($html);
+            $composeHtml = $htmlSplit['visible'];
+        }
+
+        $replies[] = [
+            'from' => (string) ($body['from'] ?? $fromRaw),
+            'to' => (string) ($body['to'] ?? ''),
+            'cc' => (string) ($body['cc'] ?? ''),
+            'date' => (string) ($body['date'] ?? $sentDate),
+            'body' => $composePlain,
+            'body_html' => $composeHtml,
+            'folder_path' => $ownInbox,
+            'imap_uid' => $rowUid,
+            'is_inbound_reply' => true,
+        ];
+    }
+
+    return $replies;
+}
+
+/**
+ * Outbound copies in a correspondent folder for one conversation subject.
+ *
+ * @return list<array{from?: string, to?: string, cc?: string, date?: string, body?: string, body_html?: string, folder_path?: string, imap_uid?: int, is_outbound?: bool}>
+ */
+function mail_find_correspondent_outbound_for_subject(string $folderPath, string $baseSubject): array
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return [];
+    }
+
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    if ($baseSubject === '') {
+        return [];
+    }
+
+    $indexPath = \App\Services\FolderCache::resolvePath($folderPath);
+
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date
+             FROM mail_index i
+             WHERE i.folder_path = ?
+             ORDER BY i.msg_date ASC',
+            [$indexPath]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $messages = [];
+    foreach ($rows as $row) {
+        $rowUid = (int) ($row['imap_uid'] ?? 0);
+        if ($rowUid <= 0) {
+            continue;
+        }
+
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+            continue;
+        }
+
+        $from = (string) ($row['from_addr'] ?? '');
+        if (!mail_is_sent_by_user($from)) {
+            continue;
+        }
+
+        $body = \App\Services\MailCacheService::getBody($indexPath, $rowUid);
+        if ($body === null) {
+            continue;
+        }
+
+        $plain = trim((string) ($body['plain'] ?? ''));
+        if ($plain === '') {
+            continue;
+        }
+
+        $split = compose_split_reply_body($plain);
+        $composePlain = mail_unquote_plain($split['compose'] !== '' ? $split['compose'] : $plain);
+        if ($composePlain === '') {
+            continue;
+        }
+
+        $composeHtml = '';
+        $html = trim((string) ($body['html'] ?? ''));
+        if ($html !== '') {
+            $htmlSplit = mail_split_html_quote($html);
+            $composeHtml = $htmlSplit['visible'];
+        }
+
+        $messages[] = [
+            'from' => (string) ($body['from'] ?? $from),
+            'to' => (string) ($body['to'] ?? ''),
+            'cc' => (string) ($body['cc'] ?? ''),
+            'date' => (string) ($body['date'] ?? ($row['msg_date'] ?? '')),
+            'body' => $composePlain,
+            'body_html' => $composeHtml,
+            'folder_path' => $indexPath,
+            'imap_uid' => $rowUid,
+            'is_outbound' => true,
+        ];
+    }
+
+    return $messages;
+}
+
+/**
+ * Full correspondent-folder thread: outbound copies + inbound replies in chronological order.
+ *
+ * @return list<array<string, mixed>>
+ */
+function mail_build_correspondent_conversation_thread(
+    array $message,
+    string $sanitizedHtml,
+    ?string $replyFrom,
+    string $folderPath,
+    int $uid,
+): array {
+    $baseSubject = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+    if ($baseSubject === '') {
+        return [];
+    }
+
+    $outbound = mail_find_correspondent_outbound_for_subject($folderPath, $baseSubject);
+    $inbound = mail_find_correspondent_inbound_for_subject($folderPath, $baseSubject);
+
+    $entries = [];
+    foreach ($outbound as $item) {
+        $entries[] = $item;
+    }
+    foreach ($inbound as $item) {
+        $entries[] = $item;
+    }
+
+    if ($entries === []) {
+        return [];
+    }
+
+    usort($entries, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+        if ($aTs === $bTs) {
+            return ((int) ($a['imap_uid'] ?? 0)) <=> ((int) ($b['imap_uid'] ?? 0));
+        }
+
+        return $aTs <=> $bTs;
+    });
+
+    $segments = [];
+    $hasCurrent = false;
+    foreach ($entries as $entry) {
+        $entryUid = (int) ($entry['imap_uid'] ?? 0);
+        $isCurrent = !empty($entry['is_outbound']) && $entryUid === $uid;
+        if ($isCurrent) {
+            $hasCurrent = true;
+        }
+
+        $segments[] = [
+            'from' => (string) ($entry['from'] ?? ''),
+            'to' => (string) ($entry['to'] ?? ''),
+            'cc' => (string) ($entry['cc'] ?? ''),
+            'date' => (string) ($entry['date'] ?? ''),
+            'body' => (string) ($entry['body'] ?? ''),
+            'body_html' => (string) ($entry['body_html'] ?? ''),
+            'quoted_plain' => '',
+            'quoted_html' => '',
+            'is_current' => $isCurrent,
+            'is_sent_reply' => empty($entry['is_inbound_reply']),
+            'is_inbound_reply' => !empty($entry['is_inbound_reply']),
+            'imap_uid' => $entryUid,
+            'snippet' => mail_conversation_snippet((string) ($entry['body'] ?? '')),
+        ];
+    }
+
+    if (!$hasCurrent) {
+        for ($i = count($segments) - 1; $i >= 0; $i--) {
+            if (!empty($segments[$i]['is_sent_reply'])) {
+                $segments[$i]['is_current'] = true;
+                break;
+            }
+        }
+    }
+
+    $count = count($segments);
+    for ($i = 0; $i < $count; $i++) {
+        if (trim((string) ($segments[$i]['to'] ?? '')) !== '') {
+            continue;
+        }
+        $from = (string) ($segments[$i]['from'] ?? '');
+        if (!mail_is_sent_by_user($from)) {
+            continue;
+        }
+        for ($j = $i - 1; $j >= 0; $j--) {
+            $newerFrom = mail_normalize_segment_from((string) ($segments[$j]['from'] ?? ''));
+            if ($newerFrom !== '' && !mail_is_sent_by_user($newerFrom)) {
+                $segments[$i]['to'] = $newerFrom;
+                break;
+            }
+        }
+    }
+
+    return mail_sort_thread_segments_chronological(mail_dedupe_thread_segments($segments));
+}
+
+/**
+ * @param list<array<string, mixed>> $segments
+ * @return list<array<string, mixed>>
+ */
+function mail_sort_thread_segments_chronological(array $segments): array
+{
+    if (count($segments) <= 1) {
+        return $segments;
+    }
+
+    $indexed = [];
+    foreach ($segments as $i => $segment) {
+        $indexed[] = [
+            'i' => $i,
+            'segment' => $segment,
+            'ts' => strtotime((string) ($segment['date'] ?? '')) ?: 0,
+        ];
+    }
+
+    usort($indexed, static function (array $a, array $b): int {
+        if ($a['ts'] === $b['ts']) {
+            return $a['i'] <=> $b['i'];
+        }
+
+        return $a['ts'] <=> $b['ts'];
+    });
+
+    return array_map(static fn (array $row): array => $row['segment'], $indexed);
+}
+
+/**
+ * Mark correspondent-thread inbound replies read in the viewer's own mailbox.
+ *
+ * @param list<array<string, mixed>> $inboundReplies
+ */
+function mail_mark_correspondent_inbound_read(string $corrFolderPath, int $uid, array $message): void
+{
+    foreach (mail_find_correspondent_inbound_replies($corrFolderPath, $uid, $message) as $reply) {
+        $replyFolder = (string) ($reply['folder_path'] ?? '');
+        $replyUid = (int) ($reply['imap_uid'] ?? 0);
+        if ($replyFolder === '' || $replyUid <= 0) {
+            continue;
+        }
+        if (\App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid)) {
+            continue;
+        }
+        \App\Services\MailCacheService::markReadForUser($replyFolder, $replyUid);
+        if (\App\Services\MailCacheService::readUpdatesImapState($replyFolder)) {
+            \App\Services\MailCacheService::updateIndexSeen($replyFolder, $replyUid, true);
+            \App\Services\FolderCache::bumpUnread($replyFolder, -1);
+            $imap = new App\Services\ImapService();
+            if ($imap->connect()) {
+                $imap->markSeen($replyFolder, $replyUid);
+            }
+        }
+    }
+
+    \App\Services\MailCacheService::reconcileBadgeFromIndex($corrFolderPath);
+    $ownInbox = employee_linked_inbox_path();
+    if ($ownInbox !== null && $ownInbox !== '') {
+        \App\Services\MailCacheService::reconcileBadgeFromIndex($ownInbox);
+    }
+}
+
+/**
  * @param array<string, mixed> $msg
  */
 function mail_enrich_list_with_thread_preview(string $folderPath, array &$msg): void
@@ -3115,16 +3688,19 @@ function mail_enrich_list_with_thread_preview(string $folderPath, array &$msg): 
         return;
     }
 
-    if (employee_is_correspondent_folder($folderPath)) {
-        return;
-    }
-
     $uid = (int) ($msg['uid'] ?? 0);
     if ($uid <= 0) {
         return;
     }
 
+    if (employee_is_correspondent_folder($folderPath)) {
+        mail_enrich_correspondent_folder_list_row($folderPath, $msg);
+
+        return;
+    }
+
     $replies = mail_find_cached_thread_replies($folderPath, $uid, $msg);
+
     if ($replies === []) {
         return;
     }
@@ -3144,7 +3720,7 @@ function mail_enrich_list_with_thread_preview(string $folderPath, array &$msg): 
 }
 
 /**
- * Build Outlook-style conversation segments (newest first).
+ * Build Outlook-style conversation segments (oldest first for read view).
  *
  * @return list<array<string, mixed>>
  */
@@ -3155,6 +3731,25 @@ function mail_build_conversation_thread(
     ?string $folderPath = null,
     ?int $uid = null,
 ): array {
+    if (
+        $folderPath !== null
+        && $folderPath !== ''
+        && $uid !== null
+        && $uid > 0
+        && employee_is_correspondent_folder($folderPath)
+    ) {
+        $correspondentThread = mail_build_correspondent_conversation_thread(
+            $message,
+            $sanitizedHtml,
+            $replyFrom,
+            $folderPath,
+            $uid,
+        );
+        if ($correspondentThread !== []) {
+            return $correspondentThread;
+        }
+    }
+
     $plain = trim((string) ($message['plain'] ?? ''));
     if ($plain === '' && $sanitizedHtml !== '') {
         $plain = mail_plain_from_html($sanitizedHtml);
@@ -3198,7 +3793,7 @@ function mail_build_conversation_thread(
             : (trim(strip_tags(mail_extract_latest_html($sanitizedHtml))) !== ''
                 ? mail_extract_latest_html($sanitizedHtml)
                 : '');
-        // Quoted history is already shown as its own cards — do not repeat it on the latest.
+        // Quoted history is shown via prior thread cards or inline dots.
         $segments[0]['quoted_plain'] = '';
         $segments[0]['quoted_html'] = '';
     }
@@ -3221,7 +3816,10 @@ function mail_build_conversation_thread(
             $extraReplies = [];
         } else {
             $cachedSent = mail_find_cached_thread_replies($folderPath, $uid, $message);
-            $extraReplies = mail_merge_thread_replies(array_merge($extraReplies, $cachedSent));
+            $cachedInbound = employee_is_correspondent_folder($folderPath)
+                ? mail_find_correspondent_inbound_replies($folderPath, $uid, $message)
+                : [];
+            $extraReplies = mail_merge_thread_replies(array_merge($extraReplies, $cachedSent, $cachedInbound));
             $extraReplies = mail_filter_redundant_pending_replies($segments, $extraReplies);
         }
 
@@ -3238,7 +3836,8 @@ function mail_build_conversation_thread(
                 'quoted_plain' => '',
                 'quoted_html' => '',
                 'is_current' => false,
-                'is_sent_reply' => true,
+                'is_sent_reply' => !empty($reply['is_inbound_reply']) ? false : true,
+                'is_inbound_reply' => !empty($reply['is_inbound_reply']),
                 'snippet' => mail_conversation_snippet($body),
             ]);
         }
@@ -3263,7 +3862,7 @@ function mail_build_conversation_thread(
         }
     }
 
-    return mail_dedupe_thread_segments($segments);
+    return mail_sort_thread_segments_chronological(mail_dedupe_thread_segments($segments));
 }
 
 /**
@@ -3320,6 +3919,98 @@ function mail_thread_segment_display(array $segment, ?string $replyFrom = null, 
         'display_date' => format_mail_read_datetime($segment['date'] ?? ''),
         'collapsed_preview' => mail_thread_collapsed_preview($segment, $folderPath),
     ];
+}
+
+/**
+ * Outlook-style Sent line (e.g. Thursday, February 5, 2026 4:29 AM).
+ */
+function format_mail_outlook_sent_datetime(?string $date): string
+{
+    if ($date === null || trim($date) === '') {
+        return '—';
+    }
+
+    $dt = to_app_datetime($date);
+    if ($dt === null) {
+        return $date;
+    }
+
+    return $dt->format('l, F j, Y g:i A');
+}
+
+/**
+ * From line for inline thread history (Name <email@example.com>).
+ *
+ * @param array<string, mixed> $segment
+ */
+function mail_thread_inline_from_line(array $segment, ?string $replyFrom, string $folderPath): string
+{
+    $display = mail_thread_segment_display($segment, $replyFrom, $folderPath);
+    $fromLine = $display['sender_name'];
+    if ($display['sender_email'] !== '') {
+        return $fromLine . ' <' . $display['sender_email'] . '>';
+    }
+
+    $parsed = mail_parse_address((string) ($segment['from'] ?? ''));
+    if ($parsed['email'] !== '') {
+        return $fromLine . ' <' . $parsed['email'] . '>';
+    }
+
+    if (mail_thread_segment_is_user_sent($segment, $folderPath) && $replyFrom !== null && $replyFrom !== '') {
+        return $fromLine . ' <' . normalize_email_token($replyFrom) . '>';
+    }
+
+    return $fromLine;
+}
+
+/**
+ * Render Outlook-style inline blocks for earlier messages in a thread.
+ *
+ * @param list<array<string, mixed>> $segments Newest prior segment first
+ */
+function mail_render_thread_inline_history_html(
+    array $segments,
+    string $subject,
+    ?string $replyFrom,
+    string $folderPath,
+): string {
+    if ($segments === []) {
+        return '';
+    }
+
+    $blocks = [];
+    foreach ($segments as $segment) {
+        $display = mail_thread_segment_display($segment, $replyFrom, $folderPath);
+        $fromLine = mail_thread_inline_from_line($segment, $replyFrom, $folderPath);
+        $sent = format_mail_outlook_sent_datetime($segment['date'] ?? '');
+        $to = $display['display_to'];
+
+        $meta = '<div class="mail-thread-inline-meta">'
+            . '<div><strong>From:</strong> ' . e($fromLine) . '</div>'
+            . '<div><strong>Sent:</strong> ' . e($sent) . '</div>'
+            . '<div><strong>To:</strong> ' . e($to) . '</div>'
+            . '<div><strong>Subject:</strong> ' . e($subject) . '</div>'
+            . '</div>';
+
+        $body = '';
+        if (trim((string) ($segment['body_html'] ?? '')) !== '') {
+            $body = '<div class="mail-thread-inline-body mail-body-html mail-body-html--quoted">'
+                . $segment['body_html']
+                . '</div>';
+        } elseif (trim((string) ($segment['body'] ?? '')) !== '') {
+            $body = '<pre class="mail-thread-inline-body compose-quoted-text">'
+                . e((string) $segment['body'])
+                . '</pre>';
+        }
+
+        $blocks[] = '<div class="mail-thread-inline-block">'
+            . '<hr class="mail-thread-inline-sep" aria-hidden="true">'
+            . $meta
+            . $body
+            . '</div>';
+    }
+
+    return '<div class="mail-thread-inline-history-inner">' . implode('', $blocks) . '</div>';
 }
 
 function mail_avatar_initials_from_name(string $name): string

@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Auth;
 use App\Database;
 
 class MailCacheService
 {
     /** @var array<string, string> lowercase path => mail_index folder_path */
     private static array $indexFolderPathCache = [];
+
+    /** @var array<string, int|null> uppercase path => linked_user_id */
+    private static array $linkedUserCache = [];
 
     /**
      * Folder path as stored in mail_index / mail_sync_state (case-insensitive lookup).
@@ -40,6 +44,146 @@ class MailCacheService
         self::$indexFolderPathCache[$lookup] = FolderCache::resolvePath($folderPath);
 
         return self::$indexFolderPathCache[$lookup];
+    }
+
+    public static function linkedUserId(string $folderPath): ?int
+    {
+        $folderPath = FolderCache::resolvePath($folderPath);
+        if ($folderPath === '') {
+            return null;
+        }
+
+        $key = strtoupper($folderPath);
+        if (array_key_exists($key, self::$linkedUserCache)) {
+            return self::$linkedUserCache[$key];
+        }
+
+        try {
+            $row = Database::fetchOne(
+                "SELECT linked_user_id FROM folders
+                 WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
+                 AND LOWER(imap_path) = LOWER(?)
+                 LIMIT 1",
+                [$folderPath]
+            );
+            self::$linkedUserCache[$key] = isset($row['linked_user_id'])
+                ? (int) $row['linked_user_id']
+                : null;
+        } catch (\Throwable) {
+            self::$linkedUserCache[$key] = null;
+        }
+
+        return self::$linkedUserCache[$key];
+    }
+
+    public static function usesPerUserRead(string $folderPath): bool
+    {
+        return self::linkedUserId($folderPath) !== null;
+    }
+
+    /**
+     * Only the linked employee's reads/writes update IMAP and mail_index.seen.
+     */
+    public static function readUpdatesImapState(string $folderPath, ?array $user = null): bool
+    {
+        $user = $user ?? Auth::user();
+        if ($user === null || !self::usesPerUserRead($folderPath)) {
+            return true;
+        }
+
+        $linkedId = self::linkedUserId($folderPath);
+
+        return $linkedId !== null && (int) ($user['id'] ?? 0) === $linkedId;
+    }
+
+    public static function userHasRead(int $userId, string $folderPath, int $uid): bool
+    {
+        if ($userId <= 0 || $uid <= 0) {
+            return false;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+
+        try {
+            $row = Database::fetchOne(
+                'SELECT 1 FROM mail_user_read
+                 WHERE user_id = ? AND folder_path = ? AND imap_uid = ?
+                 LIMIT 1',
+                [$userId, $folderPath, $uid]
+            );
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $row !== null;
+    }
+
+    public static function markReadForUser(string $folderPath, int $uid, ?int $userId = null): void
+    {
+        $userId = $userId ?? (int) (Auth::user()['id'] ?? 0);
+        if ($userId <= 0 || $uid <= 0) {
+            return;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        Database::query(
+            'INSERT INTO mail_user_read (user_id, folder_path, imap_uid, read_at)
+             VALUES (?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE read_at = NOW()',
+            [$userId, $folderPath, $uid]
+        );
+    }
+
+    public static function markUnreadForUser(string $folderPath, int $uid, ?int $userId = null): void
+    {
+        $userId = $userId ?? (int) (Auth::user()['id'] ?? 0);
+        if ($userId <= 0 || $uid <= 0) {
+            return;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        Database::query(
+            'DELETE FROM mail_user_read WHERE user_id = ? AND folder_path = ? AND imap_uid = ?',
+            [$userId, $folderPath, $uid]
+        );
+    }
+
+    public static function effectiveSeen(string $folderPath, int $uid, ?int $userId = null): bool
+    {
+        $userId = $userId ?? (int) (Auth::user()['id'] ?? 0);
+        $folderPath = self::indexFolderPath($folderPath);
+
+        if (self::usesPerUserRead($folderPath) && $userId > 0) {
+            return self::userHasRead($userId, $folderPath, $uid);
+        }
+
+        return (bool) self::indexSeenState($folderPath, $uid);
+    }
+
+    public static function countUnseenForUser(int $userId, string $folderPath): int
+    {
+        if ($userId <= 0) {
+            return 0;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+
+        try {
+            $row = Database::fetchOne(
+                'SELECT COUNT(*) AS c
+                 FROM mail_index i
+                 WHERE i.folder_path = ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM mail_user_read r
+                       WHERE r.user_id = ? AND r.folder_path = i.folder_path AND r.imap_uid = i.imap_uid
+                   )',
+                [$folderPath, $userId]
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        return (int) ($row['c'] ?? 0);
     }
 
     /**
@@ -243,7 +387,15 @@ class MailCacheService
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
-            return self::countVisibleUnseenInIndex($folderPath, $privacyEmails) > $session;
+            return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails) > $session;
+        }
+
+        if (self::usesPerUserRead($folderPath)) {
+            $linkedId = self::linkedUserId($folderPath);
+            $viewerId = (int) (Auth::user()['id'] ?? 0);
+            if ($linkedId !== null && $viewerId === $linkedId) {
+                return self::countUnseenForUser($linkedId, $folderPath) > $session;
+            }
         }
 
         if (!self::hasFolderData($folderPath)) {
@@ -269,7 +421,15 @@ class MailCacheService
 
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
-            return self::countVisibleUnseenInIndex($folderPath, $privacyEmails);
+            return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
+        }
+
+        if (self::usesPerUserRead($folderPath)) {
+            $linkedId = self::linkedUserId($folderPath);
+            $viewerId = (int) (Auth::user()['id'] ?? 0);
+            if ($linkedId !== null && $viewerId === $linkedId) {
+                return self::countUnseenForUser($linkedId, $folderPath);
+            }
         }
 
         if (folder_uses_draft_badge($folderPath) && self::hasFolderData($folderPath)) {
@@ -460,7 +620,7 @@ class MailCacheService
             'html' => $row['html_body'],
             'plain' => $row['plain_body'],
             'attachments' => is_array($attachments) ? $attachments : [],
-            'seen' => $index !== null ? (bool) $index['seen'] : true,
+            'seen' => self::effectiveSeen($folderPath, $uid),
             'flagged' => $index !== null ? (bool) $index['flagged'] : false,
         ];
     }
@@ -704,6 +864,17 @@ class MailCacheService
             return 0;
         }
 
+        if (self::usesPerUserRead($folderPath)) {
+            $count = 0;
+            foreach ($uids as $uid) {
+                if (!self::effectiveSeen($folderPath, (int) $uid)) {
+                    $count++;
+                }
+            }
+
+            return $count;
+        }
+
         $placeholders = implode(',', array_fill(0, count($uids), '?'));
         $params = array_merge([$folderPath], $uids);
         $row = Database::fetchOne(
@@ -723,6 +894,17 @@ class MailCacheService
             return 0;
         }
 
+        if (self::usesPerUserRead($folderPath)) {
+            $count = 0;
+            foreach ($uids as $uid) {
+                if (self::effectiveSeen($folderPath, (int) $uid)) {
+                    $count++;
+                }
+            }
+
+            return $count;
+        }
+
         $placeholders = implode(',', array_fill(0, count($uids), '?'));
         $params = array_merge([$folderPath], $uids);
         $row = Database::fetchOne(
@@ -738,9 +920,18 @@ class MailCacheService
      */
     public static function countUnseenInIndex(string $folderPath): int
     {
+        $folderPath = self::indexFolderPath($folderPath);
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
-            return self::countVisibleUnseenInIndex($folderPath, $privacyEmails);
+            return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
+        }
+
+        if (self::usesPerUserRead($folderPath)) {
+            $linkedId = self::linkedUserId($folderPath);
+            $viewerId = (int) (Auth::user()['id'] ?? 0);
+            if ($linkedId !== null && $viewerId === $linkedId) {
+                return self::countUnseenForUser($linkedId, $folderPath);
+            }
         }
 
         $row = Database::fetchOne(
@@ -749,6 +940,63 @@ class MailCacheService
         );
 
         return (int) ($row['c'] ?? 0);
+    }
+
+    /**
+     * Unread in a correspondent folder: visible rows plus inbound replies in the
+     * viewer's own mailbox that belong to the same conversation thread.
+     *
+     * @param list<string> $emails lowercase participant addresses
+     */
+    public static function countCorrespondentUnseenWithReplies(string $folderPath, array $emails): int
+    {
+        if ($emails === []) {
+            return 0;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        $viewerId = (int) (Auth::user()['id'] ?? 0);
+        $unreadThreads = 0;
+
+        $clauses = [];
+        $params = [$folderPath];
+        foreach ($emails as $email) {
+            $like = '%' . strtolower($email) . '%';
+            $clauses[] = '(LOWER(from_addr) LIKE ? OR LOWER(COALESCE(to_addrs, \'\')) LIKE ? OR LOWER(COALESCE(cc_addrs, \'\')) LIKE ?)';
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+        }
+
+        $rows = Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen,
+                    COALESCE(i.to_addrs, \'\') AS to_addrs,
+                    COALESCE(i.cc_addrs, \'\') AS cc_addrs
+             FROM mail_index i
+             WHERE i.folder_path = ? AND (' . implode(' OR ', $clauses) . ')
+             ORDER BY i.msg_date DESC',
+            $params
+        )->fetchAll();
+
+        foreach ($rows as $row) {
+            $msg = self::indexRowToMessage($row, $folderPath);
+            if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
+                $inbound = mail_find_correspondent_inbound_replies($folderPath, (int) $msg['uid'], $msg);
+                if ($inbound === []) {
+                    continue;
+                }
+                $latest = $inbound[count($inbound) - 1];
+                $replyFolder = (string) ($latest['folder_path'] ?? '');
+                $replyUid = (int) ($latest['imap_uid'] ?? 0);
+                if ($replyFolder !== '' && $replyUid > 0 && !self::effectiveSeen($replyFolder, $replyUid, $viewerId)) {
+                    $unreadThreads++;
+                }
+            } elseif (empty($msg['seen'])) {
+                $unreadThreads++;
+            }
+        }
+
+        return $unreadThreads;
     }
 
     /**
@@ -804,7 +1052,7 @@ class MailCacheService
         // party to, never the whole-folder IMAP unseen count. Set it exactly.
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
-            $truth = self::countVisibleUnseenInIndex($folderPath, $privacyEmails);
+            $truth = self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
             FolderCache::setUnreadCount($folderPath, $truth);
 
             return $truth;
@@ -1167,7 +1415,7 @@ class MailCacheService
             'snippet' => $snippet,
             'subject' => (string) ($row['subject'] ?? '(no subject)'),
             'date' => $row['msg_date'] ?? '',
-            'seen' => (bool) ($row['seen'] ?? false),
+            'seen' => self::effectiveSeen($folderPath, (int) $row['imap_uid']),
             'flagged' => (bool) ($row['flagged'] ?? false),
             'has_attachment' => (bool) ($row['has_attachment'] ?? false),
             'size' => (int) ($row['size'] ?? 0),

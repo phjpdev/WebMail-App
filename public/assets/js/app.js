@@ -1195,6 +1195,7 @@
         content.classList.toggle('is-compose-focus', focus);
         if (!focus) {
             content.classList.remove('is-thread-expanded');
+            setThreadInlineHistoryExpanded(content, false);
         }
         var bar = content.querySelector('.mail-read-subject-bar');
         if (bar) {
@@ -1217,6 +1218,17 @@
         setThreadComposeFocus(false);
     }
 
+    function setThreadInlineHistoryExpanded(content, expanded) {
+        if (!content) return;
+        var panel = content.querySelector('.mail-thread-inline-history');
+        var toggle = content.querySelector('.mail-thread-history-toggle');
+        if (panel) panel.hidden = !expanded;
+        if (toggle) {
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            toggle.setAttribute('aria-label', expanded ? 'Hide previous messages' : 'Show previous messages');
+        }
+    }
+
     function initThreadSubjectToggle() {
         var paneBody = document.getElementById('reading-pane-body');
         if (!paneBody || paneBody.dataset.threadSubjectBound) return;
@@ -1228,9 +1240,11 @@
             var content = paneBody.querySelector('.mail-read-content.is-compose-focus');
             if (!content) return;
             e.preventDefault();
-            var expanded = content.classList.toggle('is-thread-expanded');
+            var expanded = !content.classList.contains('is-thread-expanded');
+            content.classList.toggle('is-thread-expanded', expanded);
             bar.setAttribute('aria-expanded', expanded ? 'true' : 'false');
             bar.setAttribute('title', expanded ? 'Show latest message only' : 'Show full conversation');
+            setThreadInlineHistoryExpanded(content, expanded);
         }
 
         paneBody.addEventListener('click', toggleThread);
@@ -4652,6 +4666,19 @@
         if (!container || container.dataset.readQuotedBound) return;
         container.dataset.readQuotedBound = '1';
         container.addEventListener('click', function (e) {
+            var historyToggle = e.target.closest('.mail-thread-history-toggle');
+            if (historyToggle) {
+                e.preventDefault();
+                e.stopPropagation();
+                var wrap = historyToggle.closest('.mail-thread-history-wrap');
+                var panel = wrap && wrap.querySelector('.mail-thread-inline-history');
+                var expanded = historyToggle.getAttribute('aria-expanded') === 'true';
+                historyToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+                historyToggle.setAttribute('aria-label', expanded ? 'Show previous messages' : 'Hide previous messages');
+                if (panel) panel.hidden = expanded;
+                return;
+            }
+
             var toggle = e.target.closest('.mail-quoted-toggle');
             if (!toggle) return;
             e.preventDefault();

@@ -8,16 +8,23 @@
  * @var string $folderPath
  * @var int $uid
  * @var list<array<string, mixed>> $attachments
+ * @var list<array<string, mixed>> $threadHistorySegments
+ * @var string $threadSubject
+ * @var bool $expandAllThread
  */
 $isLatest = !empty($isLatest);
+$expandAllThread = !empty($expandAllThread);
+$showThreadHistoryToggle = !empty($showThreadHistoryToggle);
+$threadHistorySegments = $threadHistorySegments ?? [];
+$threadSubject = $threadSubject ?? '';
 $hasBody = trim((string) ($segment['body_html'] ?? '')) !== ''
     || trim((string) ($segment['body'] ?? '')) !== '';
 $quotedPlain = trim((string) ($segment['quoted_plain'] ?? ''));
 $quotedHtml = trim((string) ($segment['quoted_html'] ?? ''));
 $snippet = (string) ($segment['snippet'] ?? '');
 $collapsedPreview = (string) ($display['collapsed_preview'] ?? $snippet);
-$collapsed = !$isLatest && $hasBody;
-$hasQuoted = $isLatest && !$collapsed && ($quotedPlain !== '' || $quotedHtml !== '');
+$collapsed = !$expandAllThread && !$isLatest && $hasBody;
+$hasQuoted = $isLatest && !$collapsed && !$showThreadHistoryToggle && ($quotedPlain !== '' || $quotedHtml !== '');
 ?>
 <article class="mail-message-card<?= $isLatest ? ' mail-message-card--latest' : '' ?><?= $collapsed ? ' mail-message-card--collapsed' : '' ?>"
     <?= $collapsed ? ' data-mail-thread-card tabindex="0" role="button" aria-expanded="false"' : '' ?>>
@@ -64,8 +71,19 @@ $hasQuoted = $isLatest && !$collapsed && ($quotedPlain !== '' || $quotedHtml !==
                 <div class="mail-body-html"><?= $segment['body_html'] ?></div>
             <?php elseif (trim((string) ($segment['body'] ?? '')) !== ''): ?>
                 <pre class="mail-body-plain"><?= e($segment['body']) ?></pre>
-            <?php elseif (!$hasQuoted): ?>
+            <?php elseif (!$hasQuoted && !$showThreadHistoryToggle): ?>
                 <p class="text-muted">(No message body)</p>
+            <?php endif; ?>
+
+            <?php if ($showThreadHistoryToggle && $threadHistorySegments !== []): ?>
+            <div class="mail-quoted-wrap mail-thread-history-wrap">
+                <button type="button" class="compose-quoted-toggle mail-thread-history-toggle" aria-expanded="false" aria-label="Show previous messages">
+                    <span class="compose-quoted-toggle-dots" aria-hidden="true">⋯</span>
+                </button>
+                <div class="mail-thread-inline-history compose-quoted-body" hidden>
+                    <?= mail_render_thread_inline_history_html($threadHistorySegments, $threadSubject, $replyFrom ?? null, $folderPath) ?>
+                </div>
+            </div>
             <?php endif; ?>
 
             <?php if ($hasQuoted): ?>

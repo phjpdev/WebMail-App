@@ -15,8 +15,10 @@ $folderB64 = $folderB64 ?? encode_folder_path($folderPath);
 $uid = (int) ($message['uid'] ?? 0);
 $isFlagged = !empty($message['flagged']);
 $thread = mail_build_conversation_thread($message, $sanitizedHtml, $replyFrom, $folderPath, $uid);
-$threadDisplay = array_reverse($thread);
+$threadDisplay = $thread;
 $threadCount = count($threadDisplay);
+$threadSubject = mail_display_subject($message, $folderPath);
+$expandAllThread = $threadCount > 1;
 $messageAttachments = $message['attachments'] ?? [];
 ?>
 
@@ -89,15 +91,19 @@ $messageAttachments = $message['attachments'] ?? [];
     <?php endif; ?>
 </div>
 
-<div class="mail-read-content<?= $threadCount > 1 ? ' is-thread-expanded' : '' ?>">
+<div class="mail-read-content">
     <div class="mail-read-subject-bar">
-        <h1 class="mail-read-subject"><?= e(mail_display_subject($message, $folderPath)) ?></h1>
+        <h1 class="mail-read-subject"><?= e($threadSubject) ?></h1>
     </div>
 
     <div class="mail-thread" data-mail-thread>
         <?php foreach ($threadDisplay as $i => $segment): ?>
             <?php
             $isLatest = ($i === $threadCount - 1);
+            $threadHistorySegments = $i > 0
+                ? array_reverse(array_slice($threadDisplay, 0, $i))
+                : [];
+            $showThreadHistoryToggle = $threadHistorySegments !== [];
             $display = mail_thread_segment_display($segment, $replyFrom, $folderPath);
             $attachments = !empty($segment['is_current']) ? $messageAttachments : [];
             require base_path('views/partials/mail-thread-card.php');
