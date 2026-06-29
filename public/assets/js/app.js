@@ -3490,7 +3490,7 @@
     }
 
     function refreshUnreadBadges() {
-        fetch(apiUrl('folders/unread?light=1'), {
+        fetch(apiUrl('folders/unread'), {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })
@@ -3542,7 +3542,7 @@
         afterSendBadgePolls++;
         afterSendBadgePollInFlight = true;
 
-        fetch(apiUrl('folders/unread?light=1'), {
+        fetch(apiUrl('folders/unread'), {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })
@@ -6069,6 +6069,11 @@
         }
         fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
             .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.unread_counts) {
+                    applyUnreadCounts(data.unread_counts);
+                }
+            })
             .catch(function () {});
     }
 

@@ -93,7 +93,7 @@ class FilterService
     private static function bumpUnreadIfNotPending(string $path): void
     {
         $path = FolderCache::resolvePath($path);
-        if ($path === '') {
+        if ($path === '' || sender_suppresses_dest_folder_badge($path)) {
             return;
         }
 

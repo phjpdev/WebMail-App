@@ -1141,6 +1141,41 @@ function employee_outbound_correspondent_folder(string $folderPath, ?array $user
     return folder_registry_meta($folderPath) !== null;
 }
 
+/**
+ * True when the current user just sent mail into a folder — badges must not
+ * count that delivery in the sender's session (only unread inbound mail counts).
+ */
+function sender_suppresses_dest_folder_badge(string $folderPath, ?array $user = null): bool
+{
+    if (employee_outbound_correspondent_folder($folderPath, $user)) {
+        return true;
+    }
+
+    $user = $user ?? App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'admin') {
+        return false;
+    }
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return false;
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT 1 FROM folders
+             WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
+             AND LOWER(imap_path) = LOWER(?)
+             LIMIT 1",
+            [$folderPath]
+        );
+
+        return $row !== null;
+    } catch (\Throwable) {
+        return false;
+    }
+}
+
 function employee_correspondent_folder_name(string $folderPath): ?string
 {
     if (!employee_is_correspondent_folder($folderPath)) {

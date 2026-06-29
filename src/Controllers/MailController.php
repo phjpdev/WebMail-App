@@ -310,20 +310,21 @@ class MailController
             return;
         }
 
-        FilterService::runBackground(false);
+        FilterService::runBackground(true, 10);
 
         $synced = MailCacheService::bootstrapSync($imap, $paths);
+        MailCacheService::reconcileAllIndexedBadges();
+        FolderCache::invalidateUnread();
+
         $draftPaths = array_values(array_filter($paths, static fn (string $p): bool => folder_uses_draft_badge($p)));
         if ($draftPaths !== []) {
-            foreach ($draftPaths as $draftPath) {
-                MailCacheService::reconcileBadgeFromIndex($draftPath);
-            }
             FolderCache::refreshPaths($draftPaths);
         }
 
         echo json_encode([
             'ok' => true,
             'synced' => $synced,
+            'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
         ]);
     }
 
@@ -565,7 +566,11 @@ class MailController
                 continue;
             }
             $badge = (int) ($counts[$path] ?? 0);
-            if ($badge <= 0 && !MailCacheService::badgeAheadOfIndex($path)) {
+            if (
+                $badge <= 0
+                && !MailCacheService::badgeAheadOfIndex($path)
+                && !MailCacheService::badgeBehindIndex($path)
+            ) {
                 continue;
             }
             MailCacheService::reconcileBadgeFromIndex($path);

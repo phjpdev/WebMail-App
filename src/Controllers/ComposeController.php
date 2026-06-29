@@ -436,11 +436,10 @@ class ComposeController
                 if ($resolved === '') {
                     continue;
                 }
-                if (employee_outbound_correspondent_folder($resolved)) {
+                if (sender_suppresses_dest_folder_badge($resolved)) {
                     FolderCache::setUnreadCount($resolved, 0);
                     continue;
                 }
-                FolderCache::bumpUnread($resolved, 1);
                 $pendingBadges[] = $resolved;
             }
             if ($pendingBadges !== []) {

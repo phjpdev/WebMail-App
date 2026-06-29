@@ -578,18 +578,16 @@ class FolderCache
         }
 
         $prefix = $this->employeeMailboxPrefix((int) $user['id']);
-        $privacyEmails = mail_user_emails((int) $user['id']);
         $filtered = [];
         $counts = [];
 
         foreach ($data['folders'] as $folder) {
             if ($this->isEmployeeFolderAllowed($folder['path'], $prefix)) {
                 $filtered[] = $folder;
-                // Correspondent folders show the whole-mailbox IMAP unseen count;
-                // replace it with the viewer-visible count so badges aren't phantom.
-                $counts[$folder['path']] = employee_is_correspondent_folder($folder['path'])
-                    ? \App\Services\MailCacheService::countVisibleUnseenInIndex($folder['path'], $privacyEmails)
-                    : ($data['unread_counts'][$folder['path']] ?? 0);
+                $counts[$folder['path']] = \App\Services\MailCacheService::sidebarBadgeCount(
+                    $folder['path'],
+                    (int) ($data['unread_counts'][$folder['path']] ?? 0)
+                );
             }
         }
 
@@ -607,7 +605,10 @@ class FolderCache
                 continue;
             }
             $filtered[] = $folder;
-            $counts[$path] = $data['unread_counts'][$path] ?? 0;
+            $counts[$path] = \App\Services\MailCacheService::sidebarBadgeCount(
+                $path,
+                (int) ($data['unread_counts'][$path] ?? 0)
+            );
             $existing[strtoupper($path)] = true;
         }
 
@@ -625,9 +626,12 @@ class FolderCache
                 'name' => $meta['name'],
                 'delimiter' => '.',
             ];
-            $counts[$resolved] = $data['unread_counts'][$resolved]
-                ?? $data['unread_counts'][$meta['path']]
-                ?? 0;
+            $counts[$resolved] = \App\Services\MailCacheService::sidebarBadgeCount(
+                $resolved,
+                (int) ($data['unread_counts'][$resolved]
+                    ?? $data['unread_counts'][$meta['path']]
+                    ?? 0)
+            );
             $existing[strtoupper($resolved)] = true;
         }
 
@@ -656,7 +660,10 @@ class FolderCache
             }
 
             $filtered[] = $folder;
-            $counts[$path] = $data['unread_counts'][$path] ?? 0;
+            $counts[$path] = \App\Services\MailCacheService::sidebarBadgeCount(
+                $path,
+                (int) ($data['unread_counts'][$path] ?? 0)
+            );
         }
 
         $data['folders'] = $filtered;

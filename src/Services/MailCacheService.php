@@ -230,6 +230,59 @@ class MailCacheService
         return $count;
     }
 
+    /**
+     * Sidebar badge is lower than the indexed unseen count.
+     */
+    public static function badgeBehindIndex(string $folderPath): bool
+    {
+        $folderPath = FolderCache::resolvePath($folderPath);
+        if ($folderPath === '' || !folder_shows_unread_badge($folderPath)) {
+            return false;
+        }
+
+        $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null) {
+            return self::countVisibleUnseenInIndex($folderPath, $privacyEmails) > $session;
+        }
+
+        if (!self::hasFolderData($folderPath)) {
+            return false;
+        }
+
+        return self::countBadgeFromIndex($folderPath) > $session;
+    }
+
+    /**
+     * Authoritative sidebar badge for a folder (privacy-aware, index + IMAP).
+     */
+    public static function sidebarBadgeCount(string $folderPath, ?int $sessionCount = null): int
+    {
+        $folderPath = FolderCache::resolvePath($folderPath);
+        if ($folderPath === '' || !folder_shows_unread_badge($folderPath)) {
+            return 0;
+        }
+
+        if ($sessionCount === null) {
+            $sessionCount = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        }
+
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null) {
+            return self::countVisibleUnseenInIndex($folderPath, $privacyEmails);
+        }
+
+        if (folder_uses_draft_badge($folderPath) && self::hasFolderData($folderPath)) {
+            return self::countBadgeFromIndex($folderPath);
+        }
+
+        if (self::hasFolderData($folderPath)) {
+            return max(self::countBadgeFromIndex($folderPath), $sessionCount);
+        }
+
+        return $sessionCount;
+    }
+
     /** Sidebar badge value from mail_index (unread or draft total). */
     public static function countBadgeFromIndex(string $folderPath): int
     {
@@ -769,6 +822,15 @@ class MailCacheService
         }
 
         if (!self::hasFolderData($folderPath)) {
+            if ($pageMessages !== null && $pageUnread > 0 && !folder_uses_draft_badge($folderPath)) {
+                $truth = max($session, $pageUnread);
+                if ($truth !== $session) {
+                    FolderCache::setUnreadCount($folderPath, $truth);
+                }
+
+                return $truth;
+            }
+
             if ($pageMessages !== null && $pageUnread === 0 && $session > 0 && !folder_uses_draft_badge($folderPath)) {
                 // Keep the session badge until the folder is indexed — do not
                 // clear optimistic/post-delivery counts while cache is empty.
