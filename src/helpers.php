@@ -708,6 +708,78 @@ function mail_note_employee_correspondent(string $folderPath): void
     }
 
     $_SESSION['_employee_correspondents'][$folderPath] = time();
+    employee_correspondent_folder_paths_invalidate((int) ($user['id'] ?? 0));
+}
+
+/**
+ * Stop tracking a correspondent folder in the employee sidebar.
+ */
+function mail_forget_employee_correspondent(string $folderPath): void
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return;
+    }
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '' || !is_array($_SESSION['_employee_correspondents'] ?? null)) {
+        return;
+    }
+
+    foreach (array_keys($_SESSION['_employee_correspondents']) as $key) {
+        if (strcasecmp((string) $key, $folderPath) === 0) {
+            unset($_SESSION['_employee_correspondents'][$key]);
+            break;
+        }
+    }
+
+    employee_correspondent_folder_paths_invalidate((int) ($user['id'] ?? 0));
+}
+
+/**
+ * Remove an empty employee correspondent folder from the sidebar.
+ *
+ * @return array{path: string, redirect: string}|null
+ */
+function mail_prune_empty_correspondent_folder(string $folderPath): ?array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '' || !employee_is_correspondent_folder($folderPath)) {
+        return null;
+    }
+
+    if (\App\Services\MailCacheService::countListableMessagesInIndex($folderPath) > 0) {
+        return null;
+    }
+
+    mail_forget_employee_correspondent($folderPath);
+
+    return [
+        'path' => $folderPath,
+        'redirect' => encode_folder_path(default_mail_folder()),
+    ];
+}
+
+/**
+ * @return array<int, list<string>>
+ */
+function &employee_correspondent_folder_paths_cache(): array
+{
+    static $cache = [];
+
+    return $cache;
+}
+
+function employee_correspondent_folder_paths_invalidate(?int $userId = null): void
+{
+    $cache = &employee_correspondent_folder_paths_cache();
+    if ($userId === null || $userId <= 0) {
+        $cache = [];
+
+        return;
+    }
+
+    unset($cache[$userId]);
 }
 
 /**
@@ -808,7 +880,7 @@ function employee_has_correspondence_with(
  */
 function employee_correspondent_folder_paths(?int $userId = null): array
 {
-    static $cache = [];
+    $cache = &employee_correspondent_folder_paths_cache();
 
     $user = App\Auth::user();
     if ($userId === null) {
@@ -841,14 +913,20 @@ function employee_correspondent_folder_paths(?int $userId = null): array
     }
 
     foreach (employee_other_mailboxes($userId, $ownPrefix) as $mailbox) {
-        if (employee_has_correspondence_with(
+        if (!employee_has_correspondence_with(
             $ownPrefix,
             $mailbox['path'],
             $mailbox['email'],
             $userId,
         )) {
-            $paths[] = $mailbox['path'];
+            continue;
         }
+
+        if (\App\Services\MailCacheService::countListableMessagesInIndex($mailbox['path']) <= 0) {
+            continue;
+        }
+
+        $paths[] = $mailbox['path'];
     }
 
     $unique = [];
@@ -893,6 +971,25 @@ function employee_is_correspondent_folder(string $folderPath): bool
     }
 
     return employee_can_access_correspondent_folder($folderPath);
+}
+
+/**
+ * True when an employee sent mail into another employee's mailbox folder.
+ */
+function employee_outbound_correspondent_folder(string $folderPath, ?array $user = null): bool
+{
+    $user = $user ?? App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return false;
+    }
+
+    $own = employee_linked_inbox_path($user);
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($own === null || $own === '' || $folderPath === '' || strcasecmp($folderPath, $own) === 0) {
+        return false;
+    }
+
+    return folder_registry_meta($folderPath) !== null;
 }
 
 function employee_correspondent_folder_name(string $folderPath): ?string
@@ -942,6 +1039,10 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
     $base = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
     if ($base !== '') {
         $msg['subject'] = $base;
+    }
+
+    if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
+        $msg['seen'] = true;
     }
 }
 
@@ -1005,6 +1106,34 @@ function mail_note_correspondent_from_list_message(array $msg): void
     if ($folder !== null) {
         mail_note_employee_correspondent($folder);
     }
+}
+
+/**
+ * Sidebar payload for employee correspondent folders (after send/receive).
+ *
+ * @return list<array{path: string, name: string, b64: string, icon: string, url: string}>
+ */
+function mail_correspondent_folders_sidebar_payload(?int $userId = null): array
+{
+    $out = [];
+    foreach (employee_correspondent_folder_paths($userId) as $path) {
+        $meta = folder_registry_meta($path);
+        if ($meta === null) {
+            continue;
+        }
+
+        $resolved = \App\Services\FolderCache::resolvePath($meta['path']);
+        $folder = ['path' => $resolved, 'name' => $meta['name']];
+        $out[] = [
+            'path' => $resolved,
+            'name' => sidebar_folder_label($folder, 'other'),
+            'b64' => encode_folder_path($resolved),
+            'icon' => folder_icon_type($resolved),
+            'url' => folder_url($resolved),
+        ];
+    }
+
+    return $out;
 }
 
 /**
@@ -1772,6 +1901,41 @@ function reconcile_inbox_after_outbound_send(
     }
     App\Services\MailCacheService::reconcileBadgeFromIndex($inbox);
     App\Services\FolderCache::refreshPaths([$inbox]);
+}
+
+/**
+ * Mark outbound copies in employee correspondent folders as read (no unread badge).
+ *
+ * @param list<string> $destPaths
+ */
+function reconcile_correspondent_outbound_echoes(
+    App\Services\ImapService $imap,
+    array $destPaths,
+    string $fromEmail,
+    ?string $sentMessageId = null,
+    int $limit = 30,
+): void {
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return;
+    }
+
+    $emails = mail_user_emails((int) $user['id']);
+    $fromEmail = strtolower(trim($fromEmail));
+    if ($fromEmail !== '' && !in_array($fromEmail, $emails, true)) {
+        $emails[] = $fromEmail;
+    }
+
+    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
+        $path = \App\Services\FolderCache::resolvePath((string) $path);
+        if ($path === '' || !employee_outbound_correspondent_folder($path, $user)) {
+            continue;
+        }
+
+        $imap->suppressInboundEchoOfSentMessage($path, $emails, $limit, $sentMessageId, false);
+        App\Services\MailCacheService::reconcileBadgeFromIndex($path);
+        App\Services\FolderCache::setUnreadCount($path, 0);
+    }
 }
 
 /**

@@ -89,14 +89,21 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
 
     <div class="mail-select-all-banner" id="select-all-folder-banner" hidden></div>
 
-    <?php if (empty($messages)): ?>
+    <?php if (!empty($listAwaitingSync)): ?>
+    <div id="mail-list-loading" class="mail-list-loading" aria-live="polite">
+        <span class="reading-pane-spinner" aria-hidden="true"></span>
+        <span>Loading messages…</span>
+    </div>
+    <?php endif; ?>
+
+    <?php if (empty($messages) && empty($listAwaitingSync)): ?>
     <div id="mail-list-empty" class="empty-state">
         <div class="empty-icon" aria-hidden="true">📭</div>
         <p><?= !empty($searchQuery) ? 'No messages match your search' : 'No messages in this folder' ?></p>
     </div>
     <?php endif; ?>
 
-    <div class="mail-list-scroller"<?= empty($messages) ? ' hidden' : '' ?> id="mail-list-scroller">
+    <div class="mail-list-scroller"<?= (empty($messages) || !empty($listAwaitingSync)) ? ' hidden' : '' ?> id="mail-list-scroller">
     <div class="mail-list-desktop mail-list-rows" id="mail-list-body" role="listbox" aria-label="Messages" tabindex="0">
                 <?php foreach ($messages as $msg): ?>
                     <?php require base_path('views/partials/mail-list-row.php'); ?>
@@ -104,7 +111,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     </div>
     </div>
 
-    <div class="mail-list-mobile" id="mail-list-mobile"<?= empty($messages) ? ' hidden' : '' ?> role="listbox" aria-label="Messages">
+    <div class="mail-list-mobile" id="mail-list-mobile"<?= (empty($messages) || !empty($listAwaitingSync)) ? ' hidden' : '' ?> role="listbox" aria-label="Messages">
         <?php foreach ($messages as $msg): ?>
             <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= is_draft_folder($folderPath) ? ' mail-card--draft' : '' ?>"
                role="option" tabindex="0" aria-selected="false"

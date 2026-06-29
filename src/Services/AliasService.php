@@ -12,8 +12,46 @@ class AliasService
     private static ?array $activeCache = null;
 
     /**
+     * Aliases available in compose: all for admin, only the logged-in user's for employees.
+     *
+     * @param array<string, mixed>|null $user
      * @return list<array{id: int, email: string, display_name: string}>
      */
+    public function listForCompose(?array $user): array
+    {
+        if ($user !== null && ($user['role'] ?? '') === 'employee') {
+            $userId = (int) ($user['id'] ?? 0);
+            if ($userId <= 0) {
+                return [];
+            }
+
+            $row = Database::fetchOne(
+                'SELECT id, email, display_name FROM aliases WHERE user_id = ? AND active = 1 ORDER BY id LIMIT 1',
+                [$userId]
+            );
+            if ($row !== null && !empty($row['email'])) {
+                return [[
+                    'id' => (int) $row['id'],
+                    'email' => (string) $row['email'],
+                    'display_name' => (string) ($row['display_name'] ?? $row['email']),
+                ]];
+            }
+
+            $email = $this->userAlias($userId);
+            if ($email === '') {
+                return [];
+            }
+
+            return [[
+                'id' => 0,
+                'email' => $email,
+                'display_name' => (string) ($user['name'] ?? $email),
+            ]];
+        }
+
+        return $this->listActive();
+    }
+
     public function listActive(): array
     {
         if (self::$activeCache !== null) {

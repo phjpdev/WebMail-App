@@ -40,6 +40,7 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
 <form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form compose-form--outlook-inline" id="compose-form" enctype="multipart/form-data"
       data-recipient-domains="<?= e(json_encode($recipientAutocomplete['domains'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
       data-recipient-contacts="<?= e(json_encode($recipientAutocomplete['contacts'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
+      data-send-as-email="<?= e($from_email) ?>"
       data-compose-mode="<?= e($mode) ?>">
     <?= csrf_field() ?>
     <input type="hidden" name="mode" value="<?= e($mode) ?>">
@@ -108,6 +109,9 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
             <input type="hidden" id="subject" name="subject" value="<?= e($subject) ?>">
         <?php endif; ?>
 
+        <?php if (!empty($send_as_fixed)): ?>
+            <input type="hidden" id="from_email" name="from_email" value="<?= e($from_email) ?>">
+        <?php else: ?>
         <div class="form-group compose-outlook-from-wrap">
             <label for="from_email" class="sr-only">Send as</label>
             <div class="select-field">
@@ -120,6 +124,7 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
                 </select>
             </div>
         </div>
+        <?php endif; ?>
 
         <div class="compose-outlook-editor-wrap">
             <?php if (!$isReplyMode): ?>

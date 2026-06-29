@@ -28,7 +28,8 @@ if ($outlookInline) {
 ?>
 <form method="post" action="<?= e(url('compose/send')) ?>" class="compose-form" id="compose-form" enctype="multipart/form-data"
       data-recipient-domains="<?= e(json_encode($recipientAutocomplete['domains'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
-      data-recipient-contacts="<?= e(json_encode($recipientAutocomplete['contacts'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>">
+      data-recipient-contacts="<?= e(json_encode($recipientAutocomplete['contacts'], JSON_UNESCAPED_UNICODE) ?: '[]') ?>"
+      data-send-as-email="<?= e($from_email) ?>">
     <?= csrf_field() ?>
     <input type="hidden" name="mode" value="<?= e($mode) ?>">
     <input type="hidden" name="body_html" id="body_html" value="<?= e($body_html ?? '') ?>">
@@ -42,18 +43,7 @@ if ($outlookInline) {
         <input type="hidden" name="draft_uid" value="<?= (int) $draftUid ?>">
     <?php endif; ?>
 
-    <div class="form-group">
-        <label for="from_email">Send as</label>
-        <div class="select-field">
-        <select id="from_email" name="from_email" required>
-            <?php foreach ($aliases as $alias): ?>
-                <option value="<?= e($alias['email']) ?>"<?= ($from_email === $alias['email']) ? ' selected' : '' ?>>
-                    <?= e($alias['display_name']) ?> &lt;<?= e($alias['email']) ?>&gt;
-                </option>
-            <?php endforeach; ?>
-        </select>
-        </div>
-    </div>
+    <?php require base_path('views/partials/compose-send-as.php'); ?>
 
     <div class="compose-recipients">
         <div class="compose-recipient-row" data-field="to">

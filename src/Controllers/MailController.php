@@ -81,6 +81,7 @@ class MailController
             'url' => folder_url($folderPath),
             'html' => view_string('mail/list-column', $context),
             'unread_counts' => $context['unreadCounts'] ?? [],
+            'list_loading' => !empty($context['listAwaitingSync']),
         ]);
         exit;
     }
@@ -126,6 +127,18 @@ class MailController
                     // Instant folder switch: show cached list, let the client poll refresh.
                     $list['stale'] = true;
                 }
+                $servedFromCache = true;
+            } elseif ($cacheFirst && employee_is_correspondent_folder($folderPath)) {
+                // Correspondent folder with no cache yet — return instantly; client poll loads mail.
+                $list = [
+                    'messages' => [],
+                    'total' => 0,
+                    'page' => $page,
+                    'per_page' => $perPage,
+                    'total_pages' => 0,
+                    'from_cache' => true,
+                    'stale' => true,
+                ];
                 $servedFromCache = true;
             }
         }
@@ -179,6 +192,11 @@ class MailController
         $prefs = user_preferences();
         $list = mail_filter_removed_messages($folderPath, $list);
 
+        $listAwaitingSync = $query === ''
+            && employee_is_correspondent_folder($folderPath)
+            && $servedFromCache
+            && (!empty($list['stale']) || (int) ($list['total'] ?? 0) === 0);
+
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
             'folderPath' => $folderPath,
@@ -198,6 +216,7 @@ class MailController
             'imapError' => $imapError,
             'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
             'perPage' => $perPage,
+            'listAwaitingSync' => $listAwaitingSync,
         ];
     }
 
@@ -405,6 +424,24 @@ class MailController
             }
         }
 
+        if (
+            $list === null
+            && $forceRefresh
+            && $query === ''
+            && $page === 1
+            && employee_is_correspondent_folder($folderPath)
+        ) {
+            if ($forceFilter) {
+                $filterResult = $this->maybeRunFilter($folderPath, true);
+                if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {
+                    FolderCache::syncUnreadBadges($folderPath);
+                }
+            }
+            $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
+            MailCacheService::syncFolderHeaders($imap, $folderPath, $headerLimit);
+            $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
+        }
+
         if ($list === null && ($forceFilter || (!$light && !$forceRefresh))) {
             $list = $query !== ''
                 ? $imap->searchMessages($folderPath, $query, $page, $perPage)
@@ -497,101 +534,12 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
+        $light = ($_GET['light'] ?? '') === '1';
         $afterSend = ($_GET['after_send'] ?? '') === '1';
 
-        if ($afterSend) {
-            $pendingPaths = [];
-            $postSendAt = 0;
-            $destPaths = [];
-            $postSendFrom = '';
-            $postSendMessageId = null;
-            $shouldRunFilter = false;
-            $shouldReconcileInbox = false;
-
-            with_session_write(function () use (
-                &$pendingPaths,
-                &$postSendAt,
-                &$destPaths,
-                &$postSendFrom,
-                &$postSendMessageId,
-                &$shouldRunFilter,
-                &$shouldReconcileInbox,
-            ): void {
-                $pendingPaths = FolderCache::getPendingBadgePaths();
-                $postSendAt = (int) ($_SESSION['_post_send_at'] ?? 0);
-
-                if ($pendingPaths === [] && $postSendAt > 0 && $postSendAt + 90 > time()
-                    && empty($_SESSION['_after_send_filter_ran'])) {
-                    $_SESSION['_after_send_filter_ran'] = time();
-                    $shouldRunFilter = true;
-                }
-
-                $destPaths = is_array($_SESSION['_post_send_dest_paths'] ?? null)
-                    ? $_SESSION['_post_send_dest_paths']
-                    : [];
-                $postSendFrom = (string) ($_SESSION['_post_send_from'] ?? config('mail')['mailbox_email'] ?? '');
-                $postSendMessageId = isset($_SESSION['_post_send_message_id'])
-                    ? (string) $_SESSION['_post_send_message_id']
-                    : null;
-
-                if ($destPaths !== [] && $postSendFrom !== '') {
-                    $lastInboxReconcile = (int) ($_SESSION['_inbox_reconcile_at'] ?? 0);
-                    if (time() - $lastInboxReconcile >= 15) {
-                        $_SESSION['_inbox_reconcile_at'] = time();
-                        $shouldReconcileInbox = true;
-                    }
-                }
-            });
-
-            if ($shouldRunFilter) {
-                FilterService::runBackground(true, 8);
-                with_session_write(function () use (&$pendingPaths): void {
-                    $pendingPaths = FolderCache::getPendingBadgePaths();
-                });
-            }
-
-            if ($pendingPaths !== []) {
-                FolderCache::refreshPaths($pendingPaths);
-            }
-
-            if ($shouldReconcileInbox) {
-                reconcile_inbox_after_outbound_send($destPaths, $postSendFrom, $postSendMessageId);
-            }
-
-            $counts = [];
-            with_session_write(function () use (&$counts, $pendingPaths, $postSendAt): void {
-                $counts = FolderCache::sidebarUnreadCounts();
-
-                if ($pendingPaths !== []) {
-                    $allSet = true;
-                    foreach ($pendingPaths as $path) {
-                        if ((int) ($counts[$path] ?? 0) <= 0) {
-                            $allSet = false;
-                            break;
-                        }
-                    }
-                    if ($allSet) {
-                        FolderCache::clearPendingBadgePaths();
-                        unset(
-                            $_SESSION['_post_send_at'],
-                            $_SESSION['_after_send_filter_ran'],
-                            $_SESSION['_post_send_dest_paths'],
-                            $_SESSION['_post_send_from'],
-                            $_SESSION['_post_send_message_id']
-                        );
-                    }
-                } elseif ($postSendAt > 0 && $postSendAt + 90 < time()) {
-                    unset(
-                        $_SESSION['_post_send_at'],
-                        $_SESSION['_after_send_filter_ran'],
-                        $_SESSION['_post_send_dest_paths'],
-                        $_SESSION['_post_send_from'],
-                        $_SESSION['_post_send_message_id']
-                    );
-                }
-            });
-
-            echo json_encode(['unread_counts' => $counts]);
+        // Fast path: session badge counts only (post-send-deferred handles IMAP/filter work).
+        if ($light || $afterSend) {
+            echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
 
             return;
         }
@@ -1320,14 +1268,14 @@ class MailController
                 $counts = FolderCache::bumpUnread($resolvedFolderPath, 0);
             }
 
-            json_response_then([
+            json_response_then($this->appendCorrespondentFolderPrune($resolvedFolderPath, [
                 'ok' => true,
                 'moved' => count($uids),
                 'errors' => 0,
                 'uids' => array_values($uids),
                 'target' => $targetPath,
                 'unread_counts' => $counts,
-            ], function () use ($resolvedFolderPath, $uids, $targetPath, $siblingMode): void {
+            ]), function () use ($resolvedFolderPath, $uids, $targetPath, $siblingMode): void {
                 $this->executeMoveOnServer($resolvedFolderPath, $uids, $targetPath, $siblingMode);
             });
         }
@@ -1702,13 +1650,13 @@ class MailController
                 $counts = FolderCache::bumpUnread($resolvedFolderPath, 0);
             }
 
-            json_response_then([
+            json_response_then($this->appendCorrespondentFolderPrune($resolvedFolderPath, [
                 'ok' => true,
                 'deleted' => count($uids),
                 'errors' => 0,
                 'uids' => array_values($uids),
                 'unread_counts' => $counts,
-            ], function () use ($resolvedFolderPath, $uids): void {
+            ]), function () use ($resolvedFolderPath, $uids): void {
                 $this->executeDeleteOnServer($resolvedFolderPath, $uids);
             });
         }
@@ -1799,6 +1747,20 @@ class MailController
         $uids = array_map('intval', $_POST['uids'] ?? []);
 
         return array_values(array_filter($uids, fn ($u) => $u > 0));
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function appendCorrespondentFolderPrune(string $folderPath, array $payload): array
+    {
+        $pruned = mail_prune_empty_correspondent_folder($folderPath);
+        if ($pruned !== null) {
+            $payload['remove_correspondent_folder'] = $pruned;
+        }
+
+        return $payload;
     }
 
     private function actionError(string $message, string $redirect): never

@@ -92,6 +92,7 @@
     var paneMessageSyncTimer = null;
     var paneMessageSyncInFlight = false;
     var afterSendBadgePollInFlight = false;
+    var postSendFolderPollTimers = [];
     var attachmentHintsTimer = null;
     var listSnippetsTimer = null;
     var panePrefetchInFlight = {};
@@ -924,6 +925,11 @@
             }
 
             reinitMailListColumn();
+            if (data.list_loading) {
+                setMailListLoading(true);
+            }
+            window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
+            startPostSendFolderPolls([folderB64]);
             announceLive('Folder loaded: ' + (data.title || 'Mail'));
         }).catch(function (err) {
             if (seq !== folderLoadSeq) return;
@@ -1940,6 +1946,9 @@
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
                     if (data && data.unread_counts) {
                         applyUnreadCounts(data.unread_counts);
+                    }
+                    if (data && data.correspondent_folders) {
+                        applyCorrespondentFolders(data.correspondent_folders);
                     }
                     var inlineCompose = form.closest('#mail-inline-compose');
                     if (inlineCompose) {
@@ -3263,6 +3272,172 @@
         });
     }
 
+    function sidebarHasFolderLink(path) {
+        var target = (path || '').toLowerCase();
+        if (!target) return false;
+        var found = false;
+        document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
+            if ((link.getAttribute('data-folder-path') || '').toLowerCase() === target) {
+                found = true;
+            }
+        });
+        return found;
+    }
+
+    function createSidebarFolderLink(folder) {
+        var link = document.createElement('a');
+        link.className = 'sidebar-link';
+        link.href = folder.url || apiUrl('folder/' + folder.b64);
+        link.setAttribute('data-folder-path', folder.path);
+        link.setAttribute('data-folder-b64', folder.b64);
+        link.setAttribute('data-ajax-folder', '1');
+        var icon = document.createElement('span');
+        icon.className = 'folder-icon folder-icon-' + (folder.icon || 'folder');
+        icon.setAttribute('aria-hidden', 'true');
+        var text = document.createElement('span');
+        text.className = 'sidebar-link-text';
+        text.textContent = folder.name || String(folder.path || '').replace(/^INBOX\./i, '');
+        link.appendChild(icon);
+        link.appendChild(text);
+        return link;
+    }
+
+    function ensureSidebarFoldersGroup() {
+        var list = document.getElementById('folder-sidebar-list');
+        if (!list) return null;
+        var group = list.querySelector('.sidebar-group[data-group="other"]');
+        if (group) return group;
+
+        var divider = document.createElement('div');
+        divider.className = 'sidebar-divider';
+        divider.setAttribute('aria-hidden', 'true');
+        list.appendChild(divider);
+
+        group = document.createElement('div');
+        group.className = 'sidebar-group is-open is-collapsible';
+        group.dataset.group = 'other';
+        group.innerHTML =
+            '<button type="button" class="sidebar-group-toggle" aria-expanded="true">' +
+            '<span class="sidebar-group-chevron-btn" aria-hidden="true">' +
+            '<svg class="sidebar-group-chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>' +
+            '</span>' +
+            '<span class="sidebar-group-icon folder-icon folder-icon-folder" aria-hidden="true"></span>' +
+            '<span class="sidebar-group-title">Folders</span>' +
+            '</button>' +
+            '<div class="sidebar-group-items"></div>';
+        list.appendChild(group);
+        return group;
+    }
+
+    function applyCorrespondentFolders(folders) {
+        if (!folders || !folders.length) return;
+        var group = ensureSidebarFoldersGroup();
+        if (!group) return;
+        var itemsEl = group.querySelector('.sidebar-group-items');
+        if (!itemsEl) return;
+
+        folders.forEach(function (folder) {
+            if (!folder || !folder.path) return;
+            if (sidebarHasFolderLink(folder.path)) return;
+            itemsEl.appendChild(createSidebarFolderLink(folder));
+        });
+
+        group.classList.add('is-open');
+        var toggle = group.querySelector('.sidebar-group-toggle');
+        if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    }
+
+    function clearPostSendFolderPolls() {
+        postSendFolderPollTimers.forEach(function (id) { window.clearTimeout(id); });
+        postSendFolderPollTimers = [];
+    }
+
+    function startPostSendFolderPolls(folderB64List) {
+        if (!folderB64List || !folderB64List.length) return;
+        clearPostSendFolderPolls();
+        [1000, 3000, 6000, 12000, 20000, 30000].forEach(function (delay) {
+            postSendFolderPollTimers.push(window.setTimeout(function () {
+                var card = getListCard();
+                var currentB64 = card ? card.getAttribute('data-folder-b64') : '';
+                if (!currentB64 || folderB64List.indexOf(currentB64) < 0) return;
+                scheduleMailPoll(true, true);
+            }, delay));
+        });
+        postSendFolderPollTimers.push(window.setTimeout(function () {
+            setMailListLoading(false);
+        }, 32000));
+    }
+
+    function setMailListLoading(loading) {
+        var card = getListCard();
+        var loadingEl = document.getElementById('mail-list-loading');
+        var emptyEl = document.getElementById('mail-list-empty');
+        var scroller = document.getElementById('mail-list-scroller');
+        var mobile = document.getElementById('mail-list-mobile');
+        if (!card) return;
+
+        card.classList.toggle('is-syncing', !!loading);
+
+        if (loading) {
+            if (!loadingEl) {
+                loadingEl = document.createElement('div');
+                loadingEl.id = 'mail-list-loading';
+                loadingEl.className = 'mail-list-loading';
+                loadingEl.setAttribute('aria-live', 'polite');
+                loadingEl.innerHTML =
+                    '<span class="reading-pane-spinner" aria-hidden="true"></span>' +
+                    '<span>Loading messages…</span>';
+                var banner = document.getElementById('select-all-folder-banner');
+                if (banner && banner.parentNode) {
+                    banner.parentNode.insertBefore(loadingEl, banner.nextSibling);
+                } else {
+                    card.appendChild(loadingEl);
+                }
+            }
+            loadingEl.hidden = false;
+            if (emptyEl) emptyEl.hidden = true;
+            if (scroller) scroller.hidden = true;
+            if (mobile) mobile.hidden = true;
+            return;
+        }
+
+        if (loadingEl) loadingEl.hidden = true;
+        var hasRows = document.querySelector('#mail-list-body .mail-row, #mail-list-mobile .mail-card');
+        if (hasRows) {
+            ensureListVisible(card);
+        } else if (emptyEl) {
+            emptyEl.hidden = false;
+        }
+    }
+
+    function removeCorrespondentFolder(info) {
+        if (!info || !info.path) return;
+        var target = String(info.path).toLowerCase();
+        document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
+            if ((link.getAttribute('data-folder-path') || '').toLowerCase() === target) {
+                link.remove();
+            }
+        });
+
+        var group = document.querySelector('.sidebar-group[data-group="other"]');
+        if (group) {
+            var items = group.querySelector('.sidebar-group-items');
+            if (items && !items.querySelector('.sidebar-link')) {
+                var divider = group.previousElementSibling;
+                if (divider && divider.classList.contains('sidebar-divider')) {
+                    divider.remove();
+                }
+                group.remove();
+            }
+        }
+
+        var card = getListCard();
+        var plain = card ? (card.getAttribute('data-folder-plain') || '').toLowerCase() : '';
+        if (plain === target && info.redirect) {
+            loadFolderAjax(info.redirect, true);
+        }
+    }
+
     function refreshUnreadBadges() {
         fetch(apiUrl('folders/unread?light=1'), {
             credentials: 'same-origin',
@@ -3316,7 +3491,7 @@
         afterSendBadgePolls++;
         afterSendBadgePollInFlight = true;
 
-        fetch(apiUrl('folders/unread?after_send=1'), {
+        fetch(apiUrl('folders/unread?light=1'), {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })
@@ -3449,6 +3624,7 @@
                     });
 
                     if (newMessages.length > 0) {
+                        setMailListLoading(false);
                         ensureListVisible(liveCard);
                         var tbody = document.getElementById('mail-list-body');
                         var mobile = document.getElementById('mail-list-mobile');
@@ -4065,6 +4241,9 @@
             if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
                 applyUnreadCounts(data.unread_counts);
             }
+            if (data && data.remove_correspondent_folder) {
+                removeCorrespondentFolder(data.remove_correspondent_folder);
+            }
             return data;
         }).catch(function (err) {
             if (!options.suppressErrorToast) {
@@ -4673,6 +4852,17 @@
         } catch (e) { /* ignore malformed JSON */ }
 
         if (!data.domains.length || !data.contacts.length) {
+            var sendAsEmail = (form.dataset.sendAsEmail || '').trim().toLowerCase();
+            if (sendAsEmail && sendAsEmail.indexOf('@') >= 0) {
+                var sendParts = sendAsEmail.split('@');
+                var sendDomain = sendParts.slice(1).join('@');
+                if (sendDomain) data.domains = [sendDomain];
+                data.contacts = [{
+                    email: sendAsEmail,
+                    name: sendAsEmail,
+                    local: sendParts[0] || ''
+                }];
+            }
             var domainSet = {};
             var contactMap = {};
             form.querySelectorAll('#from_email option').forEach(function (opt) {

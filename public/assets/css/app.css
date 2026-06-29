@@ -5147,6 +5147,17 @@ body:has(.mail-workspace) {
     border-top: 1px solid var(--color-border-subtle);
 }
 
+.mail-list-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    min-height: 10rem;
+    padding: 2rem 1rem;
+    color: var(--color-text-muted);
+}
+
 .compose-panel-loading {
     display: flex;
     flex-direction: column;
@@ -5657,6 +5668,16 @@ body:has(.mail-workspace) {
 
 .compose-outlook-subject-input:focus {
     outline: none;
+}
+
+.compose-send-as-static {
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-muted, #f8f9fa);
+    color: var(--color-text);
+    font-size: 0.9375rem;
+    line-height: 1.4;
 }
 
 .compose-outlook-from-wrap {

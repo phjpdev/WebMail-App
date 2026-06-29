@@ -208,6 +208,10 @@ class ComposeController
             $options['bcc'] = implode(', ', $bccParsed['valid']);
         }
 
+        $toHeader = implode(', ', $toParsed['valid']);
+        $ccHeader = $ccParsed['valid'] !== [] ? implode(', ', $ccParsed['valid']) : '';
+        $bccHeader = $bccParsed['valid'] !== [] ? implode(', ', $bccParsed['valid']) : '';
+
         if ($bodyHtml !== '') {
             $options['html_body'] = HtmlSanitizer::sanitize($bodyHtml);
         }
@@ -237,7 +241,7 @@ class ComposeController
             $sentFolder = $this->resolveSentFolderFast();
             $sentMime = $smtp->getLastMime();
             $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
-            $destPaths = FilterService::predictDestinationPaths($to, $cc, $bcc, $fromEmail);
+            $destPaths = FilterService::predictDestinationPaths($toHeader, $ccHeader, $bccHeader, $fromEmail);
             $sentMessageId = extract_message_id_from_mime($sentMime);
 
             $threadReply = null;
@@ -291,13 +295,15 @@ class ComposeController
                 });
             }
 
-            foreach ($destPaths as $destPath) {
-                mail_note_employee_correspondent((string) $destPath);
-            }
-            mail_note_correspondents_from_addresses($to, $cc, $bcc);
+            with_session_write(function () use ($destPaths, $toHeader, $ccHeader, $bccHeader): void {
+                foreach ($destPaths as $destPath) {
+                    mail_note_employee_correspondent((string) $destPath);
+                }
+                mail_note_correspondents_from_addresses($toHeader, $ccHeader, $bccHeader);
+            });
 
             if (wants_json()) {
-                json_response([
+                $jsonPayload = [
                     'ok' => true,
                     'message' => 'Email sent successfully.',
                     'return_folder' => $contextFolder !== ''
@@ -312,7 +318,13 @@ class ComposeController
                     'thread_preview' => $threadReply !== null
                         ? mail_conversation_snippet((string) ($threadReply['reply']['body'] ?? ''))
                         : null,
-                ]);
+                ];
+                if (($user = Auth::user()) !== null && ($user['role'] ?? '') === 'employee') {
+                    $jsonPayload['correspondent_folders'] = mail_correspondent_folders_sidebar_payload(
+                        (int) ($user['id'] ?? 0)
+                    );
+                }
+                json_response($jsonPayload);
             }
 
             dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
@@ -413,11 +425,26 @@ class ComposeController
             $_SESSION['_post_send_dest_paths'] = $destPaths;
             $_SESSION['_post_send_from'] = $fromEmail;
             $_SESSION['_post_send_message_id'] = $sentMessageId;
+
             foreach ($destPaths as $path) {
-                FolderCache::bumpUnread($path, 1);
+                mail_note_employee_correspondent((string) $path);
             }
-            if ($destPaths !== []) {
-                FolderCache::setPendingBadgePaths($destPaths);
+
+            $pendingBadges = [];
+            foreach ($destPaths as $path) {
+                $resolved = FolderCache::resolvePath((string) $path);
+                if ($resolved === '') {
+                    continue;
+                }
+                if (employee_outbound_correspondent_folder($resolved)) {
+                    FolderCache::setUnreadCount($resolved, 0);
+                    continue;
+                }
+                FolderCache::bumpUnread($resolved, 1);
+                $pendingBadges[] = $resolved;
+            }
+            if ($pendingBadges !== []) {
+                FolderCache::setPendingBadgePaths($pendingBadges);
             }
             if (count($destPaths) > 1 && $sentMessageId !== null && $sentMessageId !== '') {
                 FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
@@ -799,6 +826,7 @@ class ComposeController
         }
 
         $aliasService = new AliasService();
+        $sessionUser = Auth::user();
         $folderData = $this->isEmbedRequest()
             ? ['folders' => [], 'unread_counts' => []]
             : FolderCache::load(skipUnreadRefresh: true);
@@ -811,11 +839,18 @@ class ComposeController
             );
         }
 
+        $composeAliases = $aliasService->listForCompose($sessionUser);
+        $sendAsFixed = $sessionUser !== null && ($sessionUser['role'] ?? '') === 'employee';
+        if ($sendAsFixed) {
+            $defaults['from_email'] = $aliasService->userAlias((int) ($sessionUser['id'] ?? 0));
+        }
+
         $viewData = array_merge([
             'title' => ucfirst(str_replace('-', ' ', $mode)),
             'mode' => $mode,
-            'user' => Auth::user(),
-            'aliases' => $aliasService->listActive(),
+            'user' => $sessionUser,
+            'aliases' => $composeAliases,
+            'send_as_fixed' => $sendAsFixed,
             'to' => $defaults['to'] ?? '',
             'cc' => $defaults['cc'] ?? '',
             'bcc' => $defaults['bcc'] ?? '',
@@ -1213,16 +1248,25 @@ class ComposeController
 
         // Do not hold the session lock across filter/IMAP work — other compose
         // requests would block until this background pass finishes.
-        $filterResult = FilterService::runBackground(true, 15);
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
+                try {
+                    MailCacheService::syncFolderHeaders($imap, (string) $destPath, $headerLimit);
+                } catch (\Throwable $e) {
+                    app_log('Post-send priority sync failed for ' . $destPath . ': ' . $e->getMessage());
+                }
+            }
+            reconcile_correspondent_outbound_echoes($imap, $destPaths, $fromEmail, $sentMessageId);
+        }
+
+        $filterResult = FilterService::runBackground(true, 10);
         $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
             ? $filterResult['refresh_paths']
             : [];
 
-        $imap = new ImapService();
         if ($imap->connect()) {
             if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
-                $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
-                FilterService::runBackground(true, 8);
                 $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
             } else {
                 $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
@@ -1241,6 +1285,7 @@ class ComposeController
             }
 
             $pathsToSync = array_values(array_unique(array_filter(array_merge(
+                $destPaths,
                 [$inbox, $contextFolder, $sentFolder],
                 $routedPaths
             ))));
