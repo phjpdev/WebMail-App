@@ -1350,6 +1350,117 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
 }
 
 /**
+ * Prefer the thread entry with more content (cross-folder echoes often differ by UID only).
+ *
+ * @param array<string, mixed> $a
+ * @param array<string, mixed> $b
+ * @return array<string, mixed>
+ */
+function mail_prefer_richer_thread_entry(array $a, array $b): array
+{
+    $aPending = !empty($a['is_pending_reply']);
+    $bPending = !empty($b['is_pending_reply']);
+    if ($aPending !== $bPending) {
+        return $aPending ? $b : $a;
+    }
+
+    $aBody = strlen(trim((string) ($a['body'] ?? '')));
+    $bBody = strlen(trim((string) ($b['body'] ?? '')));
+    if ($aBody !== $bBody) {
+        return $aBody > $bBody ? $a : $b;
+    }
+
+    $aHtml = strlen(trim((string) ($a['body_html'] ?? '')));
+    $bHtml = strlen(trim((string) ($b['body_html'] ?? '')));
+    if ($aHtml !== $bHtml) {
+        return $aHtml > $bHtml ? $a : $b;
+    }
+
+    $aAtt = is_array($a['attachments'] ?? null) ? count($a['attachments']) : 0;
+    $bAtt = is_array($b['attachments'] ?? null) ? count($b['attachments']) : 0;
+    if ($aAtt !== $bAtt) {
+        return $aAtt > $bAtt ? $a : $b;
+    }
+
+    $aUid = (int) ($a['imap_uid'] ?? 0);
+    $bUid = (int) ($b['imap_uid'] ?? 0);
+    if ($aUid !== $bUid) {
+        return $aUid > $bUid ? $a : $b;
+    }
+
+    return $a;
+}
+
+/**
+ * Stable sender+body key for deduping synced mail vs optimistic pending copies.
+ *
+ * @param array<string, mixed> $entry
+ */
+function mail_thread_content_dedupe_key(array $entry): string
+{
+    $email = strtolower(normalize_email_token((string) ($entry['from'] ?? '')));
+    $body = mail_normalize_thread_body((string) ($entry['body'] ?? ''));
+    if ($email === '' || $body === '') {
+        return '';
+    }
+
+    return $email . '|' . $body;
+}
+
+/**
+ * Collapse duplicate sends in the same minute from the same sender (empty body-less echoes).
+ *
+ * @param list<array<string, mixed>> $entries
+ * @return list<array<string, mixed>>
+ */
+function mail_collapse_thread_echo_entries(array $entries): array
+{
+    if (count($entries) <= 1) {
+        return $entries;
+    }
+
+    $byContent = [];
+    $noContent = [];
+    foreach ($entries as $entry) {
+        $contentKey = mail_thread_content_dedupe_key($entry);
+        if ($contentKey === '') {
+            $noContent[] = $entry;
+            continue;
+        }
+        if (!isset($byContent[$contentKey])) {
+            $byContent[$contentKey] = $entry;
+            continue;
+        }
+        $byContent[$contentKey] = mail_prefer_richer_thread_entry($byContent[$contentKey], $entry);
+    }
+
+    $entries = array_merge(array_values($byContent), $noContent);
+    if (count($entries) <= 1) {
+        return $entries;
+    }
+
+    $bySenderMinute = [];
+    foreach ($entries as $entry) {
+        $email = strtolower(normalize_email_token((string) ($entry['from'] ?? '')));
+        $ts = strtotime((string) ($entry['date'] ?? '')) ?: 0;
+        $minute = $ts > 0 ? (int) floor($ts / 60) : 0;
+        $key = $email . '|' . $minute;
+        if ($email === '' || $minute <= 0) {
+            $key = 'uid:' . (int) ($entry['imap_uid'] ?? 0);
+        }
+
+        if (!isset($bySenderMinute[$key])) {
+            $bySenderMinute[$key] = $entry;
+            continue;
+        }
+
+        $bySenderMinute[$key] = mail_prefer_richer_thread_entry($bySenderMinute[$key], $entry);
+    }
+
+    return array_values($bySenderMinute);
+}
+
+/**
  * @param list<array<string, mixed>> $entries
  * @return list<array<string, mixed>>
  */
@@ -1361,11 +1472,17 @@ function mail_dedupe_thread_entries(array $entries): array
 
     $byFp = [];
     foreach ($entries as $entry) {
+        $body = trim((string) ($entry['body'] ?? ''));
+        $entryUid = (int) ($entry['imap_uid'] ?? 0);
+        if ($body === '' && $entryUid <= 0) {
+            continue;
+        }
+
         $fp = mail_thread_segment_fingerprint([
             'from' => (string) ($entry['from'] ?? ''),
             'date' => (string) ($entry['date'] ?? ''),
             'body' => (string) ($entry['body'] ?? ''),
-            'imap_uid' => (int) ($entry['imap_uid'] ?? 0),
+            'imap_uid' => $entryUid,
         ]);
         if ($fp === '||' || str_ends_with($fp, '|')) {
             continue;
@@ -1374,18 +1491,10 @@ function mail_dedupe_thread_entries(array $entries): array
             $byFp[$fp] = $entry;
             continue;
         }
-        $existing = $byFp[$fp];
-        $entryUid = (int) ($entry['imap_uid'] ?? 0);
-        $existingUid = (int) ($existing['imap_uid'] ?? 0);
-        if ($entryUid > 0 && $existingUid <= 0) {
-            $byFp[$fp] = $entry;
-        } elseif ($entryUid > 0 && $existingUid > 0
-            && strlen((string) ($entry['body'] ?? '')) > strlen((string) ($existing['body'] ?? ''))) {
-            $byFp[$fp] = $entry;
-        }
+        $byFp[$fp] = mail_prefer_richer_thread_entry($byFp[$fp], $entry);
     }
 
-    return array_values($byFp);
+    return mail_collapse_thread_echo_entries(array_values($byFp));
 }
 
 /**
@@ -4355,15 +4464,41 @@ function mail_dedupe_thread_segments(array $segments): array
     $seen = [];
 
     foreach ($segments as $segment) {
-        $fp = mail_thread_segment_fingerprint($segment);
-        if ($fp === '||' || isset($seen[$fp])) {
+        $body = trim((string) ($segment['body'] ?? ''));
+        $uid = (int) ($segment['imap_uid'] ?? 0);
+        if ($body === '' && $uid <= 0 && empty($segment['attachments'])) {
             continue;
         }
-        $seen[$fp] = true;
-        $out[] = $segment;
+
+        $fp = mail_thread_segment_fingerprint([
+            'from' => (string) ($segment['from'] ?? ''),
+            'date' => (string) ($segment['date'] ?? ''),
+            'body' => (string) ($segment['body'] ?? ''),
+            'imap_uid' => $uid,
+        ]);
+        if ($fp === '||' || str_ends_with($fp, '|')) {
+            continue;
+        }
+        if (!isset($seen[$fp])) {
+            $seen[$fp] = true;
+            $out[] = $segment;
+            continue;
+        }
+
+        foreach ($out as $i => $existing) {
+            if (mail_thread_segment_fingerprint([
+                'from' => (string) ($existing['from'] ?? ''),
+                'date' => (string) ($existing['date'] ?? ''),
+                'body' => (string) ($existing['body'] ?? ''),
+                'imap_uid' => (int) ($existing['imap_uid'] ?? 0),
+            ]) === $fp) {
+                $out[$i] = mail_prefer_richer_thread_entry($existing, $segment);
+                break;
+            }
+        }
     }
 
-    return $out;
+    return mail_collapse_thread_echo_entries($out);
 }
 
 function mail_clear_thread_reply_cache(string $folderPath, int $uid): void
@@ -4386,10 +4521,15 @@ function mail_clear_thread_reply_cache(string $folderPath, int $uid): void
 function mail_filter_redundant_pending_replies(array $segments, array $pending): array
 {
     $fingerprints = [];
+    $contentKeys = [];
     foreach ($segments as $segment) {
         $fp = mail_thread_segment_fingerprint($segment);
         if ($fp !== '||') {
             $fingerprints[$fp] = true;
+        }
+        $contentKey = mail_thread_content_dedupe_key($segment);
+        if ($contentKey !== '') {
+            $contentKeys[$contentKey] = true;
         }
     }
 
@@ -4397,9 +4537,14 @@ function mail_filter_redundant_pending_replies(array $segments, array $pending):
         ? mail_normalize_thread_body((string) ($segments[0]['body'] ?? ''))
         : '';
 
-    return array_values(array_filter($pending, static function (array $reply) use ($fingerprints, $newestBody): bool {
+    return array_values(array_filter($pending, static function (array $reply) use ($fingerprints, $contentKeys, $newestBody): bool {
         $body = mail_normalize_thread_body((string) ($reply['body'] ?? ''));
         if ($body === '') {
+            return false;
+        }
+
+        $contentKey = mail_thread_content_dedupe_key($reply);
+        if ($contentKey !== '' && isset($contentKeys[$contentKey])) {
             return false;
         }
 
