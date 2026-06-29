@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS mail_index (
     folder_path VARCHAR(255) NOT NULL,
     imap_uid INT UNSIGNED NOT NULL,
     from_addr VARCHAR(512) NOT NULL DEFAULT '',
+    to_addrs TEXT NULL,
+    cc_addrs TEXT NULL,
     subject VARCHAR(998) NOT NULL DEFAULT '',
     msg_date DATETIME NULL,
     seen TINYINT(1) NOT NULL DEFAULT 0,

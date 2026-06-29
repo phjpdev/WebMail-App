@@ -78,7 +78,9 @@ class MailCacheService
 
         $rows = Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
-                    b.plain_body, b.html_body, b.to_addrs
+                    b.plain_body, b.html_body,
+                    COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                    COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
              FROM mail_index i
              LEFT JOIN mail_bodies b
                 ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
@@ -336,12 +338,19 @@ class MailCacheService
             return;
         }
 
+        // Keep any recipients we already have when an overview row omits them, so
+        // correspondent-folder privacy matching doesn't regress between syncs.
+        $to = (string) ($msg['to'] ?? '');
+        $cc = (string) ($msg['cc'] ?? '');
+
         Database::query(
             'INSERT INTO mail_index
-                (folder_path, imap_uid, from_addr, subject, msg_date, seen, flagged, has_attachment, size, synced_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, flagged, has_attachment, size, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE
                 from_addr = VALUES(from_addr),
+                to_addrs = COALESCE(NULLIF(VALUES(to_addrs), \'\'), to_addrs),
+                cc_addrs = COALESCE(NULLIF(VALUES(cc_addrs), \'\'), cc_addrs),
                 subject = VALUES(subject),
                 msg_date = VALUES(msg_date),
                 seen = GREATEST(seen, VALUES(seen)),
@@ -353,6 +362,8 @@ class MailCacheService
                 $folderPath,
                 $uid,
                 (string) ($msg['from'] ?? ''),
+                $to !== '' ? $to : null,
+                $cc !== '' ? $cc : null,
                 (string) ($msg['subject'] ?? '(no subject)'),
                 self::parseMsgDate($msg['date'] ?? null),
                 !empty($msg['seen']) ? 1 : 0,
@@ -674,9 +685,47 @@ class MailCacheService
      */
     public static function countUnseenInIndex(string $folderPath): int
     {
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null) {
+            return self::countVisibleUnseenInIndex($folderPath, $privacyEmails);
+        }
+
         $row = Database::fetchOne(
             'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 0',
             [$folderPath]
+        );
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    /**
+     * Unread count restricted to messages the current employee is a party to.
+     * Used for correspondent-folder badges so they never show counts for mail
+     * the viewer cannot see.
+     *
+     * @param list<string> $emails lowercase participant addresses
+     */
+    public static function countVisibleUnseenInIndex(string $folderPath, array $emails): int
+    {
+        if ($emails === []) {
+            return 0;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        $clauses = [];
+        $params = [$folderPath];
+        foreach ($emails as $email) {
+            $like = '%' . strtolower($email) . '%';
+            $clauses[] = '(LOWER(from_addr) LIKE ? OR LOWER(COALESCE(to_addrs, \'\')) LIKE ? OR LOWER(COALESCE(cc_addrs, \'\')) LIKE ?)';
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+        }
+
+        $row = Database::fetchOne(
+            'SELECT COUNT(*) AS c FROM mail_index
+             WHERE folder_path = ? AND seen = 0 AND (' . implode(' OR ', $clauses) . ')',
+            $params
         );
 
         return (int) ($row['c'] ?? 0);
@@ -696,6 +745,16 @@ class MailCacheService
             FolderCache::setUnreadCount($folderPath, 0);
 
             return 0;
+        }
+
+        // Correspondent folders: the badge must reflect only mail the viewer is a
+        // party to, never the whole-folder IMAP unseen count. Set it exactly.
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null) {
+            $truth = self::countVisibleUnseenInIndex($folderPath, $privacyEmails);
+            FolderCache::setUnreadCount($folderPath, $truth);
+
+            return $truth;
         }
 
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
@@ -1041,6 +1100,7 @@ class MailCacheService
             'uid' => (int) $row['imap_uid'],
             'from' => $from,
             'to' => $to,
+            'cc' => (string) ($row['cc_addrs'] ?? ''),
             'list_from' => $listFrom,
             'snippet' => $snippet,
             'subject' => (string) ($row['subject'] ?? '(no subject)'),

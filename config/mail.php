@@ -22,6 +22,11 @@ return [
         'port' => (int) env('IMAP_PORT', 993),
         'encryption' => env('IMAP_ENCRYPTION', 'ssl'),
         'validate_cert' => $resolveValidateCert('IMAP_VALIDATE_CERT'),
+        // Bound how long a single IMAP connect / read may block so a throttled
+        // or slow mail server can't tie up PHP workers (which makes the whole
+        // app feel frozen, e.g. right after sending). Fail fast and retry.
+        'open_timeout' => max(1, (int) env('IMAP_OPEN_TIMEOUT', 8)),
+        'io_timeout' => max(1, (int) env('IMAP_IO_TIMEOUT', 12)),
     ],
     'smtp' => [
         'host' => env('SMTP_HOST', ''),

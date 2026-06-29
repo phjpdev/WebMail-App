@@ -578,13 +578,18 @@ class FolderCache
         }
 
         $prefix = $this->employeeMailboxPrefix((int) $user['id']);
+        $privacyEmails = mail_user_emails((int) $user['id']);
         $filtered = [];
         $counts = [];
 
         foreach ($data['folders'] as $folder) {
             if ($this->isEmployeeFolderAllowed($folder['path'], $prefix)) {
                 $filtered[] = $folder;
-                $counts[$folder['path']] = $data['unread_counts'][$folder['path']] ?? 0;
+                // Correspondent folders show the whole-mailbox IMAP unseen count;
+                // replace it with the viewer-visible count so badges aren't phantom.
+                $counts[$folder['path']] = employee_is_correspondent_folder($folder['path'])
+                    ? \App\Services\MailCacheService::countVisibleUnseenInIndex($folder['path'], $privacyEmails)
+                    : ($data['unread_counts'][$folder['path']] ?? 0);
             }
         }
 

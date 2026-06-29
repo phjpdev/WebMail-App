@@ -974,6 +974,155 @@ function employee_is_correspondent_folder(string $folderPath): bool
 }
 
 /**
+ * Email addresses the current employee must be a party to in order to view a
+ * message inside a correspondent folder.
+ *
+ * Returns null when no privacy restriction applies — i.e. the viewer is an
+ * admin, the folder is the employee's own mailbox, or it is not a correspondent
+ * folder at all. When a (possibly empty) list is returned, only messages whose
+ * participants include one of these addresses may be shown; an empty list means
+ * nothing in that folder is visible to this user.
+ *
+ * @return list<string>|null
+ */
+function employee_correspondent_privacy_emails(string $folderPath): ?array
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return null;
+    }
+
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return null;
+    }
+
+    return mail_user_emails((int) ($user['id'] ?? 0));
+}
+
+/**
+ * True when one of the user's addresses appears among a message's participants
+ * (From / To / Cc / Bcc / Reply-To / Sender / Delivered-To).
+ *
+ * @param array<string, mixed> $message
+ * @param list<string> $userEmails lowercase addresses
+ */
+function mail_message_involves_user(array $message, array $userEmails): bool
+{
+    if ($userEmails === []) {
+        return false;
+    }
+
+    $haystack = '';
+    foreach (['from', 'to', 'cc', 'bcc', 'reply_to', 'sender', 'delivered_to'] as $field) {
+        $value = $message[$field] ?? '';
+        if (is_string($value) && $value !== '') {
+            $haystack .= ' ' . strtolower($value);
+        }
+    }
+
+    if ($haystack === '') {
+        return false;
+    }
+
+    foreach ($userEmails as $email) {
+        if ($email !== '' && str_contains($haystack, $email)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Apply correspondent-folder privacy to a message list: in another employee's
+ * mailbox, hide messages the current user is not a party to. No-op for the
+ * user's own mailbox, non-correspondent folders, and admins.
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_filter_correspondent_list(string $folderPath, array $list): array
+{
+    $emails = employee_correspondent_privacy_emails($folderPath);
+    if ($emails === null || !isset($list['messages']) || !is_array($list['messages'])) {
+        return $list;
+    }
+
+    $before = count($list['messages']);
+    $filtered = [];
+    foreach ($list['messages'] as $msg) {
+        if (is_array($msg) && mail_message_involves_user($msg, $emails)) {
+            $filtered[] = $msg;
+        }
+    }
+
+    $removedCount = $before - count($filtered);
+    if ($removedCount > 0) {
+        $list['total'] = max(0, (int) ($list['total'] ?? 0) - $removedCount);
+        if ($filtered === []) {
+            $list['total_pages'] = 0;
+            $list['page'] = 1;
+        } elseif (isset($list['per_page'])) {
+            $perPage = max(1, (int) $list['per_page']);
+            $list['total_pages'] = (int) max(1, (int) ceil((int) $list['total'] / $perPage));
+        }
+    }
+
+    $list['messages'] = $filtered;
+
+    return $list;
+}
+
+/**
+ * Restrict a list of UIDs in a correspondent folder to those the current user
+ * is a party to (used to guard snippet/attachment endpoints that accept
+ * arbitrary UIDs). Returns the input unchanged when no restriction applies.
+ *
+ * @param list<int> $uids
+ * @return list<int>
+ */
+function employee_visible_correspondent_uids(string $folderPath, array $uids): array
+{
+    $emails = employee_correspondent_privacy_emails($folderPath);
+    if ($emails === null) {
+        return $uids;
+    }
+    if ($emails === [] || $uids === []) {
+        return [];
+    }
+
+    $indexPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $placeholders = implode(',', array_fill(0, count($uids), '?'));
+
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, b.to_addrs, b.cc_addrs
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+                ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path = ? AND i.imap_uid IN (' . $placeholders . ')',
+            array_merge([$indexPath], $uids)
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $allowed = [];
+    foreach ($rows as $row) {
+        $message = [
+            'from' => (string) ($row['from_addr'] ?? ''),
+            'to' => (string) ($row['to_addrs'] ?? ''),
+            'cc' => (string) ($row['cc_addrs'] ?? ''),
+        ];
+        if (mail_message_involves_user($message, $emails)) {
+            $allowed[(int) $row['imap_uid']] = true;
+        }
+    }
+
+    return array_values(array_filter($uids, static fn (int $uid): bool => isset($allowed[$uid])));
+}
+
+/**
  * True when an employee sent mail into another employee's mailbox folder.
  */
 function employee_outbound_correspondent_folder(string $folderPath, ?array $user = null): bool

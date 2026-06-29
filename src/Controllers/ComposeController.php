@@ -574,6 +574,12 @@ class ComposeController
             MailCacheService::saveBody($folderPath, $message);
         }
 
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null && !mail_message_involves_user($message, $privacyEmails)) {
+            flash('error', 'Message not found.');
+            redirect('folder/' . encode_folder_path($folderPath));
+        }
+
         $aliasService = new AliasService();
         $quoted = $this->buildQuotedBody($message);
         // Default the From to the alias the message was received on, falling back

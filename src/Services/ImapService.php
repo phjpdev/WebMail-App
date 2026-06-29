@@ -57,6 +57,18 @@ class ImapService
         imap_errors();
         imap_alerts();
 
+        // Bound connect/read/write so a throttled mail server fails fast instead
+        // of hanging the request (and exhausting Apache/PHP workers, which makes
+        // unrelated folder opens appear frozen).
+        if (function_exists('imap_timeout')) {
+            $openTimeout = (int) ($config['imap']['open_timeout'] ?? 8);
+            $ioTimeout = (int) ($config['imap']['io_timeout'] ?? 12);
+            @imap_timeout(IMAP_OPENTIMEOUT, max(1, $openTimeout));
+            @imap_timeout(IMAP_READTIMEOUT, max(1, $ioTimeout));
+            @imap_timeout(IMAP_WRITETIMEOUT, max(1, $ioTimeout));
+            @imap_timeout(IMAP_CLOSETIMEOUT, max(1, $openTimeout));
+        }
+
         // Skip slow SASL negotiation (GSSAPI/NTLM) and go straight to LOGIN —
         // this can cut 1–2 seconds off every connection on some mail hosts.
         $connection = @imap_open(
@@ -211,6 +223,7 @@ class ImapService
             $messages[] = [
                 'uid' => $uid,
                 'from' => isset($row->from) ? $this->decodeMimeHeader($row->from) : '',
+                'to' => isset($row->to) ? $this->decodeMimeHeader($row->to) : '',
                 'subject' => isset($row->subject) ? $this->decodeMimeHeader($row->subject) : '(no subject)',
                 'date' => $row->date ?? '',
                 'seen' => (bool) ($row->seen ?? false),

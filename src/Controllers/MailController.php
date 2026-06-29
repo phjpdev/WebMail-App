@@ -192,10 +192,15 @@ class MailController
         $prefs = user_preferences();
         $list = mail_filter_removed_messages($folderPath, $list);
 
+        // Decide polling state from the loaded folder data, before privacy
+        // trimming, so a folder with no viewer-visible mail doesn't poll forever.
         $listAwaitingSync = $query === ''
             && employee_is_correspondent_folder($folderPath)
             && $servedFromCache
             && (!empty($list['stale']) || (int) ($list['total'] ?? 0) === 0);
+
+        // Correspondent-folder privacy: hide messages the viewer is not a party to.
+        $list = employee_filter_correspondent_list($folderPath, $list);
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -485,6 +490,9 @@ class MailController
             }
         }
 
+        // Correspondent-folder privacy: hide messages the viewer is not a party to.
+        $list = employee_filter_correspondent_list($folderPath, $list);
+
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
 
         $messages = [];
@@ -625,6 +633,11 @@ class MailController
 
         $uids = array_values(array_unique(array_filter(array_map('intval', explode(',', $raw)), fn ($u) => $u > 0)));
         $uids = array_slice($uids, 0, 50);
+        $uids = employee_visible_correspondent_uids($folderPath, $uids);
+        if ($uids === []) {
+            echo json_encode(['ok' => true, 'has_attachment' => []]);
+            return;
+        }
 
         $imap = new ImapService();
         if (!$imap->connect() || !$imap->openFolder($folderPath)) {
@@ -665,6 +678,11 @@ class MailController
 
         $uids = array_values(array_unique(array_filter(array_map('intval', explode(',', $raw)), fn ($u) => $u > 0)));
         $uids = array_slice($uids, 0, 20);
+        $uids = employee_visible_correspondent_uids($folderPath, $uids);
+        if ($uids === []) {
+            echo json_encode(['ok' => true, 'snippets' => []]);
+            return;
+        }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -784,6 +802,13 @@ class MailController
 
         $message = $imap->getMessageByUid($folderPath, $uid);
         if ($message === null) {
+            http_response_code(404);
+            echo json_encode(['ok' => false]);
+            return;
+        }
+
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null && !mail_message_involves_user($message, $privacyEmails)) {
             http_response_code(404);
             echo json_encode(['ok' => false]);
             return;
@@ -924,6 +949,11 @@ class MailController
         bool $markRead,
         ?callable &$deferred,
     ): ?array {
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null && !mail_message_involves_user($message, $privacyEmails)) {
+            return null;
+        }
+
         mail_note_correspondents_from_message($message);
 
         $wasUnread = empty($message['seen']);
@@ -992,6 +1022,15 @@ class MailController
         $imap = new ImapService();
         if (!$imap->connect()) {
             error_page(500, 'IMAP connection failed.');
+        }
+
+        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+        if ($privacyEmails !== null) {
+            $message = MailCacheService::getBody($folderPath, $uid)
+                ?? $imap->getMessageByUid($folderPath, $uid);
+            if ($message === null || !mail_message_involves_user($message, $privacyEmails)) {
+                error_page(404, 'Attachment not found.');
+            }
         }
 
         $attachment = $imap->getAttachment($folderPath, $uid, $partId);
