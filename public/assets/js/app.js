@@ -1003,9 +1003,11 @@
             reinitMailListColumn();
             if (data.list_loading) {
                 setMailListLoading(true);
+                window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
+                startPostSendFolderPolls([folderB64]);
+            } else {
+                window.setTimeout(function () { scheduleMailPoll(true, false); }, 250);
             }
-            window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
-            startPostSendFolderPolls([folderB64]);
             announceLive('Folder loaded: ' + (data.title || 'Mail'));
         }).catch(function (err) {
             if (seq !== folderLoadSeq) return;

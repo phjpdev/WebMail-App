@@ -314,6 +314,45 @@ class MailCacheService
         }
     }
 
+    /**
+     * Per-user read flags for a page of messages (one query instead of N).
+     *
+     * @param list<int> $uids
+     * @return array<int, true>
+     */
+    public static function batchUserReadState(string $folderPath, array $uids, ?int $userId = null): array
+    {
+        $userId = $userId ?? (int) (Auth::user()['id'] ?? 0);
+        $folderPath = self::indexFolderPath($folderPath);
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $uid): bool => $uid > 0)));
+        if ($userId <= 0 || $folderPath === '' || $uids === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$userId, $folderPath], $uids);
+
+        try {
+            $rows = Database::query(
+                "SELECT imap_uid FROM mail_user_read
+                 WHERE user_id = ? AND folder_path = ? AND imap_uid IN ({$placeholders})",
+                $params
+            )->fetchAll();
+        } catch (\Throwable) {
+            return [];
+        }
+
+        $read = [];
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid > 0) {
+                $read[$uid] = true;
+            }
+        }
+
+        return $read;
+    }
+
     public static function userHasRead(int $userId, string $folderPath, int $uid): bool
     {
         if ($userId <= 0 || $uid <= 0) {
@@ -474,31 +513,44 @@ class MailCacheService
                 }
             }
 
-            $msg = self::messageFromIndexRow($row, $folderPath);
-            $msg['seen'] = self::effectiveSeen($folderPath, $uid, $userId);
-
-            $key = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+            $key = mail_normalize_thread_subject((string) ($row['subject'] ?? ''));
             if ($key === '') {
                 $key = 'uid:' . $uid;
             }
 
-            mail_enrich_correspondent_folder_list_row($folderPath, $msg);
-
-            $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+            $msgTs = strtotime((string) ($row['msg_date'] ?? '')) ?: 0;
             $existingTs = isset($groups[$key])
-                ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
+                ? (strtotime((string) ($groups[$key]['msg_date'] ?? '')) ?: 0)
                 : -1;
             if (
                 !isset($groups[$key])
                 || $msgTs > $existingTs
-                || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0))
+                || ($msgTs === $existingTs && $uid > (int) ($groups[$key]['imap_uid'] ?? 0))
             ) {
-                $groups[$key] = $msg;
+                $groups[$key] = $row;
             }
         }
 
         $count = 0;
-        foreach ($groups as $msg) {
+        $groupRows = array_values($groups);
+        $readMap = self::usesPerUserRead($folderPath)
+            ? self::batchUserReadState($folderPath, array_map(
+                static fn (array $row): int => (int) ($row['imap_uid'] ?? 0),
+                $groupRows
+            ), $userId)
+            : null;
+
+        foreach ($groupRows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+
+            $msg = self::indexRowToMessage($row, $folderPath, $readMap, $userId);
+            if (mail_resolve_correspondent_thread_context($folderPath, $msg) !== null) {
+                mail_enrich_correspondent_folder_list_row($folderPath, $msg);
+            }
+
             if (empty($msg['seen'])) {
                 $count++;
             }
@@ -543,7 +595,6 @@ class MailCacheService
 
         $rows = Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
-                    b.plain_body, b.html_body,
                     COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
                     COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
              FROM mail_index i
@@ -559,9 +610,17 @@ class MailCacheService
             return null;
         }
 
+        $uids = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['imap_uid'] ?? 0),
+            $rows
+        ), static fn (int $uid): bool => $uid > 0)));
+        $readMap = self::usesPerUserRead($folderPath)
+            ? self::batchUserReadState($folderPath, $uids)
+            : null;
+
         $messages = [];
         foreach ($rows as $row) {
-            $messages[] = self::indexRowToMessage($row, $folderPath);
+            $messages[] = self::indexRowToMessage($row, $folderPath, $readMap);
         }
 
         return mail_filter_removed_messages($folderPath, [
@@ -1248,7 +1307,6 @@ class MailCacheService
                 }
             }
 
-            mail_enrich_correspondent_folder_list_row($folderPath, $msg);
             mail_enrich_list_with_thread_preview($folderPath, $msg);
             mail_note_correspondent_from_list_message($msg);
         }
@@ -1891,16 +1949,25 @@ class MailCacheService
      * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
-    private static function indexRowToMessage(array $row, string $folderPath): array
+    private static function indexRowToMessage(array $row, string $folderPath, ?array $readMap = null, ?int $viewerId = null): array
     {
         $from = (string) ($row['from_addr'] ?? '');
         $to = (string) ($row['to_addrs'] ?? '');
         $snippet = mail_list_snippet($row['plain_body'] ?? null, $row['html_body'] ?? null);
         $isDraft = is_draft_folder($folderPath);
         $listFrom = ($isDraft && $to !== '') ? format_mail_from($to) : format_mail_from($from);
+        $uid = (int) ($row['imap_uid'] ?? 0);
+
+        if (self::usesPerUserRead($folderPath)) {
+            $seen = $readMap !== null
+                ? isset($readMap[$uid])
+                : self::effectiveSeen($folderPath, $uid, $viewerId);
+        } else {
+            $seen = (bool) ($row['seen'] ?? false);
+        }
 
         return [
-            'uid' => (int) $row['imap_uid'],
+            'uid' => $uid,
             'from' => $from,
             'to' => $to,
             'cc' => (string) ($row['cc_addrs'] ?? ''),
@@ -1908,7 +1975,7 @@ class MailCacheService
             'snippet' => $snippet,
             'subject' => (string) ($row['subject'] ?? '(no subject)'),
             'date' => $row['msg_date'] ?? '',
-            'seen' => self::effectiveSeen($folderPath, (int) $row['imap_uid']),
+            'seen' => $seen,
             'flagged' => (bool) ($row['flagged'] ?? false),
             'has_attachment' => (bool) ($row['has_attachment'] ?? false),
             'size' => (int) ($row['size'] ?? 0),

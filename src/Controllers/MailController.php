@@ -179,8 +179,6 @@ class MailController
             $folderData['unread_counts'][$folderPath] = $folderUnread;
         }
 
-        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
-
         foreach ($folders as $folder) {
             $listed = (string) ($folder['path'] ?? '');
             if ($listed !== '' && strcasecmp($listed, $folderPath) === 0) {
@@ -204,6 +202,9 @@ class MailController
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
         $list = mail_group_list_by_thread($folderPath, $list);
+
+        // Thread preview runs only on grouped rows (one enrich pass per conversation).
+        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -397,7 +398,7 @@ class MailController
         if ($light && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
             if ($cached !== null) {
-                $this->echoFolderSyncJson($folderPath, $cached);
+                $this->echoFolderSyncJson($folderPath, $cached, light: true);
 
                 return;
             }
@@ -483,7 +484,7 @@ class MailController
     /**
      * @param array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int} $list
      */
-    private function echoFolderSyncJson(string $folderPath, array $list): void
+    private function echoFolderSyncJson(string $folderPath, array $list, bool $light = false): void
     {
         $list = mail_filter_removed_messages($folderPath, $list);
 
@@ -498,9 +499,11 @@ class MailController
         $list = employee_filter_correspondent_list($folderPath, $list);
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
-
-        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
         $list = mail_group_list_by_thread($folderPath, $list);
+
+        if (!$light) {
+            $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
+        }
 
         $messages = [];
 
@@ -1027,13 +1030,23 @@ class MailController
             $html = '<pre class="mail-plain">' . e((string) $message['plain']) . '</pre>';
         }
 
+        $sanitizedHtml = HtmlSanitizer::sanitize($html);
+        $conversationThread = mail_build_conversation_thread(
+            $message,
+            $sanitizedHtml,
+            $replyFrom,
+            $folderPath,
+            $uid,
+        );
+
         return [
             'folderPath' => $folderPath,
             'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
             'unreadCounts' => $unreadCounts,
             'message' => $message,
-            'sanitizedHtml' => HtmlSanitizer::sanitize($html),
+            'sanitizedHtml' => $sanitizedHtml,
+            'conversationThread' => $conversationThread,
             'replyFrom' => $replyFrom,
             'moveTargets' => array_values(array_filter(
                 $folders,

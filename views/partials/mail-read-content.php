@@ -14,7 +14,9 @@ $isPane = !empty($isPane);
 $folderB64 = $folderB64 ?? encode_folder_path($folderPath);
 $uid = (int) ($message['uid'] ?? 0);
 $isFlagged = !empty($message['flagged']);
-$thread = mail_build_conversation_thread($message, $sanitizedHtml, $replyFrom, $folderPath, $uid);
+$thread = is_array($conversationThread ?? null) && ($conversationThread ?? []) !== []
+    ? $conversationThread
+    : mail_build_conversation_thread($message, $sanitizedHtml, $replyFrom, $folderPath, $uid);
 $threadDisplay = $thread;
 $threadCount = count($threadDisplay);
 $threadSubject = mail_display_subject($message, $folderPath);

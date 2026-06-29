@@ -1187,12 +1187,18 @@ function mail_find_peer_employee_inbox_for_subject(int $employeeUserId, string $
  */
 function mail_find_messages_in_folder_for_subject(string $folderPath, string $baseSubject): array
 {
+    static $cache = [];
+
     $baseSubject = mail_normalize_thread_subject($baseSubject);
     if ($baseSubject === '') {
         return [];
     }
 
     $indexPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $cacheKey = strtolower($indexPath) . '|' . $baseSubject;
+    if (isset($cache[$cacheKey])) {
+        return $cache[$cacheKey];
+    }
 
     try {
         $rows = App\Database::query(
@@ -1263,7 +1269,7 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
         ];
     }
 
-    return $messages;
+    return $cache[$cacheKey] = $messages;
 }
 
 /**
@@ -1272,6 +1278,8 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
  */
 function mail_collect_employee_thread_entries(array $context, string $baseSubject): array
 {
+    static $cache = [];
+
     $employeeUserId = (int) ($context['employee_user_id'] ?? 0);
     $employeeInbox = (string) ($context['employee_inbox'] ?? '');
     $corrFolder = (string) ($context['corr_folder'] ?? '');
@@ -1279,8 +1287,13 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
         return [];
     }
 
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    $cacheKey = strtolower($employeeInbox) . '|' . strtolower($corrFolder) . '|' . $baseSubject . '|' . $employeeUserId;
+    if (isset($cache[$cacheKey])) {
+        return $cache[$cacheKey];
+    }
+
     if (!empty($context['peer_thread'])) {
-        $baseSubject = mail_normalize_thread_subject($baseSubject);
         $inboxMessages = mail_find_messages_in_folder_for_subject($employeeInbox, $baseSubject);
         foreach ($inboxMessages as &$message) {
             $fromEmployee = mail_is_sent_by_user((string) ($message['from'] ?? ''), $employeeUserId);
@@ -1289,13 +1302,12 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
         }
         unset($message);
 
-        return mail_dedupe_thread_entries(array_merge(
+        return $cache[$cacheKey] = mail_dedupe_thread_entries(array_merge(
             $inboxMessages,
             mail_find_correspondent_outbound_for_subject($corrFolder, $baseSubject, $employeeUserId),
         ));
     }
 
-    $baseSubject = mail_normalize_thread_subject($baseSubject);
     $entries = array_merge(
         mail_find_correspondent_outbound_for_subject($corrFolder, $baseSubject, $employeeUserId),
         mail_find_correspondent_inbound_for_subject(
@@ -1334,7 +1346,7 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
         }
     }
 
-    return mail_dedupe_thread_entries($entries);
+    return $cache[$cacheKey] = mail_dedupe_thread_entries($entries);
 }
 
 /**
