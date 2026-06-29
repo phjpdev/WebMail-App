@@ -385,6 +385,10 @@ class MailCacheService
         }
 
         $folderPath = self::indexFolderPath($folderPath);
+        if (mail_should_group_list_by_thread($folderPath)) {
+            return self::countThreadGroupedUnseenForUser($userId, $folderPath);
+        }
+
         $removed = mail_removed_uids_for_folder($folderPath);
 
         try {
@@ -423,6 +427,81 @@ class MailCacheService
                 continue;
             }
             $count++;
+        }
+
+        return $count;
+    }
+
+    /**
+     * Thread-grouped unread count for linked employee inboxes — aligned with the list.
+     */
+    public static function countThreadGroupedUnseenForUser(int $userId, string $folderPath): int
+    {
+        if ($userId <= 0) {
+            return 0;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        $removed = mail_removed_uids_for_folder($folderPath);
+
+        try {
+            $rows = Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                        COALESCE(i.to_addrs, \'\') AS to_addrs,
+                        COALESCE(i.cc_addrs, \'\') AS cc_addrs
+                 FROM mail_index i
+                 WHERE i.folder_path = ?',
+                [$folderPath]
+            )->fetchAll();
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        $groups = [];
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0 || isset($removed[$uid])) {
+                continue;
+            }
+            if (employee_is_own_inbox_folder($folderPath)) {
+                $check = [
+                    'from' => (string) ($row['from_addr'] ?? ''),
+                    'subject' => (string) ($row['subject'] ?? ''),
+                    'date' => (string) ($row['msg_date'] ?? ''),
+                ];
+                if (employee_should_hide_inbox_correspondent_message($check)) {
+                    continue;
+                }
+            }
+
+            $msg = self::messageFromIndexRow($row, $folderPath);
+            $msg['seen'] = self::effectiveSeen($folderPath, $uid, $userId);
+
+            $key = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+            if ($key === '') {
+                $key = 'uid:' . $uid;
+            }
+
+            mail_enrich_correspondent_folder_list_row($folderPath, $msg);
+
+            $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+            $existingTs = isset($groups[$key])
+                ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
+                : -1;
+            if (
+                !isset($groups[$key])
+                || $msgTs > $existingTs
+                || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0))
+            ) {
+                $groups[$key] = $msg;
+            }
+        }
+
+        $count = 0;
+        foreach ($groups as $msg) {
+            if (empty($msg['seen'])) {
+                $count++;
+            }
         }
 
         return $count;
@@ -620,7 +699,14 @@ class MailCacheService
             mail_enrich_correspondent_folder_list_row($folderPath, $msg);
 
             $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
-            if (!isset($groups[$key]) || $msgTs >= (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)) {
+            $existingTs = isset($groups[$key])
+                ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
+                : -1;
+            if (
+                !isset($groups[$key])
+                || $msgTs > $existingTs
+                || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0))
+            ) {
                 $groups[$key] = $msg;
             }
         }

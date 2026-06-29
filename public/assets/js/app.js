@@ -3401,7 +3401,9 @@
             var total = 0;
             group.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
                 var p = link.getAttribute('data-folder-path');
-                if (p && folderShowsUnreadBadge(p)) total += lastUnreadCounts[p] || 0;
+                if (p && folderShowsUnreadBadge(p)) {
+                    total += (lastUnreadCounts[p] ?? lastUnreadCounts[p.toLowerCase()] ?? 0);
+                }
             });
             var toggle = group.querySelector('.sidebar-group-toggle');
             if (!toggle) return;

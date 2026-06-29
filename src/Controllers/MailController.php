@@ -968,24 +968,34 @@ class MailController
 
         mail_note_correspondents_from_message($message);
 
-        $wasUnread = !MailCacheService::effectiveSeen($folderPath, $uid);
+        $wasUnread = mail_local_thread_has_unread($folderPath, $uid, $message);
 
         if ($wasUnread && $markRead) {
             $message['seen'] = true;
-            MailCacheService::markReadForUser($folderPath, $uid);
+            if (mail_should_group_list_by_thread($folderPath)) {
+                $markedUids = mail_mark_local_thread_read($folderPath, $uid, $message);
+            } else {
+                MailCacheService::markReadForUser($folderPath, $uid);
+                $markedUids = [$uid];
+            }
 
             if (employee_is_correspondent_folder($folderPath)) {
                 mail_mark_correspondent_inbound_read($folderPath, $uid, $message);
             }
 
             if (MailCacheService::readUpdatesImapState($folderPath)) {
-                MailCacheService::updateIndexSeen($folderPath, $uid, true);
+                if (!mail_should_group_list_by_thread($folderPath)) {
+                    MailCacheService::updateIndexSeen($folderPath, $uid, true);
+                }
                 $unreadCounts = FolderCache::bumpUnread($folderPath, -1);
 
-                $deferred = static function () use ($folderPath, $uid): void {
+                $deferred = static function () use ($folderPath, $markedUids): void {
                     $imap = new ImapService();
-                    if ($imap->connect()) {
-                        $imap->markSeen($folderPath, $uid);
+                    if (!$imap->connect()) {
+                        return;
+                    }
+                    foreach ($markedUids as $markedUid) {
+                        $imap->markSeen($folderPath, $markedUid);
                     }
                 };
             } else {
@@ -1911,16 +1921,28 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $alreadySeen = MailCacheService::effectiveSeen($folderPath, $uid);
+        $alreadySeen = !mail_local_thread_has_unread($folderPath, $uid, MailCacheService::getBody($folderPath, $uid) ?? [
+            'subject' => '',
+            'from' => '',
+        ]);
+        $markedUids = [$uid];
 
         if ($seen) {
-            MailCacheService::markReadForUser($folderPath, $uid);
+            if (mail_should_group_list_by_thread($folderPath)) {
+                $markedUids = mail_mark_local_thread_read(
+                    $folderPath,
+                    $uid,
+                    MailCacheService::getBody($folderPath, $uid) ?? ['subject' => '', 'from' => '']
+                );
+            } else {
+                MailCacheService::markReadForUser($folderPath, $uid);
+                if (MailCacheService::readUpdatesImapState($folderPath)) {
+                    MailCacheService::updateIndexSeen($folderPath, $uid, true);
+                }
+            }
             if (employee_is_correspondent_folder($folderPath)) {
                 $message = MailCacheService::getBody($folderPath, $uid) ?? [];
                 mail_mark_correspondent_inbound_read($folderPath, $uid, $message);
-            }
-            if (MailCacheService::readUpdatesImapState($folderPath)) {
-                MailCacheService::updateIndexSeen($folderPath, $uid, true);
             }
         } else {
             MailCacheService::markUnreadForUser($folderPath, $uid);
@@ -1951,7 +1973,7 @@ class MailController
                 'seen' => $seen,
                 'uid' => $uid,
                 'unread_counts' => $counts,
-            ], function () use ($folderPath, $uid, $seen): void {
+            ], function () use ($folderPath, $uid, $seen, $markedUids): void {
                 if (!MailCacheService::readUpdatesImapState($folderPath)) {
                     return;
                 }
@@ -1962,7 +1984,9 @@ class MailController
                     return;
                 }
                 if ($seen) {
-                    $imap->markSeen($folderPath, $uid);
+                    foreach ($markedUids as $markedUid) {
+                        $imap->markSeen($folderPath, $markedUid);
+                    }
                 } else {
                     $imap->markUnseen($folderPath, $uid);
                 }
@@ -1973,7 +1997,9 @@ class MailController
             $imap = new ImapService();
             if ($imap->connect()) {
                 if ($seen) {
-                    $imap->markSeen($folderPath, $uid);
+                    foreach ($markedUids as $markedUid) {
+                        $imap->markSeen($folderPath, $markedUid);
+                    }
                 } else {
                     $imap->markUnseen($folderPath, $uid);
                 }

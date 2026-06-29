@@ -1218,6 +1218,17 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
 
         $body = \App\Services\MailCacheService::getBody($indexPath, $rowUid);
         if ($body === null) {
+            $messages[] = [
+                'from' => (string) ($row['from_addr'] ?? ''),
+                'to' => '',
+                'cc' => '',
+                'date' => (string) ($row['msg_date'] ?? ''),
+                'body' => '',
+                'body_html' => '',
+                'folder_path' => $indexPath,
+                'imap_uid' => $rowUid,
+                'attachments' => [],
+            ];
             continue;
         }
 
@@ -1305,6 +1316,7 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
                 'from' => (string) ($entry['from'] ?? ''),
                 'date' => (string) ($entry['date'] ?? ''),
                 'body' => (string) ($entry['body'] ?? ''),
+                'imap_uid' => (int) ($entry['imap_uid'] ?? 0),
             ])] = true;
         }
         foreach (mail_find_correspondent_outbound_for_subject($employeeInbox, $baseSubject, $employeeUserId) as $entry) {
@@ -1312,6 +1324,7 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
                 'from' => (string) ($entry['from'] ?? ''),
                 'date' => (string) ($entry['date'] ?? ''),
                 'body' => (string) ($entry['body'] ?? ''),
+                'imap_uid' => (int) ($entry['imap_uid'] ?? 0),
             ]);
             if ($fp === '||' || str_ends_with($fp, '|') || isset($existingFp[$fp])) {
                 continue;
@@ -1340,6 +1353,7 @@ function mail_dedupe_thread_entries(array $entries): array
             'from' => (string) ($entry['from'] ?? ''),
             'date' => (string) ($entry['date'] ?? ''),
             'body' => (string) ($entry['body'] ?? ''),
+            'imap_uid' => (int) ($entry['imap_uid'] ?? 0),
         ]);
         if ($fp === '||' || str_ends_with($fp, '|')) {
             continue;
@@ -1507,35 +1521,25 @@ function mail_merge_pending_into_thread_entries(
  */
 function mail_employee_inbox_row_counts_for_badge(string $folderPath, array $row, int $employeeUserId): bool
 {
-    $context = mail_resolve_correspondent_thread_context($folderPath, [
-        'subject' => (string) ($row['subject'] ?? ''),
+    $uid = (int) ($row['imap_uid'] ?? 0);
+    if ($uid <= 0) {
+        return true;
+    }
+
+    $msg = [
+        'uid' => $uid,
         'from' => (string) ($row['from_addr'] ?? $row['from'] ?? ''),
-    ]);
-    if ($context === null) {
+        'subject' => (string) ($row['subject'] ?? ''),
+        'date' => (string) ($row['msg_date'] ?? $row['date'] ?? ''),
+        'seen' => (bool) ($row['seen'] ?? false),
+    ];
+    if (mail_resolve_correspondent_thread_context($folderPath, $msg) === null) {
         return true;
     }
 
-    $entries = mail_collect_employee_thread_entries(
-        $context,
-        mail_normalize_thread_subject((string) ($row['subject'] ?? '')),
-    );
-    if ($entries === []) {
-        return true;
-    }
+    mail_enrich_correspondent_folder_list_row($folderPath, $msg);
 
-    usort($entries, static function (array $a, array $b): int {
-        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
-        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
-        if ($aTs === $bTs) {
-            return ((int) ($a['imap_uid'] ?? 0)) <=> ((int) ($b['imap_uid'] ?? 0));
-        }
-
-        return $aTs <=> $bTs;
-    });
-
-    $latest = $entries[count($entries) - 1];
-
-    return !mail_is_sent_by_user((string) ($latest['from'] ?? ''), $employeeUserId);
+    return empty($msg['seen']);
 }
 
 /**
@@ -2094,7 +2098,14 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
         }
 
         $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
-        if (!isset($groups[$key]) || $msgTs >= (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)) {
+        $existingTs = isset($groups[$key])
+            ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
+            : -1;
+        if (
+            !isset($groups[$key])
+            || $msgTs > $existingTs
+            || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0))
+        ) {
             $groups[$key] = $msg;
         }
     }
@@ -2412,7 +2423,10 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
     }
 
     $latestFrom = format_mail_from((string) ($latest['from'] ?? ''));
-    if ($latestFrom !== '' && \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
+    if ($latestFrom !== '' && (
+        \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
+        || mail_linked_user_id_for_inbox($folderPath) !== null
+    )) {
         $msg['list_from'] = $latestFrom;
         $msg['from'] = (string) ($latest['from'] ?? $msg['from'] ?? '');
     }
@@ -2437,6 +2451,34 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
         }
     } elseif (!empty($latest['is_pending_reply'])) {
         $msg['seen'] = false;
+    } else {
+        $latestFolder = \App\Services\FolderCache::resolvePath((string) ($latest['folder_path'] ?? $folderPath));
+        $latestUid = (int) ($latest['imap_uid'] ?? 0);
+        $folderResolved = \App\Services\FolderCache::resolvePath($folderPath);
+        if ($latestUid > 0 && strcasecmp($latestFolder, $folderResolved) === 0) {
+            $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($latestFolder, $latestUid);
+        }
+    }
+
+    // List row must open/read the newest segment stored in this folder.
+    $folderResolved = \App\Services\FolderCache::resolvePath($folderPath);
+    $bestUid = 0;
+    $bestTs = -1;
+    foreach ($threadEntries as $entry) {
+        $entryFolder = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
+        $entryUid = (int) ($entry['imap_uid'] ?? 0);
+        if ($entryUid <= 0 || strcasecmp($entryFolder, $folderResolved) !== 0) {
+            continue;
+        }
+        $entryTs = strtotime((string) ($entry['date'] ?? '')) ?: 0;
+        if ($entryTs > $bestTs || ($entryTs === $bestTs && $entryUid > $bestUid)) {
+            $bestTs = $entryTs;
+            $bestUid = $entryUid;
+        }
+    }
+    if ($bestUid > 0) {
+        $msg['uid'] = $bestUid;
+        $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid);
     }
 }
 
@@ -4279,8 +4321,16 @@ function mail_thread_segment_fingerprint(array $segment): string
     $ts = strtotime((string) ($segment['date'] ?? '')) ?: 0;
     $minute = $ts > 0 ? (int) floor($ts / 60) : 0;
     $body = mail_conversation_snippet(mail_normalize_thread_body((string) ($segment['body'] ?? '')));
+    if ($body !== '') {
+        return $email . '|' . $minute . '|' . $body;
+    }
 
-    return $email . '|' . $minute . '|' . $body;
+    $uid = (int) ($segment['imap_uid'] ?? 0);
+    if ($uid > 0) {
+        return $email . '|' . $minute . '|uid:' . $uid;
+    }
+
+    return $email . '|' . $minute . '|';
 }
 
 /**
@@ -4887,6 +4937,129 @@ function mail_sort_thread_segments_chronological(array $segments): array
     });
 
     return array_map(static fn (array $row): array => $row['segment'], $indexed);
+}
+
+/**
+ * True when the conversation row should show as unread (thread-aware).
+ *
+ * @param array<string, mixed> $message
+ */
+function mail_local_thread_has_unread(string $folderPath, int $uid, array $message): bool
+{
+    if ($uid <= 0) {
+        return false;
+    }
+
+    if (!mail_should_group_list_by_thread($folderPath)) {
+        return !\App\Services\MailCacheService::effectiveSeen($folderPath, $uid);
+    }
+
+    $probe = [
+        'uid' => $uid,
+        'from' => (string) ($message['from'] ?? ''),
+        'subject' => (string) ($message['subject'] ?? ''),
+        'date' => (string) ($message['date'] ?? ''),
+        'seen' => \App\Services\MailCacheService::effectiveSeen($folderPath, $uid),
+    ];
+    if (mail_resolve_correspondent_thread_context($folderPath, $probe) !== null) {
+        mail_enrich_correspondent_folder_list_row($folderPath, $probe);
+
+        return empty($probe['seen']);
+    }
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $baseSubject = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+    if ($folderPath === '' || $baseSubject === '') {
+        return !\App\Services\MailCacheService::effectiveSeen($folderPath, $uid);
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT imap_uid, subject FROM mail_index WHERE folder_path = ?',
+            [$folderPath]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return !\App\Services\MailCacheService::effectiveSeen($folderPath, $uid);
+    }
+
+    foreach ($rows as $row) {
+        $rowUid = (int) ($row['imap_uid'] ?? 0);
+        if ($rowUid <= 0) {
+            continue;
+        }
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+            continue;
+        }
+        if (!\App\Services\MailCacheService::effectiveSeen($folderPath, $rowUid)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Mark every unread message in the current folder that belongs to the same thread.
+ *
+ * @param array<string, mixed> $message
+ * @return list<int>
+ */
+function mail_mark_local_thread_read(string $folderPath, int $uid, array $message): array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '' || $uid <= 0) {
+        return [];
+    }
+
+    $baseSubject = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+    $uids = [$uid];
+
+    if ($baseSubject !== '') {
+        try {
+            $rows = App\Database::query(
+                'SELECT imap_uid, subject FROM mail_index WHERE folder_path = ?',
+                [$folderPath]
+            )->fetchAll();
+        } catch (\Throwable) {
+            $rows = [];
+        }
+
+        foreach ($rows as $row) {
+            $rowUid = (int) ($row['imap_uid'] ?? 0);
+            if ($rowUid <= 0) {
+                continue;
+            }
+            if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) === $baseSubject) {
+                $uids[] = $rowUid;
+            }
+        }
+
+        $context = mail_resolve_correspondent_thread_context($folderPath, $message);
+        if ($context !== null) {
+            foreach (mail_collect_employee_thread_entries($context, $baseSubject) as $entry) {
+                $entryFolder = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
+                $entryUid = (int) ($entry['imap_uid'] ?? 0);
+                if ($entryUid > 0 && strcasecmp($entryFolder, $folderPath) === 0) {
+                    $uids[] = $entryUid;
+                }
+            }
+        }
+    }
+
+    $uids = array_values(array_unique(array_filter($uids, static fn (int $id): bool => $id > 0)));
+    $marked = [];
+    foreach ($uids as $rowUid) {
+        if (\App\Services\MailCacheService::effectiveSeen($folderPath, $rowUid)) {
+            continue;
+        }
+        \App\Services\MailCacheService::markReadForUser($folderPath, $rowUid);
+        if (\App\Services\MailCacheService::readUpdatesImapState($folderPath)) {
+            \App\Services\MailCacheService::updateIndexSeen($folderPath, $rowUid, true);
+        }
+        $marked[] = $rowUid;
+    }
+
+    return $marked;
 }
 
 /**
