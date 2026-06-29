@@ -2812,29 +2812,44 @@ function compose_recipient_autocomplete_data(): array
 {
     $domains = [];
     $contacts = [];
+    $contactSeen = [];
 
-    foreach ((new App\Services\AliasService())->listActive() as $alias) {
-        $email = strtolower(trim((string) ($alias['email'] ?? '')));
-        if ($email === '' || !str_contains($email, '@')) {
-            continue;
+    $addContact = static function (string $email, string $name = '') use (&$contacts, &$contactSeen, &$domains): void {
+        $email = strtolower(trim($email));
+        if ($email === '' || !str_contains($email, '@') || isset($contactSeen[$email])) {
+            return;
         }
-
+        $contactSeen[$email] = true;
         [, $domain] = explode('@', $email, 2);
         if ($domain !== '') {
             $domains[$domain] = true;
         }
-
         $contacts[] = [
             'email' => $email,
-            'name' => (string) ($alias['display_name'] ?? ''),
+            'name' => $name !== '' ? $name : explode('@', $email, 2)[0],
             'local' => explode('@', $email, 2)[0],
         ];
+    };
+
+    foreach ((new App\Services\AliasService())->listActive() as $alias) {
+        $addContact(
+            (string) ($alias['email'] ?? ''),
+            (string) ($alias['display_name'] ?? '')
+        );
     }
 
     $mailbox = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
     $primaryDomain = '';
     if ($mailbox !== '' && str_contains($mailbox, '@')) {
         $primaryDomain = substr(strrchr($mailbox, '@'), 1);
+        if ($primaryDomain !== '') {
+            $domains[$primaryDomain] = true;
+        }
+        $addContact($mailbox, (string) (config('app')['name'] ?? ''));
+    }
+
+    foreach (compose_recipient_recent_addresses() as $recent) {
+        $addContact((string) ($recent['email'] ?? ''), (string) ($recent['name'] ?? ''));
     }
 
     $domainList = array_keys($domains);
@@ -2855,6 +2870,59 @@ function compose_recipient_autocomplete_data(): array
     ));
 
     return ['domains' => $domainList, 'contacts' => $contacts];
+}
+
+/**
+ * Recent unique addresses from the mail index for compose autocomplete.
+ *
+ * @return list<array{email: string, name: string, local: string}>
+ */
+function compose_recipient_recent_addresses(int $limit = 100): array
+{
+    $limit = max(1, min($limit, 200));
+    $seen = [];
+    $contacts = [];
+
+    try {
+        $rows = App\Database::query(
+            'SELECT from_addr, to_addrs, cc_addrs
+             FROM mail_index
+             ORDER BY msg_date DESC
+             LIMIT 400'
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    foreach ($rows as $row) {
+        foreach (['from_addr', 'to_addrs', 'cc_addrs'] as $column) {
+            $header = (string) ($row[$column] ?? '');
+            if ($header === '') {
+                continue;
+            }
+            if (preg_match_all('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', $header, $matches) === false) {
+                continue;
+            }
+            foreach ($matches[0] as $email) {
+                $email = strtolower($email);
+                if ($email === '' || isset($seen[$email])) {
+                    continue;
+                }
+                $seen[$email] = true;
+                $local = explode('@', $email, 2)[0];
+                $contacts[] = [
+                    'email' => $email,
+                    'name' => $local,
+                    'local' => $local,
+                ];
+                if (count($contacts) >= $limit) {
+                    break 2;
+                }
+            }
+        }
+    }
+
+    return $contacts;
 }
 
 function message_url(string $folderPath, int $uid): string

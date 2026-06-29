@@ -2091,6 +2091,10 @@ a:hover {
     min-width: 17.5rem;
 }
 
+.recipient-suggest--pane {
+    z-index: 1200;
+}
+
 .recipient-suggest[hidden] {
     display: none;
 }

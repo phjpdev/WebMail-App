@@ -5003,6 +5003,47 @@
         return true;
     }
 
+    function mergeRecipientAutocompleteData(base, extra) {
+        var domainSet = {};
+        var contactMap = {};
+        (base.domains || []).forEach(function (domain) {
+            domain = String(domain || '').trim().toLowerCase();
+            if (domain) domainSet[domain] = domain;
+        });
+        (extra.domains || []).forEach(function (domain) {
+            domain = String(domain || '').trim().toLowerCase();
+            if (domain) domainSet[domain] = domain;
+        });
+        (base.contacts || []).forEach(function (contact) {
+            if (!contact || !contact.email) return;
+            contactMap[String(contact.email).toLowerCase()] = contact;
+        });
+        (extra.contacts || []).forEach(function (contact) {
+            if (!contact || !contact.email) return;
+            contactMap[String(contact.email).toLowerCase()] = contact;
+        });
+        return {
+            domains: Object.keys(domainSet).sort(),
+            contacts: Object.keys(contactMap).map(function (key) { return contactMap[key]; })
+        };
+    }
+
+    function recipientEmailFromForm(form) {
+        if (!form) return '';
+        var fromField = form.querySelector('#from_email');
+        if (fromField) {
+            var value = (fromField.value || '').trim();
+            if (value) return value.toLowerCase();
+        }
+        var sendAs = (form.dataset.sendAsEmail || '').trim();
+        if (sendAs) return sendAs.toLowerCase();
+        var displayEmail = form.querySelector('.compose-send-as-email');
+        if (displayEmail) {
+            return (displayEmail.textContent || '').trim().toLowerCase();
+        }
+        return '';
+    }
+
     function parseRecipientAutocompleteData(form) {
         var data = { domains: [], contacts: [] };
         if (!form) return data;
@@ -5015,46 +5056,36 @@
             }
         } catch (e) { /* ignore malformed JSON */ }
 
-        if (!data.domains.length || !data.contacts.length) {
-            var sendAsEmail = (form.dataset.sendAsEmail || '').trim().toLowerCase();
-            if (sendAsEmail && sendAsEmail.indexOf('@') >= 0) {
-                var sendParts = sendAsEmail.split('@');
-                var sendDomain = sendParts.slice(1).join('@');
-                if (sendDomain) data.domains = [sendDomain];
-                data.contacts = [{
-                    email: sendAsEmail,
-                    name: sendAsEmail,
-                    local: sendParts[0] || ''
-                }];
-            }
-            var domainSet = {};
-            var contactMap = {};
-            form.querySelectorAll('#from_email option').forEach(function (opt) {
-                var email = (opt.value || '').trim().toLowerCase();
-                if (!email || email.indexOf('@') < 0) return;
-                var parts = email.split('@');
-                var local = parts[0];
-                var domain = parts.slice(1).join('@');
-                if (domain) domainSet[domain] = true;
-                var label = (opt.textContent || '').replace(/\s+/g, ' ').trim();
-                var name = label.replace(/\s*<[^>]+>\s*$/, '').trim();
-                contactMap[email] = {
-                    email: email,
-                    name: name || email,
-                    local: local
-                };
+        var extra = { domains: [], contacts: [] };
+        var sendAsEmail = recipientEmailFromForm(form);
+        if (sendAsEmail && sendAsEmail.indexOf('@') >= 0) {
+            var sendParts = sendAsEmail.split('@');
+            var sendDomain = sendParts.slice(1).join('@');
+            if (sendDomain) extra.domains.push(sendDomain);
+            extra.contacts.push({
+                email: sendAsEmail,
+                name: sendParts[0] || sendAsEmail,
+                local: sendParts[0] || ''
             });
-            if (!data.domains.length) {
-                data.domains = Object.keys(domainSet);
-            }
-            if (!data.contacts.length) {
-                data.contacts = Object.keys(contactMap).map(function (key) {
-                    return contactMap[key];
-                });
-            }
         }
 
-        return data;
+        form.querySelectorAll('#from_email option').forEach(function (opt) {
+            var email = (opt.value || '').trim().toLowerCase();
+            if (!email || email.indexOf('@') < 0) return;
+            var parts = email.split('@');
+            var local = parts[0];
+            var domain = parts.slice(1).join('@');
+            if (domain) extra.domains.push(domain);
+            var label = (opt.textContent || '').replace(/\s+/g, ' ').trim();
+            var name = label.replace(/\s*<[^>]+>\s*$/, '').trim();
+            extra.contacts.push({
+                email: email,
+                name: name || local || email,
+                local: local
+            });
+        });
+
+        return mergeRecipientAutocompleteData(data, extra);
     }
 
     function buildRecipientSuggestions(query, data) {
@@ -5081,7 +5112,7 @@
             if (email.indexOf(query) === 0) score = 0;
             else if (local.indexOf(query) === 0) score = 1;
             else if (name.indexOf(query) === 0) score = 2;
-            else if (name.indexOf(query) > 0) score = 3;
+            else if (email.indexOf(query) > 0 || name.indexOf(query) > 0 || local.indexOf(query) > 0) score = 3;
             else return;
 
             push({
@@ -5105,12 +5136,22 @@
                     push({
                         type: 'domain',
                         email: full,
-                        name: domain,
-                        sub: full,
+                        name: full,
+                        sub: '@' + domain,
                         score: domainPart === '' ? 0 : (d === domainPart ? 0 : 1)
                     });
                 });
             }
+        } else if (/^[a-z0-9._%+-]+$/i.test(query)) {
+            domains.forEach(function (domain, index) {
+                push({
+                    type: 'domain',
+                    email: query + '@' + domain,
+                    name: query + '@' + domain,
+                    sub: '@' + domain,
+                    score: 5 + index
+                });
+            });
         }
 
         results.sort(function (a, b) {
@@ -5118,7 +5159,7 @@
             return String(a.email).localeCompare(String(b.email));
         });
 
-        return results.slice(0, 7);
+        return results.slice(0, 8);
     }
 
     function initRecipientAutocomplete(input, form, onAccepted) {
@@ -5127,9 +5168,14 @@
         var recipientsWrap = input.closest('.compose-recipients');
         if (!fieldWrap) return { handleKeydown: function () { return false; }, close: function () {}, isOpen: function () { return false; } };
 
-        var portal = document.getElementById('compose-panel') || document.body;
+        var portal = input.closest('#reading-pane-body')
+            || document.getElementById('compose-panel')
+            || document.body;
         var listEl = document.createElement('ul');
         listEl.className = 'recipient-suggest';
+        if (input.closest('#reading-pane-body') || input.closest('.draft-editor-pane')) {
+            listEl.classList.add('recipient-suggest--pane');
+        }
         listEl.setAttribute('role', 'listbox');
         listEl.hidden = true;
         portal.appendChild(listEl);
@@ -5175,7 +5221,7 @@
                     lastType = item.type;
                     var label = document.createElement('li');
                     label.className = 'recipient-suggest-label';
-                    label.textContent = item.type === 'domain' ? 'Domain' : 'Contacts';
+                    label.textContent = item.type === 'domain' ? 'Suggested addresses' : 'Contacts';
                     label.setAttribute('aria-hidden', 'true');
                     listEl.appendChild(label);
                 }
@@ -5254,10 +5300,16 @@
         });
 
         window.addEventListener('resize', positionList);
-        var scrollParent = document.getElementById('compose-panel-body');
-        if (scrollParent) {
-            scrollParent.addEventListener('scroll', positionList, { passive: true });
-        }
+        window.addEventListener('scroll', positionList, true);
+        var scrollEls = [
+            input.closest('#reading-pane-body'),
+            input.closest('.draft-editor-pane'),
+            document.getElementById('compose-panel-body')
+        ];
+        scrollEls.forEach(function (el) {
+            if (!el) return;
+            el.addEventListener('scroll', positionList, { passive: true });
+        });
 
         return {
             isOpen: function () {
@@ -5302,6 +5354,9 @@
     }
 
     function initRecipientRow(row) {
+        if (row.dataset.recipientRowBound) return null;
+        row.dataset.recipientRowBound = '1';
+
         var field = row.getAttribute('data-field');
         var hidden = document.getElementById(field);
         var chipsEl = row.querySelector('.recipient-chips');
@@ -5385,16 +5440,38 @@
         return { syncHidden: syncHidden, commitInput: commitInput, input: input, hidden: hidden, chipsEl: chipsEl };
     }
 
-    function initRecipientFields(root) {
-        root = root || document;
-        var form = root.querySelector ? root.querySelector('#compose-form') : document.getElementById('compose-form');
-        if (!form || form.dataset.recipientsBound) return;
-        form.dataset.recipientsBound = '1';
+    function bindRecipientForm(form) {
+        if (!form) return {};
 
         var rows = {};
         form.querySelectorAll('.compose-recipient-row[data-field]').forEach(function (row) {
-            rows[row.getAttribute('data-field')] = initRecipientRow(row);
+            var rowApi = initRecipientRow(row);
+            if (rowApi) {
+                rows[row.getAttribute('data-field')] = rowApi;
+            }
         });
+
+        return rows;
+    }
+
+    function initRecipientFields(root) {
+        root = root || document;
+        var forms = [];
+        if (root.querySelectorAll) {
+            forms = Array.prototype.slice.call(root.querySelectorAll('#compose-form'));
+        } else if (root.id === 'compose-form') {
+            forms = [root];
+        }
+        if (!forms.length && (root === document || !root.querySelector)) {
+            var single = document.getElementById('compose-form');
+            if (single) forms = [single];
+        }
+
+        forms.forEach(function (form) {
+            if (form.dataset.recipientsBound) return;
+            form.dataset.recipientsBound = '1';
+
+            var rows = bindRecipientForm(form);
 
         function showRow(id, btn) {
             var row = form.querySelector('#' + id);
@@ -5453,6 +5530,7 @@
                 showToast('error', 'Please add a subject before sending.');
                 subjectField.focus();
             }
+        });
         });
     }
 
