@@ -176,7 +176,11 @@ class FolderCache
             if (folder_uses_draft_badge($path) && MailCacheService::hasFolderData($path)) {
                 $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = $indexUnread;
             } else {
-                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max($imapUnread, $indexUnread, $sessionUnread);
+                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = MailCacheService::mergeBadgeWithSession(
+                    $path,
+                    $indexUnread,
+                    max($imapUnread, $sessionUnread)
+                );
             }
         }
 

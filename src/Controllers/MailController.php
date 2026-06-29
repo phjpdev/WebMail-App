@@ -988,7 +988,7 @@ class MailController
                 };
             } else {
                 $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
-                if (employee_is_correspondent_folder($folderPath)) {
+                if (employee_is_correspondent_folder($folderPath) || MailCacheService::usesPerUserRead($folderPath)) {
                     MailCacheService::reconcileBadgeFromIndex($folderPath);
                     $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
                 }

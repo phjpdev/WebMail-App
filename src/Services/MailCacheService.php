@@ -96,6 +96,225 @@ class MailCacheService
         return $linkedId !== null && (int) ($user['id'] ?? 0) === $linkedId;
     }
 
+    public static function viewerIsAdmin(?array $user = null): bool
+    {
+        $user = $user ?? Auth::user();
+
+        return $user !== null && ($user['role'] ?? '') === 'admin';
+    }
+
+    /**
+     * Admin badge on an employee inbox: unseen inbound plus unseen outbound
+     * replies the employee sent in correspondent folders (e.g. Support).
+     */
+    public static function countAdminEmployeeInboxBadge(string $folderPath): int
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        $linkedId = self::linkedUserId($folderPath);
+        if ($linkedId === null) {
+            return self::countUnseenInIndex($folderPath);
+        }
+
+        $viewerId = (int) (Auth::user()['id'] ?? 0);
+        if ($viewerId <= 0) {
+            return 0;
+        }
+
+        return self::countUnseenForUser($viewerId, $folderPath)
+            + self::countUnseenEmployeeOutboundInCorrespondentFolders($linkedId, $viewerId);
+    }
+
+    /**
+     * One-time repair for outbound copies wrongly marked seen on IMAP before
+     * per-user read: employee gets mail_user_read, index stays unseen for admin.
+     */
+    public static function repairEmployeeCorrespondentOutboundForAdmin(int $employeeUserId): void
+    {
+        static $done = [];
+        if ($employeeUserId <= 0 || isset($done[$employeeUserId])) {
+            return;
+        }
+        $done[$employeeUserId] = true;
+
+        $ownInbox = self::indexFolderPath(
+            employee_linked_inbox_path(['id' => $employeeUserId, 'role' => 'employee']) ?? ''
+        );
+        $emails = mail_user_emails($employeeUserId);
+        if ($ownInbox === '' || $emails === []) {
+            return;
+        }
+
+        $fromClauses = [];
+        $params = [$ownInbox];
+        foreach ($emails as $email) {
+            $fromClauses[] = 'LOWER(i.from_addr) LIKE ?';
+            $params[] = '%' . strtolower($email) . '%';
+        }
+        $params[] = $employeeUserId;
+
+        try {
+            $rows = Database::query(
+                'SELECT i.folder_path, i.imap_uid
+                 FROM mail_index i
+                 INNER JOIN folders f
+                    ON LOWER(f.imap_path) = LOWER(i.folder_path)
+                   AND f.active = 1
+                   AND f.folder_type = \'employee\'
+                 WHERE LOWER(i.folder_path) != LOWER(?)
+                   AND (' . implode(' OR ', $fromClauses) . ')
+                   AND i.seen = 1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM mail_user_read r
+                       WHERE r.user_id = ?
+                         AND r.folder_path = i.folder_path
+                         AND r.imap_uid = i.imap_uid
+                   )
+                 ORDER BY i.msg_date DESC
+                 LIMIT 50',
+                $params
+            )->fetchAll();
+        } catch (\Throwable) {
+            return;
+        }
+
+        foreach ($rows as $row) {
+            $path = (string) ($row['folder_path'] ?? '');
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($path === '' || $uid <= 0) {
+                continue;
+            }
+
+            self::markReadForUser($path, $uid, $employeeUserId);
+            Database::query(
+                'UPDATE mail_index SET seen = 0 WHERE folder_path = ? AND imap_uid = ?',
+                [$path, $uid]
+            );
+        }
+    }
+
+    /**
+     * Outbound copies in other employee folders (Support, etc.) awaiting admin review.
+     */
+    public static function countUnseenEmployeeOutboundInCorrespondentFolders(int $employeeUserId, ?int $viewerId = null): int
+    {
+        if ($employeeUserId <= 0) {
+            return 0;
+        }
+
+        $viewerId = $viewerId ?? (int) (Auth::user()['id'] ?? 0);
+        if ($viewerId <= 0) {
+            return 0;
+        }
+
+        $ownInbox = self::indexFolderPath(
+            employee_linked_inbox_path(['id' => $employeeUserId, 'role' => 'employee']) ?? ''
+        );
+        $emails = mail_user_emails($employeeUserId);
+        if ($ownInbox === '' || $emails === []) {
+            return 0;
+        }
+
+        $fromClauses = [];
+        $params = [$ownInbox];
+        foreach ($emails as $email) {
+            $fromClauses[] = 'LOWER(i.from_addr) LIKE ?';
+            $params[] = '%' . strtolower($email) . '%';
+        }
+        $params[] = $viewerId;
+
+        try {
+            $row = Database::fetchOne(
+                'SELECT COUNT(*) AS c
+                 FROM mail_index i
+                 INNER JOIN folders f
+                    ON LOWER(f.imap_path) = LOWER(i.folder_path)
+                   AND f.active = 1
+                   AND f.folder_type = \'employee\'
+                 WHERE LOWER(i.folder_path) != LOWER(?)
+                   AND (' . implode(' OR ', $fromClauses) . ')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM mail_user_read r
+                       WHERE r.user_id = ?
+                         AND r.folder_path = i.folder_path
+                         AND r.imap_uid = i.imap_uid
+                   )',
+                $params
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        return (int) ($row['c'] ?? 0);
+    }
+
+    /**
+     * Employee sent into a correspondent folder: per-user read for them, unseen for admin.
+     */
+    public static function markEmployeeCorrespondentOutbound(
+        string $folderPath,
+        int $employeeUserId,
+        string $fromEmail,
+        ?string $sentMessageId = null,
+        int $limit = 10,
+    ): void {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '' || $employeeUserId <= 0) {
+            return;
+        }
+
+        $emails = mail_user_emails($employeeUserId);
+        $fromEmail = strtolower(trim($fromEmail));
+        if ($fromEmail !== '' && !in_array($fromEmail, $emails, true)) {
+            $emails[] = $fromEmail;
+        }
+        if ($emails === []) {
+            return;
+        }
+
+        $fromClauses = [];
+        $params = [$folderPath];
+        foreach ($emails as $email) {
+            $fromClauses[] = 'LOWER(i.from_addr) LIKE ?';
+            $params[] = '%' . strtolower($email) . '%';
+        }
+
+        try {
+            $rows = Database::query(
+                'SELECT i.imap_uid, b.message_id
+                 FROM mail_index i
+                 LEFT JOIN mail_bodies b
+                    ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                 WHERE i.folder_path = ? AND (' . implode(' OR ', $fromClauses) . ')
+                 ORDER BY i.msg_date DESC, i.imap_uid DESC
+                 LIMIT ' . (int) max(1, $limit),
+                $params
+            )->fetchAll();
+        } catch (\Throwable) {
+            return;
+        }
+
+        $normalizedId = normalize_message_id($sentMessageId);
+
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+            if ($normalizedId !== '') {
+                $msgId = normalize_message_id((string) ($row['message_id'] ?? ''));
+                if ($msgId === '' || $msgId !== $normalizedId) {
+                    continue;
+                }
+            }
+
+            self::markReadForUser($folderPath, $uid, $employeeUserId);
+            Database::query(
+                'UPDATE mail_index SET seen = 0 WHERE folder_path = ? AND imap_uid = ?',
+                [$folderPath, $uid]
+            );
+        }
+    }
+
     public static function userHasRead(int $userId, string $folderPath, int $uid): bool
     {
         if ($userId <= 0 || $uid <= 0) {
@@ -289,6 +508,89 @@ class MailCacheService
             || (int) ($row['imap_total'] ?? 0) === 0;
     }
 
+    /**
+     * Fully indexed folders use mail_index for unread badges — not stale IMAP/session.
+     */
+    public static function indexUnreadBadgeIsAuthoritative(string $folderPath): bool
+    {
+        if (!self::hasFolderData($folderPath) || folder_uses_draft_badge($folderPath)) {
+            return false;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        if (in_array($folderPath, FolderCache::getPendingBadgePaths(), true)) {
+            return false;
+        }
+
+        $state = self::getSyncState($folderPath);
+        $imapTotal = (int) ($state['imap_total'] ?? 0);
+        if ($imapTotal <= 0) {
+            return true;
+        }
+
+        return self::countMessagesInIndex($folderPath) >= $imapTotal;
+    }
+
+    public static function mergeBadgeWithSession(string $folderPath, int $indexUnread, int $sessionCount): int
+    {
+        if (self::indexUnreadBadgeIsAuthoritative($folderPath)) {
+            return max(0, $indexUnread);
+        }
+
+        return max($indexUnread, $sessionCount);
+    }
+
+    /**
+     * Shared employee mailbox (e.g. Support) — not linked to a single user's inbox.
+     */
+    public static function isSharedEmployeeMailbox(string $folderPath): bool
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '') {
+            return false;
+        }
+
+        try {
+            $row = Database::fetchOne(
+                'SELECT folder_type, linked_user_id FROM folders
+                 WHERE active = 1 AND LOWER(imap_path) = LOWER(?) LIMIT 1',
+                [$folderPath]
+            );
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $row !== null
+            && ($row['folder_type'] ?? '') === 'employee'
+            && ($row['linked_user_id'] ?? null) === null;
+    }
+
+    /**
+     * Admin unread in a shared employee folder — exclude employee outbound echoes.
+     */
+    public static function countSharedEmployeeMailboxUnseen(string $folderPath): int
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        $rows = Database::query(
+            'SELECT imap_uid, from_addr FROM mail_index WHERE folder_path = ? AND seen = 0',
+            [$folderPath]
+        )->fetchAll();
+
+        $count = 0;
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+            if (mail_is_employee_outbound_echo($folderPath, $uid, (string) ($row['from_addr'] ?? ''))) {
+                continue;
+            }
+            $count++;
+        }
+
+        return $count;
+    }
+
     /** Drop all cached mail for a folder (after admin deletes the mailbox). */
     public static function purgeFolder(string $folderPath): void
     {
@@ -416,6 +718,9 @@ class MailCacheService
             if ($linkedId !== null && $viewerId === $linkedId) {
                 return self::countUnseenForUser($linkedId, $folderPath) > $session;
             }
+            if ($linkedId !== null && self::viewerIsAdmin()) {
+                return self::countAdminEmployeeInboxBadge($folderPath) > $session;
+            }
         }
 
         if (!self::hasFolderData($folderPath)) {
@@ -450,6 +755,9 @@ class MailCacheService
             if ($linkedId !== null && $viewerId === $linkedId) {
                 return self::countUnseenForUser($linkedId, $folderPath);
             }
+            if ($linkedId !== null && self::viewerIsAdmin()) {
+                return self::countAdminEmployeeInboxBadge($folderPath);
+            }
         }
 
         if (folder_uses_draft_badge($folderPath) && self::hasFolderData($folderPath)) {
@@ -457,7 +765,11 @@ class MailCacheService
         }
 
         if (self::hasFolderData($folderPath)) {
-            return max(self::countBadgeFromIndex($folderPath), $sessionCount);
+            return self::mergeBadgeWithSession(
+                $folderPath,
+                self::countBadgeFromIndex($folderPath),
+                $sessionCount
+            );
         }
 
         return $sessionCount;
@@ -946,11 +1258,18 @@ class MailCacheService
             return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
         }
 
+        if (self::viewerIsAdmin() && self::isSharedEmployeeMailbox($folderPath)) {
+            return self::countSharedEmployeeMailboxUnseen($folderPath);
+        }
+
         if (self::usesPerUserRead($folderPath)) {
             $linkedId = self::linkedUserId($folderPath);
             $viewerId = (int) (Auth::user()['id'] ?? 0);
             if ($linkedId !== null && $viewerId === $linkedId) {
                 return self::countUnseenForUser($linkedId, $folderPath);
+            }
+            if ($linkedId !== null && self::viewerIsAdmin()) {
+                return self::countAdminEmployeeInboxBadge($folderPath);
             }
         }
 
@@ -1087,6 +1406,12 @@ class MailCacheService
 
                 return $truth;
             }
+            if ($linkedId !== null && self::viewerIsAdmin()) {
+                $truth = self::countAdminEmployeeInboxBadge($folderPath);
+                FolderCache::setUnreadCount($folderPath, $truth);
+
+                return $truth;
+            }
         }
 
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
@@ -1132,19 +1457,11 @@ class MailCacheService
         }
 
         if (self::syncBadgeFromIndex($folderPath)) {
-            $indexUnread = self::countBadgeFromIndex($folderPath);
-            $truth = max($indexUnread, $session);
-            if ($truth !== $session) {
-                FolderCache::setUnreadCount($folderPath, $truth);
-
-                return $truth;
-            }
-
-            return $session;
+            return (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
         }
 
         $indexUnread = self::countBadgeFromIndex($folderPath);
-        $truth = max($indexUnread, $pageUnread);
+        $truth = self::mergeBadgeWithSession($folderPath, max($indexUnread, $pageUnread), $session);
 
         if ($truth !== $session) {
             FolderCache::setUnreadCount($folderPath, $truth);
@@ -1198,7 +1515,9 @@ class MailCacheService
 
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
         $indexUnread = self::countBadgeFromIndex($folderPath);
-        $truth = folder_uses_draft_badge($folderPath) ? $indexUnread : max($indexUnread, $session);
+        $truth = folder_uses_draft_badge($folderPath)
+            ? $indexUnread
+            : self::mergeBadgeWithSession($folderPath, $indexUnread, $session);
         FolderCache::setUnreadCount($folderPath, $truth);
 
         return true;
