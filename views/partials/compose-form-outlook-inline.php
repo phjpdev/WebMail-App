@@ -137,15 +137,17 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
             <?php endif; ?>
             <div id="body-editor" class="rich-editor compose-outlook-editor" contenteditable="true"><?= $editorHtml ?></div>
             <?php if ($quotedBody !== ''): ?>
+            <textarea class="compose-quoted-source sr-only" readonly aria-hidden="true"><?= e($quotedBody) ?></textarea>
+            <?php if (!$isReplyMode): ?>
             <div class="compose-quoted-wrap">
                 <button type="button" class="compose-quoted-toggle" aria-expanded="false" aria-label="Show quoted message">
                     <span class="compose-quoted-toggle-dots" aria-hidden="true">⋯</span>
                 </button>
-                <textarea class="compose-quoted-source sr-only" readonly aria-hidden="true"><?= e($quotedBody) ?></textarea>
                 <div class="compose-quoted-body" hidden>
                     <pre class="compose-quoted-text"><?= e(ltrim($quotedBody, "\n")) ?></pre>
                 </div>
             </div>
+            <?php endif; ?>
             <?php endif; ?>
             <textarea id="body" name="body" rows="14" class="sr-only"><?= e($body) ?></textarea>
         </div>

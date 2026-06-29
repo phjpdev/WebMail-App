@@ -104,8 +104,8 @@ class MailCacheService
     }
 
     /**
-     * Admin badge on an employee inbox: unseen inbound plus unseen outbound
-     * replies the employee sent in correspondent folders (e.g. Support).
+     * Admin badge on an employee inbox: unseen inbound in that folder only.
+     * Outbound copies in other employee folders badge those folders, not this one.
      */
     public static function countAdminEmployeeInboxBadge(string $folderPath): int
     {
@@ -120,8 +120,7 @@ class MailCacheService
             return 0;
         }
 
-        return self::countUnseenForUser($viewerId, $folderPath)
-            + self::countUnseenEmployeeOutboundInCorrespondentFolders($linkedId, $viewerId);
+        return self::countUnseenForUser($viewerId, $folderPath);
     }
 
     /**
@@ -419,6 +418,10 @@ class MailCacheService
                     continue;
                 }
             }
+            $linkedEmployeeId = mail_linked_user_id_for_inbox($folderPath);
+            if ($linkedEmployeeId !== null && !mail_employee_inbox_row_counts_for_badge($folderPath, $row, $linkedEmployeeId)) {
+                continue;
+            }
             $count++;
         }
 
@@ -566,26 +569,67 @@ class MailCacheService
     }
 
     /**
-     * Admin unread in a shared employee folder — exclude employee outbound echoes.
+     * Admin unread in a shared employee folder — one count per thread, aligned with list rows.
      */
     public static function countSharedEmployeeMailboxUnseen(string $folderPath): int
     {
         $folderPath = self::indexFolderPath($folderPath);
-        $rows = Database::query(
-            'SELECT imap_uid, from_addr FROM mail_index WHERE folder_path = ? AND seen = 0',
-            [$folderPath]
-        )->fetchAll();
+
+        if (!self::viewerIsAdmin()) {
+            $rows = Database::query(
+                'SELECT imap_uid, from_addr FROM mail_index WHERE folder_path = ? AND seen = 0',
+                [$folderPath]
+            )->fetchAll();
+
+            $count = 0;
+            foreach ($rows as $row) {
+                $uid = (int) ($row['imap_uid'] ?? 0);
+                if ($uid <= 0) {
+                    continue;
+                }
+                if (mail_is_employee_outbound_echo($folderPath, $uid, (string) ($row['from_addr'] ?? ''))) {
+                    continue;
+                }
+                $count++;
+            }
+
+            return $count;
+        }
+
+        try {
+            $rows = Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                        COALESCE(i.to_addrs, \'\') AS to_addrs,
+                        COALESCE(i.cc_addrs, \'\') AS cc_addrs
+                 FROM mail_index i
+                 WHERE i.folder_path = ?',
+                [$folderPath]
+            )->fetchAll();
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        $groups = [];
+        foreach ($rows as $row) {
+            $msg = self::messageFromIndexRow($row, $folderPath);
+            $key = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+            if ($key === '') {
+                $key = 'uid:' . (int) ($msg['uid'] ?? 0);
+            }
+
+            mail_enrich_correspondent_folder_list_row($folderPath, $msg);
+
+            $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+            if (!isset($groups[$key]) || $msgTs >= (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)) {
+                $groups[$key] = $msg;
+            }
+        }
 
         $count = 0;
-        foreach ($rows as $row) {
-            $uid = (int) ($row['imap_uid'] ?? 0);
-            if ($uid <= 0) {
-                continue;
+        foreach ($groups as $msg) {
+            if (empty($msg['seen'])) {
+                $count++;
             }
-            if (mail_is_employee_outbound_echo($folderPath, $uid, (string) ($row['from_addr'] ?? ''))) {
-                continue;
-            }
-            $count++;
         }
 
         return $count;
@@ -1123,6 +1167,10 @@ class MailCacheService
             mail_note_correspondent_from_list_message($msg);
         }
         unset($msg);
+
+        if (mail_linked_user_id_for_inbox($folderPath) !== null || employee_is_correspondent_folder($folderPath)) {
+            $messages = mail_resort_list_by_message_date($messages);
+        }
 
         return $messages;
     }

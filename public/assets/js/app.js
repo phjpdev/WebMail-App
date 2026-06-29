@@ -586,12 +586,6 @@
 
     function beginPostSendQuiet(ms) {
         postSendQuietUntil = Date.now() + (ms || 15000);
-        mailSyncPaused = true;
-        window.setTimeout(function () {
-            if (Date.now() >= postSendQuietUntil) {
-                mailSyncPaused = false;
-            }
-        }, ms || 15000);
     }
 
     function runBackgroundFetch(url, options) {
@@ -708,15 +702,81 @@
         else meta.appendChild(span);
     }
 
-    function applySnippetToRow(uid, snippet) {
-        if (!snippet) return;
-        rowsForUid(uid).forEach(function (el) {
-            var node = el.querySelector('.mail-row-snippet');
-            if (!node) return;
-            node.textContent = snippet;
-            node.title = snippet;
-            node.removeAttribute('aria-hidden');
+    function expandThreadForInlineCompose() {
+        var content = document.querySelector('#reading-pane-body .mail-read-content');
+        if (!content) return;
+        content.classList.add('is-thread-expanded');
+        setThreadInlineHistoryExpanded(content, false);
+        var bar = content.querySelector('.mail-read-subject-bar');
+        if (bar) {
+            bar.setAttribute('aria-expanded', 'true');
+            bar.setAttribute('title', 'Show latest message only');
+        }
+        content.querySelectorAll('[data-mail-thread-card]').forEach(function (card) {
+            if (card.classList.contains('is-expanded')) return;
+            card.classList.add('is-expanded');
+            card.setAttribute('aria-expanded', 'true');
+            var collapsed = card.querySelector('.mail-message-collapsed');
+            var expanded = card.querySelector('.mail-message-expanded');
+            if (collapsed) collapsed.hidden = true;
+            if (expanded) expanded.hidden = false;
         });
+    }
+
+    function applySnippetToRow(uid, snippet, dateIso, subject) {
+        if (!snippet && !dateIso && !subject) return;
+        rowsForUid(uid).forEach(function (el) {
+            if (snippet) {
+                var node = el.querySelector('.mail-row-snippet');
+                if (node) {
+                    node.textContent = snippet;
+                    node.title = snippet;
+                    node.removeAttribute('aria-hidden');
+                }
+            }
+            if (subject) {
+                var subjectEl = el.querySelector('.mail-row-subject, .mail-card-subject');
+                if (subjectEl) {
+                    subjectEl.textContent = subject;
+                    subjectEl.title = subject;
+                }
+            }
+            if (dateIso) {
+                var dateEl = el.querySelector('.mail-row-date, .mail-card-date');
+                if (dateEl) {
+                    dateEl.textContent = formatMailListDate(dateIso);
+                    dateEl.setAttribute('datetime', dateIso);
+                }
+                el.setAttribute('data-date', dateIso);
+            }
+        });
+        if (dateIso) {
+            var list = document.querySelector('.mail-list tbody, .mail-card-list');
+            if (list) {
+                rowsForUid(uid).forEach(function (el) {
+                    if (el.parentNode === list) {
+                        list.insertBefore(el, list.firstChild);
+                    }
+                });
+            }
+        }
+    }
+
+    function formatMailListDate(iso) {
+        if (!iso) return '';
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        var now = new Date();
+        var sameDay = d.toDateString() === now.toDateString();
+        if (sameDay) {
+            return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+        var weekAgo = new Date(now);
+        weekAgo.setDate(weekAgo.getDate() - 6);
+        if (d >= weekAgo) {
+            return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
     }
 
     function loadListSnippets(root) {
@@ -1315,13 +1375,19 @@
 
         var latestCard = thread.querySelector('.mail-message-card--latest');
         var composeSlot = getThreadComposeSlot(thread);
-        (composeSlot || thread).appendChild(slot);
+        var threadCards = thread.querySelectorAll('.mail-message-card');
+        if (threadCards.length > 1) {
+            thread.appendChild(slot);
+        } else {
+            (composeSlot || thread).appendChild(slot);
+        }
         if (latestCard) latestCard.classList.add('mail-message-card--composing');
 
         var pane = document.getElementById('reading-pane');
         if (pane) pane.classList.add('is-inline-compose-open');
         setComposeActionsDisabled(true);
         setThreadComposeFocus(true);
+        expandThreadForInlineCompose();
 
         function finish(html) {
             if (seq !== composePanelSeq) return;
@@ -1854,9 +1920,24 @@
         }
 
         invalidatePaneCache(restoreUid);
-        if (data && data.thread_preview) {
-            applySnippetToRow(restoreUid, data.thread_preview);
+        if (data && (data.thread_preview || data.reply_date || data.thread_subject)) {
+            applySnippetToRow(
+                restoreUid,
+                data.thread_preview || null,
+                data.reply_date || null,
+                data.thread_subject || null
+            );
         }
+        rowsForUid(restoreUid).forEach(function (el) {
+            el.classList.remove('is-unread');
+            el.removeAttribute('data-unread');
+        });
+        if (data && data.unread_counts) {
+            applyUnreadCounts(data.unread_counts);
+        }
+        mailSyncPaused = false;
+        postSendQuietUntil = 0;
+        resetComposeUiState();
         openMessageInPaneNow(restoreUid, false);
         return true;
     }
@@ -1989,13 +2070,14 @@
                         if (sentDraftUid) removeRowByUid(sentDraftUid);
                         clearReadingPane();
                         mailSyncPaused = false;
-                        beginPostSendQuiet(30000);
+                        beginPostSendQuiet(4000);
                         afterSendBadgePolls = 0;
                         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
                         scheduleMailPoll(true);
                         return;
                     }
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
+                    mailSyncPaused = false;
                     if (data && data.unread_counts) {
                         applyUnreadCounts(data.unread_counts);
                     }
@@ -2006,7 +2088,7 @@
                     if (inlineCompose) {
                         var composeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
                         closeInlineCompose(false, { keepUiState: false, skipRestore: true });
-                        beginPostSendQuiet(30000);
+                        beginPostSendQuiet(4000);
                         afterSendBadgePolls = 0;
                         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
                         if (composeMode === 'reply' || composeMode === 'reply-all') {
@@ -2021,7 +2103,7 @@
                             stopPaneMessageSync();
                             setPaneView('empty');
                         }
-                        beginPostSendQuiet(30000);
+                        beginPostSendQuiet(4000);
                         afterSendBadgePolls = 0;
                         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
                         return;
@@ -3522,7 +3604,7 @@
     }
 
     var afterSendBadgePolls = 0;
-    var afterSendBadgeDelays = [5000, 7000, 10000, 15000, 20000, 28000];
+    var afterSendBadgeDelays = [400, 2000, 5000, 10000];
 
     function applyPostSendUnreadCounts(counts) {
         if (!counts) return;

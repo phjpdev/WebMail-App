@@ -302,6 +302,12 @@ class ComposeController
                 mail_note_correspondents_from_addresses($toHeader, $ccHeader, $bccHeader);
             });
 
+            $this->applyPostSendSessionHints([
+                'dest_paths' => $destPaths,
+                'sent_message_id' => $sentMessageId,
+                'from_email' => $fromEmail,
+            ]);
+
             if (wants_json()) {
                 $jsonPayload = [
                     'ok' => true,
@@ -323,6 +329,21 @@ class ComposeController
                     $jsonPayload['correspondent_folders'] = mail_correspondent_folders_sidebar_payload(
                         (int) ($user['id'] ?? 0)
                     );
+                }
+                $jsonPayload['unread_counts'] = mail_post_send_optimistic_unread_counts($fromEmail, $destPaths);
+                if ($threadReply !== null) {
+                    $jsonPayload['reply_date'] = (string) ($threadReply['reply']['date'] ?? '');
+                    $replyFolder = (string) ($threadReply['folder_path'] ?? '');
+                    $replyUid = (int) ($threadReply['uid'] ?? 0);
+                    if ($replyFolder !== '' && $replyUid > 0) {
+                        $ctxMsg = MailCacheService::getBody($replyFolder, $replyUid);
+                        if ($ctxMsg !== null) {
+                            $base = mail_normalize_thread_subject((string) ($ctxMsg['subject'] ?? ''));
+                            if ($base !== '') {
+                                $jsonPayload['thread_subject'] = 'Re: ' . $base;
+                            }
+                        }
+                    }
                 }
                 json_response($jsonPayload);
             }
@@ -1265,7 +1286,12 @@ class ComposeController
         }
 
         with_session_write(function () use ($routedPaths, $fromEmail, $destPaths, $inbox): void {
-            $senderFolder = folder_for_alias_email($fromEmail);
+            $user = Auth::user();
+            $senderInbox = employee_linked_inbox_path($user);
+            if ($senderInbox !== null && $senderInbox !== '') {
+                FolderCache::setUnreadCount($senderInbox, 0);
+            }
+
             $badgePaths = array_values(array_filter(
                 $routedPaths,
                 static fn (string $p): bool => folder_shows_unread_badge($p)
@@ -1273,10 +1299,17 @@ class ComposeController
             if ($badgePaths === []) {
                 $badgePaths = FolderCache::getPendingBadgePaths();
             }
-            if ($senderFolder !== null && folder_shows_unread_badge($senderFolder)) {
-                $badgePaths[] = $senderFolder;
-                $badgePaths = array_values(array_unique($badgePaths));
+            foreach ($destPaths as $path) {
+                $resolved = FolderCache::resolvePath((string) $path);
+                if (
+                    $resolved !== ''
+                    && folder_shows_unread_badge($resolved)
+                    && !sender_suppresses_dest_folder_badge($resolved, $user)
+                ) {
+                    $badgePaths[] = $resolved;
+                }
             }
+            $badgePaths = array_values(array_unique(array_filter($badgePaths)));
             if ($badgePaths !== []) {
                 foreach ($badgePaths as $path) {
                     MailCacheService::reconcileBadgeFromIndex($path);

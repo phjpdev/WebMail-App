@@ -203,6 +203,7 @@ class MailController
         $list = employee_filter_correspondent_list($folderPath, $list);
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
+        $list = mail_group_list_by_thread($folderPath, $list);
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -499,6 +500,7 @@ class MailController
         $list = employee_merge_personal_sent_list($folderPath, $list);
 
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
+        $list = mail_group_list_by_thread($folderPath, $list);
 
         $messages = [];
 
