@@ -1871,7 +1871,7 @@
 
     function composeFormActionsEl(form) {
         if (!form) return null;
-        return form.querySelector('.compose-form-actions') || form.querySelector('.compose-outlook-actions') || form.querySelector('.compose-draft-actions');
+        return form.querySelector('.compose-form-actions') || form.querySelector('.compose-outlook-actions') || form.querySelector('.compose-draft-toolbar-actions') || form.querySelector('.compose-draft-actions');
     }
 
     function setComposeFormBusy(form, busy, activeBtn, loadingLabel) {
@@ -1972,7 +1972,7 @@
 
             var submitter = e.submitter;
             if (!submitter) {
-                submitter = form.querySelector('.compose-outlook-send, .compose-draft-send, .compose-form-actions button[type="submit"]:not([formaction*="draft"])');
+                submitter = form.querySelector('.compose-outlook-send, .compose-draft-action--send, .compose-draft-send, .compose-form-actions button[type="submit"]:not([formaction*="draft"])');
             }
             var draftAction = submitter && submitter.getAttribute('formaction');
             var actionPath = draftAction ? normalizeComposePath(draftAction) : 'compose/send';
@@ -5589,12 +5589,26 @@
             list.innerHTML = '';
             if (!input.files || input.files.length === 0) {
                 list.hidden = true;
+                wrap.classList.remove('has-files');
                 return;
             }
             list.hidden = false;
+            wrap.classList.add('has-files');
+            var draftBar = wrap.classList.contains('file-upload--draft-bar');
             Array.prototype.forEach.call(input.files, function (file) {
                 var li = document.createElement('li');
-                li.textContent = file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+                var sizeKb = Math.max(1, Math.round(file.size / 1024));
+                if (draftBar) {
+                    li.className = 'compose-draft-attach-chip';
+                    li.innerHTML =
+                        '<span class="compose-draft-attach-chip-icon" aria-hidden="true">' +
+                        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' +
+                        '</span>' +
+                        '<span class="compose-draft-attach-chip-name" title="' + escapeHtml(file.name) + '">' + escapeHtml(file.name) + '</span>' +
+                        '<span class="compose-draft-attach-chip-size">' + sizeKb + ' KB</span>';
+                } else {
+                    li.textContent = file.name + ' (' + sizeKb + ' KB)';
+                }
                 list.appendChild(li);
             });
         }

@@ -277,6 +277,34 @@ class FolderCache
         unset($_SESSION[self::PENDING_BADGE_PATHS_KEY]);
     }
 
+    public static function clearPendingBadgePath(string $path): void
+    {
+        $path = self::canonicalUnreadPath($path);
+        if ($path === '') {
+            return;
+        }
+
+        ensure_session_writable();
+        $pending = $_SESSION[self::PENDING_BADGE_PATHS_KEY] ?? null;
+        if (!is_array($pending)) {
+            return;
+        }
+
+        $paths = array_values(array_filter(
+            (array) ($pending['paths'] ?? []),
+            static fn (string $p): bool => self::canonicalUnreadPath($p) !== $path
+        ));
+
+        if ($paths === []) {
+            unset($_SESSION[self::PENDING_BADGE_PATHS_KEY]);
+        } else {
+            $_SESSION[self::PENDING_BADGE_PATHS_KEY] = [
+                'paths' => $paths,
+                'until' => (int) ($pending['until'] ?? time() + 120),
+            ];
+        }
+    }
+
     /**
      * Queue multi-folder delivery for a just-sent message when Bcc recipients
      * are stripped from the inbox copy but compose already knows all targets.

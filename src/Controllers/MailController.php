@@ -427,7 +427,8 @@ class MailController
             $needsHeaderSync = $forceRefresh
                 || $forceFilter
                 || MailCacheService::isStale($folderPath)
-                || MailCacheService::badgeAheadOfIndex($folderPath);
+                || MailCacheService::badgeAheadOfIndex($folderPath)
+                || in_array($folderPath, FolderCache::getPendingBadgePaths(), true);
             if ($needsHeaderSync) {
                 MailCacheService::syncFolderHeaders($imap, $folderPath);
                 $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
@@ -490,6 +491,9 @@ class MailController
 
         if (trim($_GET['q'] ?? '') === '') {
             MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
+            if (MailCacheService::hasFolderData($folderPath) && !MailCacheService::badgeAheadOfIndex($folderPath)) {
+                FolderCache::clearPendingBadgePath($folderPath);
+            }
             if (($_GET['filter'] ?? '') === '1') {
                 MailCacheService::reconcileAllIndexedBadges();
             }
@@ -558,6 +562,11 @@ class MailController
 
         // Fast path: session badge counts only (post-send-deferred handles IMAP/filter work).
         if ($light || $afterSend) {
+            if ($afterSend) {
+                foreach (FolderCache::getPendingBadgePaths() as $path) {
+                    MailCacheService::reconcileBadgeFromIndex($path);
+                }
+            }
             echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
 
             return;
@@ -1013,6 +1022,12 @@ class MailController
         } else {
             $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
         }
+
+        MailCacheService::reconcileBadgeFromIndex($folderPath);
+        if ($markRead) {
+            FolderCache::clearPendingBadgePath($folderPath);
+        }
+        $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
 
         $aliasService = new AliasService();
         $userId = Auth::user()['id'] ?? null;
@@ -1972,13 +1987,13 @@ class MailController
         }
 
         if ($delta !== 0) {
-            $counts = FolderCache::bumpUnread($folderPath, $delta);
-        } elseif (employee_is_correspondent_folder($folderPath) || MailCacheService::usesPerUserRead($folderPath)) {
-            MailCacheService::reconcileBadgeFromIndex($folderPath);
-            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
-        } else {
-            $counts = FolderCache::bumpUnread($folderPath, 0);
+            FolderCache::bumpUnread($folderPath, $delta);
         }
+        if ($seen) {
+            FolderCache::clearPendingBadgePath($folderPath);
+        }
+        MailCacheService::reconcileBadgeFromIndex($folderPath);
+        $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
 
         if (wants_json()) {
             json_response_then([

@@ -1689,19 +1689,6 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
             continue;
         }
         $pending[] = $resolved;
-        if (mail_linked_user_id_for_inbox($resolved) !== null) {
-            $before = (int) (\App\Services\FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$resolved] ?? 0);
-            \App\Services\MailCacheService::reconcileBadgeFromIndex($resolved);
-            $after = (int) (\App\Services\FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$resolved] ?? 0);
-            \App\Services\FolderCache::setUnreadCount($resolved, max($after, $before + 1));
-            continue;
-        }
-        if (\App\Services\MailCacheService::isSharedEmployeeMailbox($resolved)) {
-            $before = (int) (\App\Services\FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$resolved] ?? 0);
-            \App\Services\MailCacheService::reconcileBadgeFromIndex($resolved);
-            $after = (int) (\App\Services\FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$resolved] ?? 0);
-            \App\Services\FolderCache::setUnreadCount($resolved, max($after, $before + 1));
-        }
     }
     if ($pending !== []) {
         \App\Services\FolderCache::setPendingBadgePaths($pending);
@@ -2877,7 +2864,9 @@ function message_url(string $folderPath, int $uid): string
 
 function trash_folder_path(): string
 {
-    return resolve_system_folder(['trash'], 'INBOX.Trash');
+    return \App\Services\FolderCache::resolvePath(
+        resolve_named_system_folder(['Trash'], 'INBOX.Trash')
+    );
 }
 
 function spam_folder_path(): string
@@ -2885,8 +2874,77 @@ function spam_folder_path(): string
     // Canonical spam folder is "Junk" (the server / Apple Mail special-use
     // folder); fall back to a "Spam" folder only if no Junk exists.
     return \App\Services\FolderCache::resolvePath(
-        resolve_system_folder(['junk', 'spam'], 'INBOX.Junk')
+        resolve_named_system_folder(['Junk', 'Spam'], 'INBOX.Junk')
     );
+}
+
+/**
+ * Resolve a well-known system folder leaf (Junk, Trash, Sent, …) by exact name
+ * under INBOX or the logged-in employee inbox — avoids substring false matches
+ * such as INBOX.Jean.Junk winning over INBOX.Junk.
+ *
+ * @param list<string> $leafNames tried in order (case-insensitive)
+ */
+function resolve_named_system_folder(array $leafNames, string $default): string
+{
+    $employeeInbox = employee_linked_inbox_path();
+    if ($employeeInbox !== null) {
+        foreach ($leafNames as $leaf) {
+            $match = find_mailbox_folder_by_leaf($employeeInbox, $leaf);
+            if ($match !== null) {
+                return $match;
+            }
+        }
+    }
+
+    foreach ($leafNames as $leaf) {
+        $match = find_mailbox_folder_by_leaf('INBOX', $leaf);
+        if ($match !== null) {
+            return $match;
+        }
+    }
+
+    return $default;
+}
+
+/**
+ * Find a direct child folder of $parent whose leaf name matches (case-insensitive).
+ */
+function find_mailbox_folder_by_leaf(string $parent, string $leafName): ?string
+{
+    $parent = rtrim($parent, '.');
+    if ($parent === '' || $leafName === '') {
+        return null;
+    }
+
+    $prefix = $parent . '.';
+    $prefixLen = strlen($prefix);
+
+    try {
+        foreach (\App\Services\FolderCache::load(skipUnreadRefresh: true)['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if (
+                $path === ''
+                || strlen($path) <= $prefixLen
+                || strncasecmp($path, $prefix, $prefixLen) !== 0
+            ) {
+                continue;
+            }
+
+            $leaf = substr($path, $prefixLen);
+            if ($leaf === '' || str_contains($leaf, '.')) {
+                continue;
+            }
+
+            if (strcasecmp($leaf, $leafName) === 0) {
+                return $path;
+            }
+        }
+    } catch (\Throwable) {
+        // fall through
+    }
+
+    return null;
 }
 
 /**
@@ -5711,8 +5769,12 @@ function mail_avatar_initials_from_header(?string $from): string
  *     body: string,
  *     body_html: string,
  *     from_email: string,
+ *     aliases: list<array{id?: int, email: string, display_name: string}>,
+ *     send_as_fixed: bool,
+ *     returnFolder: string,
  *     draftFolder: string,
- *     draftUid: int
+ *     draftUid: int,
+ *     folderPath: string
  * }|null
  */
 function compose_draft_form_context(string $folderPath, int $uid): ?array
@@ -5733,7 +5795,8 @@ function compose_draft_form_context(string $folderPath, int $uid): ?array
 
     $cached = \App\Services\MailCacheService::getBody($folderPath, $uid);
     $aliasService = new \App\Services\AliasService();
-    $userId = \App\Auth::user()['id'] ?? null;
+    $sessionUser = \App\Auth::user();
+    $userId = $sessionUser['id'] ?? null;
     $savedFrom = (string) ($cached['from'] ?? '');
     $mimeFrom = (string) ($message['from'] ?? '');
     $fromEmail = $aliasService->resolveAllowedFrom(
@@ -5741,10 +5804,12 @@ function compose_draft_form_context(string $folderPath, int $uid): ?array
         $userId
     );
 
-    $sessionUser = \App\Auth::user();
-    if ($sessionUser !== null && ($sessionUser['role'] ?? '') === 'employee') {
+    $sendAsFixed = $sessionUser !== null && ($sessionUser['role'] ?? '') === 'employee';
+    if ($sendAsFixed) {
         $fromEmail = $aliasService->userAlias((int) ($sessionUser['id'] ?? 0));
     }
+
+    $aliases = compose_send_as_aliases($fromEmail, $aliasService->listForCompose($sessionUser));
 
     return [
         'to' => (string) ($message['to'] ?? ''),
@@ -5754,10 +5819,63 @@ function compose_draft_form_context(string $folderPath, int $uid): ?array
         'body' => (string) ($cached['plain'] ?? $message['plain'] ?? ''),
         'body_html' => (string) ($cached['html'] ?? $message['html'] ?? ''),
         'from_email' => $fromEmail,
+        'aliases' => $aliases,
+        'send_as_fixed' => $sendAsFixed,
+        'returnFolder' => encode_folder_path($folderPath),
         'folderPath' => $folderPath,
         'draftFolder' => $folderPath,
         'draftUid' => $uid,
     ];
+}
+
+/**
+ * Normalize send-as aliases so compose always has a selected identity.
+ *
+ * @param list<array{id?: int, email: string, display_name: string}> $aliases
+ * @return list<array{id?: int, email: string, display_name: string}>
+ */
+function compose_send_as_aliases(string $fromEmail, array $aliases): array
+{
+    $fromEmail = trim($fromEmail);
+    if ($fromEmail === '' && $aliases !== []) {
+        $fromEmail = (string) ($aliases[0]['email'] ?? '');
+    }
+    if ($fromEmail === '') {
+        $fromEmail = (string) (config('mail')['mailbox_email'] ?? '');
+    }
+
+    if ($fromEmail !== '') {
+        $found = false;
+        foreach ($aliases as $alias) {
+            if (strcasecmp((string) ($alias['email'] ?? ''), $fromEmail) === 0) {
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            $aliasService = new \App\Services\AliasService();
+            array_unshift($aliases, [
+                'email' => $fromEmail,
+                'display_name' => $aliasService->getDisplayName($fromEmail),
+            ]);
+        }
+    }
+
+    return $aliases;
+}
+
+function compose_send_as_display_name(string $fromEmail, array $aliases): string
+{
+    foreach ($aliases as $alias) {
+        if (strcasecmp((string) ($alias['email'] ?? ''), $fromEmail) === 0) {
+            $name = trim((string) ($alias['display_name'] ?? ''));
+            if ($name !== '') {
+                return $name;
+            }
+        }
+    }
+
+    return (new \App\Services\AliasService())->getDisplayName($fromEmail);
 }
 
 function compose_split_reply_body(string $body): array

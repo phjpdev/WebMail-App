@@ -659,7 +659,7 @@ class MailCacheService
         }
 
         $folderPath = self::indexFolderPath($folderPath);
-        if (in_array($folderPath, FolderCache::getPendingBadgePaths(), true)) {
+        if (in_array($folderPath, FolderCache::getPendingBadgePaths(), true) && !self::hasFolderData($folderPath)) {
             return false;
         }
 
@@ -1628,6 +1628,12 @@ class MailCacheService
             }
 
             if ($pageMessages !== null && $pageUnread === 0 && $session > 0 && !folder_uses_draft_badge($folderPath)) {
+                if (self::hasFolderData($folderPath) && self::countBadgeFromIndex($folderPath) === 0) {
+                    FolderCache::setUnreadCount($folderPath, 0);
+
+                    return 0;
+                }
+
                 // Keep the session badge until the folder is indexed — do not
                 // clear optimistic/post-delivery counts while cache is empty.
                 return $session;

@@ -847,10 +847,16 @@ class ComposeController
             );
         }
 
-        $composeAliases = $aliasService->listForCompose($sessionUser);
+        $composeAliases = compose_send_as_aliases(
+            (string) ($defaults['from_email'] ?? ''),
+            $aliasService->listForCompose($sessionUser)
+        );
         $sendAsFixed = $sessionUser !== null && ($sessionUser['role'] ?? '') === 'employee';
         if ($sendAsFixed) {
             $defaults['from_email'] = $aliasService->userAlias((int) ($sessionUser['id'] ?? 0));
+            $composeAliases = compose_send_as_aliases($defaults['from_email'], $composeAliases);
+        } elseif (($defaults['from_email'] ?? '') === '' && $composeAliases !== []) {
+            $defaults['from_email'] = $composeAliases[0]['email'];
         }
 
         $viewData = array_merge([
@@ -1319,6 +1325,9 @@ class ComposeController
             if ($badgePaths !== []) {
                 foreach ($badgePaths as $path) {
                     MailCacheService::reconcileBadgeFromIndex($path);
+                    if (MailCacheService::hasFolderData($path)) {
+                        FolderCache::clearPendingBadgePath($path);
+                    }
                 }
                 FolderCache::refreshPaths($badgePaths);
             }
