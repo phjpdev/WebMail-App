@@ -3295,6 +3295,127 @@ function format_mail_date(?string $date): string
     return $dt->format('M j, Y');
 }
 
+/**
+ * Last path segment of a mailbox (e.g. INBOX.Jean.Sent → Sent).
+ */
+function mail_folder_leaf(string $path, string $delimiter = '.'): string
+{
+    if ($path === '') {
+        return '';
+    }
+
+    if (!str_contains($path, $delimiter)) {
+        return $path;
+    }
+
+    $segments = explode($delimiter, $path);
+
+    return (string) end($segments);
+}
+
+/**
+ * Map a system-folder leaf name to a primary sidebar bucket, or null if not a system leaf.
+ */
+function system_folder_bucket_for_leaf(string $leaf): ?string
+{
+    $leaf = strtolower($leaf);
+
+    return match ($leaf) {
+        'sent', 'sent messages', 'sent items' => 'sent',
+        'drafts', 'draft' => 'drafts',
+        'archive' => 'archive',
+        'junk', 'spam' => 'spam',
+        'trash' => 'trash',
+        default => null,
+    };
+}
+
+/**
+ * Whether a path is a shared or personal system folder (Sent, Drafts, …) that
+ * belongs in the primary nav — not a custom folder whose name merely contains
+ * "sent" (e.g. INBOX.Presentation).
+ *
+ * Global: INBOX.Sent. Employee: INBOX.Jean.Sent when Jean is the linked inbox.
+ */
+function system_folder_bucket_for_path(string $path, ?string $employeeInbox = null): ?string
+{
+    if ($path === '' || strcasecmp($path, 'INBOX') === 0) {
+        return null;
+    }
+
+    $delimiter = '.';
+    $segments = explode($delimiter, $path);
+    if (count($segments) < 2) {
+        return null;
+    }
+
+    $leaf = mail_folder_leaf($path, $delimiter);
+    $bucket = system_folder_bucket_for_leaf($leaf);
+    if ($bucket === null) {
+        return null;
+    }
+
+    $parent = implode($delimiter, array_slice($segments, 0, -1));
+
+    if (strcasecmp($parent, 'INBOX') === 0) {
+        return $bucket;
+    }
+
+    if ($employeeInbox !== null && strcasecmp($parent, $employeeInbox) === 0) {
+        return $bucket;
+    }
+
+    return null;
+}
+
+/**
+ * Employee auto-provisioned system subfolder (INBOX.Jean.Sent) — hidden from admin nav.
+ */
+function is_nested_employee_system_subfolder(string $path): bool
+{
+    $delimiter = '.';
+    $segments = explode($delimiter, $path);
+    if (count($segments) !== 3 || strcasecmp($segments[0], 'INBOX') !== 0) {
+        return false;
+    }
+
+    return system_folder_bucket_for_leaf($segments[2]) !== null;
+}
+
+/**
+ * Keep one folder per primary sidebar bucket when the server reports duplicates.
+ *
+ * @param list<array{path: string, name: string, delimiter?: string}> $folders
+ * @return list<array{path: string, name: string, delimiter?: string}>
+ */
+function sidebar_dedupe_primary_bucket(array $folders, string $bucket): array
+{
+    if (count($folders) <= 1) {
+        return $folders;
+    }
+
+    $canonicalByBucket = [
+        'sent' => resolve_named_system_folder(['Sent', 'Sent Messages', 'Sent Items'], 'INBOX.Sent'),
+        'drafts' => resolve_named_system_folder(['Drafts', 'Draft'], 'INBOX.Drafts'),
+        'archive' => resolve_named_system_folder(['Archive'], 'INBOX.Archive'),
+        'trash' => trash_folder_path(),
+        'spam' => spam_folder_path(),
+    ];
+
+    if (!isset($canonicalByBucket[$bucket])) {
+        return [$folders[0]];
+    }
+
+    $canonical = strtoupper($canonicalByBucket[$bucket]);
+    foreach ($folders as $folder) {
+        if (strtoupper((string) ($folder['path'] ?? '')) === $canonical) {
+            return [$folder];
+        }
+    }
+
+    return [$folders[0]];
+}
+
 function folder_icon_type(string $path): string
 {
     $employeeInbox = employee_linked_inbox_path();
@@ -3302,26 +3423,13 @@ function folder_icon_type(string $path): string
         return 'inbox';
     }
 
-    $lower = strtolower($path);
     if ($path === 'INBOX' || strcasecmp($path, 'INBOX') === 0) {
         return 'inbox';
     }
-    if (str_contains($lower, 'sent')) {
-        return 'sent';
-    }
-    if (str_contains($lower, 'draft')) {
-        return 'draft';
-    }
-    if (str_contains($lower, 'trash')) {
-        return 'trash';
-    }
-    if (str_contains($lower, 'archive')) {
-        return 'archive';
-    }
-    // Junk and Spam share one canonical "Spam" identity (icon + bucket) so the
-    // UI never shows two near-identical spam folders.
-    if (str_contains($lower, 'junk') || str_contains($lower, 'spam')) {
-        return 'spam';
+
+    $bucket = system_folder_bucket_for_path($path, $employeeInbox);
+    if ($bucket !== null) {
+        return $bucket === 'drafts' ? 'draft' : $bucket;
     }
 
     return 'folder';
@@ -3337,28 +3445,13 @@ function sidebar_folder_bucket(string $path): string
         return 'inbox';
     }
 
-    $lower = strtolower($path);
-    if ($path === 'INBOX') {
+    if ($path === 'INBOX' || strcasecmp($path, 'INBOX') === 0) {
         return 'inbox';
     }
-    if (str_contains($lower, 'sent')) {
-        return 'sent';
-    }
-    if (str_contains($lower, 'draft')) {
-        return 'drafts';
-    }
-    if (str_contains($lower, 'archive')) {
-        return 'archive';
-    }
-    // Junk folders are bucketed as Spam so there is a single canonical spam slot.
-    if (str_contains($lower, 'junk') || str_contains($lower, 'spam')) {
-        return 'spam';
-    }
-    if (str_contains($lower, 'trash')) {
-        return 'trash';
-    }
 
-    return 'other';
+    $bucket = system_folder_bucket_for_path($path, $employeeInbox);
+
+    return $bucket ?? 'other';
 }
 
 /**

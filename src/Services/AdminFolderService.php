@@ -145,7 +145,17 @@ class AdminFolderService
             );
         }
 
-        $this->removeFolderRecord($folder);
+        if (($folder['folder_type'] ?? '') === 'employee') {
+            $linkedUserId = (int) ($folder['linked_user_id'] ?? 0);
+            $this->purgeMailboxSubtree(
+                (string) $folder['imap_path'],
+                $linkedUserId > 0 ? $linkedUserId : null
+            );
+        } else {
+            $this->removeFolderRecord($folder);
+        }
+
+        (new FolderCache())->clear();
     }
 
     /**
@@ -168,6 +178,144 @@ class AdminFolderService
         }
 
         $this->removeFolderRecord($folder);
+    }
+
+    /**
+     * Remove an employee's entire mailbox tree from IMAP and the folder registry.
+     */
+    public function purgeUserMailboxTree(int $userId): void
+    {
+        $roots = Database::query(
+            "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee'",
+            [$userId]
+        )->fetchAll();
+
+        if ($roots === []) {
+            $roots = Database::query(
+                'SELECT imap_path FROM folders WHERE linked_user_id = ? ORDER BY LENGTH(imap_path) ASC',
+                [$userId]
+            )->fetchAll();
+        }
+
+        $rootPaths = [];
+        foreach ($roots as $row) {
+            $path = trim((string) ($row['imap_path'] ?? ''));
+            if ($path !== '') {
+                $rootPaths[] = $path;
+            }
+        }
+
+        if ($rootPaths === []) {
+            Database::query('DELETE FROM folders WHERE linked_user_id = ?', [$userId]);
+
+            return;
+        }
+
+        foreach ($rootPaths as $root) {
+            $this->purgeMailboxSubtree($root, $userId);
+        }
+    }
+
+    /**
+     * Remove employee mailboxes left in the registry after accounts were deleted.
+     *
+     * @return int Number of mailbox trees removed
+     */
+    public function purgeOrphanedEmployeeMailboxes(): int
+    {
+        $rows = Database::query(
+            "SELECT f.id, f.imap_path
+             FROM folders f
+             LEFT JOIN users u ON u.id = f.linked_user_id AND u.active = 1
+             WHERE f.folder_type = 'employee'
+               AND f.active = 1
+               AND (f.linked_user_id IS NULL OR u.id IS NULL)
+             ORDER BY LENGTH(f.imap_path) ASC"
+        )->fetchAll();
+
+        $removed = 0;
+        foreach ($rows as $row) {
+            $path = trim((string) ($row['imap_path'] ?? ''));
+            if ($path === '') {
+                continue;
+            }
+
+            $segments = explode('.', $path);
+            if (count($segments) !== 2 || strcasecmp($segments[0], 'INBOX') !== 0) {
+                continue;
+            }
+            if (system_folder_bucket_for_leaf($segments[1]) !== null) {
+                continue;
+            }
+
+            $this->purgeMailboxSubtree($path);
+            $removed++;
+        }
+
+        if ($removed > 0) {
+            (new FolderCache())->clear();
+        }
+
+        return $removed;
+    }
+
+    /**
+     * Delete a mailbox root and every descendant from IMAP, cache, and the DB registry.
+     */
+    public function purgeMailboxSubtree(string $rootPath, ?int $linkedUserId = null): void
+    {
+        $root = rtrim($rootPath, '.');
+        if ($root === '') {
+            return;
+        }
+
+        $imap = new ImapService();
+        $connected = $imap->connect();
+        $serverPaths = [];
+
+        if ($connected) {
+            foreach ($imap->listFolders() as $folder) {
+                $serverPaths[] = (string) ($folder['path'] ?? '');
+            }
+        }
+
+        $pathsToRemove = [$root => true];
+        $prefix = $root . '.';
+        foreach ($serverPaths as $serverPath) {
+            if (
+                strcasecmp($serverPath, $root) === 0
+                || strncasecmp($serverPath, $prefix, strlen($prefix)) === 0
+            ) {
+                $pathsToRemove[$serverPath] = true;
+            }
+        }
+
+        $deleteOrder = array_keys($pathsToRemove);
+        usort(
+            $deleteOrder,
+            static fn (string $a, string $b): int => substr_count($b, '.') <=> substr_count($a, '.')
+        );
+
+        foreach ($deleteOrder as $path) {
+            if ($connected && $imap->folderExistsOnServer($path)) {
+                if (!$imap->deleteFolder($path)) {
+                    app_log('IMAP folder delete failed for ' . $path . ': ' . $imap->getLastError());
+                }
+            }
+            MailCacheService::purgeFolder($path);
+        }
+
+        if ($linkedUserId !== null && $linkedUserId > 0) {
+            Database::query(
+                'DELETE FROM folders WHERE linked_user_id = ? OR imap_path = ? OR imap_path LIKE ?',
+                [$linkedUserId, $root, $prefix . '%']
+            );
+        } else {
+            Database::query(
+                'DELETE FROM folders WHERE imap_path = ? OR imap_path LIKE ?',
+                [$root, $prefix . '%']
+            );
+        }
     }
 
     /**

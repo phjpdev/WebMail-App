@@ -14,20 +14,12 @@ foreach (($sidebarFolders ?? $folders ?? []) as $folder) {
     $grouped[sidebar_folder_bucket($folder['path'])][] = $folder;
 }
 
-// Show a single canonical spam folder. Spam mail is consolidated into one
-// folder (Junk), so any second spam/junk folder is hidden to avoid duplicates.
-if (count($grouped['spam']) > 1) {
-    $canonicalSpam = strtoupper(spam_folder_path());
-    $primarySpam = [];
-    foreach ($grouped['spam'] as $spamFolder) {
-        if ($primarySpam === [] && strtoupper((string) $spamFolder['path']) === $canonicalSpam) {
-            $primarySpam[] = $spamFolder;
-        }
+// One canonical folder per primary nav slot (Sent, Drafts, Archive, Junk, Trash).
+foreach ($primaryOrder as $bucket) {
+    if ($bucket === 'inbox' || $grouped[$bucket] === []) {
+        continue;
     }
-    if ($primarySpam === []) {
-        $primarySpam[] = $grouped['spam'][0];
-    }
-    $grouped['spam'] = $primarySpam;
+    $grouped[$bucket] = sidebar_dedupe_primary_bucket($grouped[$bucket], $bucket);
 }
 
 $composeHref = url('compose');

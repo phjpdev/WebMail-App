@@ -150,6 +150,7 @@ $router->post('/admin/folders/store', fn () => $adminController->foldersStore())
 $router->get('/admin/folders/{id}/edit', fn ($p) => $adminController->foldersEdit($p));
 $router->post('/admin/folders/{id}/update', fn ($p) => $adminController->foldersUpdate($p));
 $router->post('/admin/folders/{id}/delete', fn ($p) => $adminController->foldersDelete($p));
+$router->post('/admin/folders/purge-orphans', fn () => $adminController->foldersPurgeOrphans());
 $router->get('/admin/rules', fn () => $adminController->rulesIndex());
 $router->get('/admin/rules/create', fn () => $adminController->rulesCreate());
 $router->post('/admin/rules/store', fn () => $adminController->rulesStore());

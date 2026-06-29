@@ -541,8 +541,6 @@ class AdminUserService
         }
 
         Database::transaction(function () use ($id): void {
-            $folderIds = $this->collectUserFolderIds($id);
-
             $aliases = Database::query(
                 'SELECT id, email FROM aliases WHERE user_id = ?',
                 [$id]
@@ -556,10 +554,7 @@ class AdminUserService
                 Database::query('DELETE FROM aliases WHERE id = ?', [(int) $alias['id']]);
             }
 
-            $folderService = new AdminFolderService();
-            foreach ($folderIds as $folderId) {
-                $folderService->deleteUserFolder($folderId, $id);
-            }
+            (new AdminFolderService())->purgeUserMailboxTree($id);
 
             Database::query('DELETE FROM users WHERE id = ? AND role != \'admin\'', [$id]);
         });

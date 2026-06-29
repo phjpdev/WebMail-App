@@ -583,6 +583,27 @@ class AdminController
         redirect('admin/folders');
     }
 
+    public function foldersPurgeOrphans(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+        releaseSessionLock();
+
+        try {
+            $removed = $this->folders->purgeOrphanedEmployeeMailboxes();
+            if ($removed > 0) {
+                $this->audit('folder_purge_orphans', 'Removed ' . $removed . ' orphaned employee mailbox tree(s)');
+                flash('success', $removed . ' orphaned employee mailbox(es) removed from the server and folder list.');
+            } else {
+                flash('success', 'No orphaned employee mailboxes found.');
+            }
+        } catch (\Throwable $e) {
+            flash('error', $e->getMessage());
+        }
+
+        redirect('admin/folders');
+    }
+
     private function normalizeFolderType(string $type): string
     {
         $allowed = ['client', 'company', 'employee', 'system'];

@@ -2,7 +2,17 @@
 
 <section class="page-header page-header-row">
     <div><h2>Folders</h2></div>
-    <a class="btn btn-primary" href="<?= e(url('admin/folders/create')) ?>">Add folder</a>
+    <div class="page-header-actions">
+        <form method="post" action="<?= e(url('admin/folders/purge-orphans')) ?>" class="inline-form"
+              data-confirm-title="Remove orphaned mailboxes?"
+              data-confirm-message="Delete employee folders that no longer have an active user (including Jean, test folders, etc.) from the mail server and folder registry. This cannot be undone."
+              data-confirm-danger="1"
+              data-confirm-label="Remove orphaned">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-secondary">Remove orphaned mailboxes</button>
+        </form>
+        <a class="btn btn-primary" href="<?= e(url('admin/folders/create')) ?>">Add folder</a>
+    </div>
 </section>
 
 <?php require base_path('views/partials/admin-nav.php'); ?>

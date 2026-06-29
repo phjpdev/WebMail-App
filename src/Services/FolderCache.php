@@ -49,11 +49,15 @@ class FolderCache
     /** @var array<string, string>|null uppercase path => canonical IMAP path */
     private static ?array $pathResolveCache = null;
 
+    /** @var list<string>|null */
+    private static ?array $employeeRootsCache = null;
+
     public function clear(): void
     {
         unset($_SESSION[self::SESSION_KEY]);
         self::$registryCache = null;
         self::$pathResolveCache = null;
+        self::$employeeRootsCache = null;
     }
 
     /** @var array<string, array{path: string, display_name: string}>|null */
@@ -707,12 +711,23 @@ class FolderCache
     private function filterAdminFolders(array $data): array
     {
         $employeeRoots = $this->employeeMailboxRoots();
+        $registry = $this->registeredActiveFolders();
+        $orphanPrefixes = $this->orphanedEmployeeFolderPrefixes();
         $filtered = [];
         $counts = [];
 
         foreach ($data['folders'] as $folder) {
             $path = $folder['path'];
             if ($this->isEmployeePersonalSubfolder($path, $employeeRoots)) {
+                continue;
+            }
+            if (is_nested_employee_system_subfolder($path)) {
+                continue;
+            }
+            if ($this->isUnderOrphanedEmployeePrefix($path, $orphanPrefixes)) {
+                continue;
+            }
+            if ($this->isUnregisteredInboxOrphan($path, $registry)) {
                 continue;
             }
 
@@ -730,13 +745,94 @@ class FolderCache
     }
 
     /**
+     * Employee folders with no active linked user (left behind after account delete).
+     *
+     * @return list<string>
+     */
+    private function orphanedEmployeeFolderPrefixes(): array
+    {
+        $prefixes = [];
+
+        try {
+            $rows = Database::query(
+                "SELECT f.imap_path
+                 FROM folders f
+                 LEFT JOIN users u ON u.id = f.linked_user_id AND u.active = 1
+                 WHERE f.folder_type = 'employee'
+                   AND f.active = 1
+                   AND (f.linked_user_id IS NULL OR u.id IS NULL)"
+            )->fetchAll();
+
+            foreach ($rows as $row) {
+                $path = trim((string) ($row['imap_path'] ?? ''));
+                if ($path !== '') {
+                    $prefixes[] = $path;
+                }
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+
+        return $prefixes;
+    }
+
+    /**
+     * @param list<string> $orphanPrefixes
+     */
+    private function isUnderOrphanedEmployeePrefix(string $path, array $orphanPrefixes): bool
+    {
+        foreach ($orphanPrefixes as $prefix) {
+            $prefix = rtrim($prefix, '.');
+            if (strcasecmp($path, $prefix) === 0) {
+                return true;
+            }
+
+            $withDot = $prefix . '.';
+            if (
+                strlen($path) > strlen($withDot)
+                && strncasecmp($path, $withDot, strlen($withDot)) === 0
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Hide custom INBOX.* folders that exist on IMAP but were removed from the
+     * admin registry (e.g. after deleting an employee account).
+     *
+     * @param array<string, array{path: string, display_name: string}> $registry
+     */
+    private function isUnregisteredInboxOrphan(string $path, array $registry): bool
+    {
+        if (isset($registry[strtoupper($path)])) {
+            return false;
+        }
+
+        if (system_folder_bucket_for_path($path) !== null) {
+            return false;
+        }
+
+        if (strcasecmp($path, 'INBOX') === 0) {
+            return false;
+        }
+
+        if (!str_starts_with(strtoupper($path), 'INBOX.')) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * @return list<string>
      */
     private function employeeMailboxRoots(): array
     {
-        static $roots = null;
-        if ($roots !== null) {
-            return $roots;
+        if (self::$employeeRootsCache !== null) {
+            return self::$employeeRootsCache;
         }
 
         $roots = [];
@@ -754,6 +850,8 @@ class FolderCache
             // ignore
         }
 
+        self::$employeeRootsCache = $roots;
+
         return $roots;
     }
 
@@ -762,11 +860,11 @@ class FolderCache
      */
     private function isEmployeePersonalSubfolder(string $path, array $employeeRoots): bool
     {
-        // Only suppress the app's own auto-provisioned system subfolders
-        // (Sent/Drafts/Archive/Junk/Spam/Trash) directly under an employee root.
-        // Real client/work subfolders the team created (e.g. "2025 Tax Filing")
-        // must stay visible so the admin sees the full mailbox tree.
-        $systemLeaves = ['sent', 'drafts', 'archive', 'junk', 'spam', 'trash'];
+        if (is_nested_employee_system_subfolder($path)) {
+            return true;
+        }
+
+        $systemLeaves = ['sent', 'drafts', 'draft', 'archive', 'junk', 'spam', 'trash'];
 
         foreach ($employeeRoots as $root) {
             $prefix = rtrim($root, '.') . '.';
