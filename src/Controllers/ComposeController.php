@@ -1148,44 +1148,17 @@ class ComposeController
 
     private function resolveDraftsFolder(): string
     {
-        foreach (FolderCache::load()['folders'] as $folder) {
-            if (str_contains(strtolower($folder['path']), 'draft')) {
-                return $folder['path'];
-            }
-        }
-
-        return 'INBOX.Drafts';
+        return resolve_system_folder(['draft'], 'INBOX.Drafts');
     }
 
     private function resolveSentFolderFast(): string
     {
-        $folders = $_SESSION['_folder_cache']['folders'] ?? [];
-        if (is_array($folders)) {
-            foreach ($folders as $folder) {
-                $path = (string) ($folder['path'] ?? '');
-                if ($path !== '' && str_contains(strtolower($path), 'sent')) {
-                    return $path;
-                }
-            }
-        }
-
-        return 'INBOX.Sent';
+        return resolve_system_folder(['sent'], 'INBOX.Sent');
     }
 
     private function resolveSentFolder(): string
     {
-        $fast = $this->resolveSentFolderFast();
-        if ($fast !== 'INBOX.Sent' || !empty($_SESSION['_folder_cache']['folders'])) {
-            return $fast;
-        }
-
-        foreach (FolderCache::load(skipUnreadRefresh: true)['folders'] as $folder) {
-            if (str_contains(strtolower($folder['path']), 'sent')) {
-                return $folder['path'];
-            }
-        }
-
-        return 'INBOX.Sent';
+        return resolve_system_folder(['sent'], 'INBOX.Sent');
     }
 
     /**

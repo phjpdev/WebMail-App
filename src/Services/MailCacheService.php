@@ -167,10 +167,11 @@ class MailCacheService
         }
 
         $folderPath = self::indexFolderPath($folderPath);
+        $removed = mail_removed_uids_for_folder($folderPath);
 
         try {
-            $row = Database::fetchOne(
-                'SELECT COUNT(*) AS c
+            $rows = Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date
                  FROM mail_index i
                  WHERE i.folder_path = ?
                    AND NOT EXISTS (
@@ -178,12 +179,31 @@ class MailCacheService
                        WHERE r.user_id = ? AND r.folder_path = i.folder_path AND r.imap_uid = i.imap_uid
                    )',
                 [$folderPath, $userId]
-            );
+            )->fetchAll();
         } catch (\Throwable) {
             return 0;
         }
 
-        return (int) ($row['c'] ?? 0);
+        $count = 0;
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0 || isset($removed[$uid])) {
+                continue;
+            }
+            if (employee_is_own_inbox_folder($folderPath)) {
+                $msg = [
+                    'from' => (string) ($row['from_addr'] ?? ''),
+                    'subject' => (string) ($row['subject'] ?? ''),
+                    'date' => (string) ($row['msg_date'] ?? ''),
+                ];
+                if (employee_should_hide_inbox_correspondent_message($msg)) {
+                    continue;
+                }
+            }
+            $count++;
+        }
+
+        return $count;
     }
 
     /**
@@ -1058,6 +1078,17 @@ class MailCacheService
             return $truth;
         }
 
+        if (self::usesPerUserRead($folderPath)) {
+            $linkedId = self::linkedUserId($folderPath);
+            $viewerId = (int) (Auth::user()['id'] ?? 0);
+            if ($linkedId !== null && $viewerId === $linkedId) {
+                $truth = self::countUnseenForUser($linkedId, $folderPath);
+                FolderCache::setUnreadCount($folderPath, $truth);
+
+                return $truth;
+            }
+        }
+
         $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
 
         $pageUnread = 0;
@@ -1392,6 +1423,15 @@ class MailCacheService
         }
 
         return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    public static function messageFromIndexRow(array $row, string $folderPath): array
+    {
+        return self::indexRowToMessage($row, $folderPath);
     }
 
     /**

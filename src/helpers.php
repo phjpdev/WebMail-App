@@ -1074,6 +1074,257 @@ function employee_filter_correspondent_list(string $folderPath, array $list): ar
 }
 
 /**
+ * True when listing the logged-in employee's own inbox (not a correspondent folder).
+ */
+function employee_is_own_inbox_folder(string $folderPath): bool
+{
+    $own = employee_linked_inbox_path();
+    if ($own === null || $own === '') {
+        return false;
+    }
+
+    return strcasecmp(
+        \App\Services\FolderCache::resolvePath($folderPath),
+        \App\Services\FolderCache::resolvePath($own),
+    ) === 0;
+}
+
+/**
+ * Resolved personal Sent folder for the logged-in employee.
+ */
+function employee_personal_sent_folder_path(): ?string
+{
+    $own = employee_linked_inbox_path();
+    if ($own === null || $own === '') {
+        return null;
+    }
+
+    return \App\Services\FolderCache::resolvePath(
+        resolve_system_folder(['sent'], rtrim($own, '.') . '.Sent'),
+    );
+}
+
+function employee_is_personal_sent_folder(string $folderPath): bool
+{
+    $sent = employee_personal_sent_folder_path();
+    if ($sent === null || $sent === '') {
+        return false;
+    }
+
+    return strcasecmp(
+        \App\Services\FolderCache::resolvePath($folderPath),
+        $sent,
+    ) === 0;
+}
+
+/**
+ * Hide inbox copies of threads that already live in a correspondent folder (e.g. Support).
+ *
+ * @param array<string, mixed> $msg
+ */
+function employee_should_hide_inbox_correspondent_message(array $msg): bool
+{
+    $parsed = mail_parse_address((string) ($msg['from'] ?? ''));
+    $fromEmail = strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($msg['from'] ?? '')));
+    if ($fromEmail === '') {
+        return false;
+    }
+
+    $corrFolder = folder_for_alias_email($fromEmail);
+    if ($corrFolder === null || !employee_can_access_correspondent_folder($corrFolder)) {
+        return false;
+    }
+
+    $baseSubject = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+    if ($baseSubject === '') {
+        return false;
+    }
+
+    if (mail_find_correspondent_outbound_for_subject($corrFolder, $baseSubject) !== []) {
+        return true;
+    }
+
+    return mail_find_correspondent_inbound_for_subject($corrFolder, $baseSubject) !== [];
+}
+
+/**
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_filter_own_inbox_list(string $folderPath, array $list): array
+{
+    if (!employee_is_own_inbox_folder($folderPath) || !isset($list['messages']) || !is_array($list['messages'])) {
+        return $list;
+    }
+
+    $before = count($list['messages']);
+    $filtered = [];
+    foreach ($list['messages'] as $msg) {
+        if (!is_array($msg) || !employee_should_hide_inbox_correspondent_message($msg)) {
+            $filtered[] = $msg;
+        }
+    }
+
+    $removedCount = $before - count($filtered);
+    if ($removedCount > 0) {
+        $list['total'] = max(0, (int) ($list['total'] ?? 0) - $removedCount);
+        if ($filtered === []) {
+            $list['total_pages'] = 0;
+            $list['page'] = 1;
+        } elseif (isset($list['per_page'])) {
+            $perPage = max(1, (int) $list['per_page']);
+            $list['total_pages'] = (int) max(1, (int) ceil((int) $list['total'] / $perPage));
+        }
+    }
+
+    $list['messages'] = $filtered;
+
+    return $list;
+}
+
+/**
+ * @param array<string, mixed> $msg
+ */
+function mail_list_message_fingerprint(array $msg): string
+{
+    $parsed = mail_parse_address((string) ($msg['from'] ?? ''));
+
+    return strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($msg['from'] ?? '')))
+        . '|' . trim((string) ($msg['date'] ?? ''))
+        . '|' . mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+}
+
+/**
+ * Include legacy/global Sent copies when the employee personal Sent folder is empty in cache.
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_merge_personal_sent_list(string $folderPath, array $list): array
+{
+    if (!employee_is_personal_sent_folder($folderPath) || !isset($list['messages']) || !is_array($list['messages'])) {
+        return $list;
+    }
+
+    $ownSent = \App\Services\FolderCache::resolvePath($folderPath);
+    $globalSent = \App\Services\FolderCache::resolvePath('INBOX.Sent');
+    if (strcasecmp($ownSent, $globalSent) === 0) {
+        return $list;
+    }
+
+    $userEmails = mail_user_emails();
+    if ($userEmails === []) {
+        return $list;
+    }
+
+    $fingerprints = [];
+    foreach ($list['messages'] as $msg) {
+        if (is_array($msg)) {
+            $fingerprints[mail_list_message_fingerprint($msg)] = true;
+        }
+    }
+
+    $clauses = [];
+    $params = [$globalSent];
+    foreach ($userEmails as $email) {
+        $clauses[] = 'LOWER(i.from_addr) LIKE ?';
+        $params[] = '%' . strtolower($email) . '%';
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                    b.plain_body, b.html_body,
+                    COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                    COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+                ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path = ? AND (' . implode(' OR ', $clauses) . ')
+             ORDER BY i.msg_date DESC, i.imap_uid DESC',
+            $params
+        )->fetchAll();
+    } catch (\Throwable) {
+        return $list;
+    }
+
+    $extra = [];
+    foreach ($rows as $row) {
+        $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $globalSent);
+        if (isset($fingerprints[mail_list_message_fingerprint($msg)])) {
+            continue;
+        }
+        $msg['list_folder'] = $globalSent;
+        $fingerprints[mail_list_message_fingerprint($msg)] = true;
+        $extra[] = $msg;
+    }
+
+    foreach (employee_correspondent_folder_paths() as $corrPath) {
+        $corrPath = \App\Services\FolderCache::resolvePath($corrPath);
+        $corrClauses = [];
+        $corrParams = [$corrPath];
+        foreach ($userEmails as $email) {
+            $corrClauses[] = 'LOWER(i.from_addr) LIKE ?';
+            $corrParams[] = '%' . strtolower($email) . '%';
+        }
+        if ($corrClauses === []) {
+            continue;
+        }
+
+        try {
+            $corrRows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                        b.plain_body, b.html_body,
+                        COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                        COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+                 FROM mail_index i
+                 LEFT JOIN mail_bodies b
+                    ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                 WHERE i.folder_path = ? AND (' . implode(' OR ', $corrClauses) . ')
+                 ORDER BY i.msg_date DESC, i.imap_uid DESC',
+                $corrParams
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($corrRows as $row) {
+            $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $corrPath);
+            if (isset($fingerprints[mail_list_message_fingerprint($msg)])) {
+                continue;
+            }
+            $msg['list_folder'] = $corrPath;
+            $fingerprints[mail_list_message_fingerprint($msg)] = true;
+            $extra[] = $msg;
+        }
+    }
+
+    if ($extra === []) {
+        return $list;
+    }
+
+    $merged = array_merge($list['messages'], $extra);
+    usort($merged, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+        if ($aTs === $bTs) {
+            return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
+        }
+
+        return $bTs <=> $aTs;
+    });
+
+    $list['messages'] = $merged;
+    $list['total'] = count($merged);
+    if (isset($list['per_page'])) {
+        $perPage = max(1, (int) $list['per_page']);
+        $list['total_pages'] = (int) max(1, (int) ceil(count($merged) / $perPage));
+    }
+
+    return mail_filter_removed_messages($ownSent, $list);
+}
+
+/**
  * One list row per conversation thread in correspondent folders (latest message only).
  *
  * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
@@ -1729,11 +1980,18 @@ function resolve_system_folder(array $keywords, string $default): string
         $folders = \App\Services\FolderCache::load(skipUnreadRefresh: true)['folders'];
 
         if ($employeeInbox !== null) {
-            $prefix = $employeeInbox . '.';
+            $prefix = rtrim($employeeInbox, '.') . '.';
+            $prefixLen = strlen($prefix);
             foreach ($keywords as $keyword) {
+                $keywordLower = strtolower($keyword);
                 foreach ($folders as $folder) {
                     $path = (string) ($folder['path'] ?? '');
-                    if ($path !== '' && str_starts_with($path, $prefix) && str_contains(strtolower($path), $keyword)) {
+                    if (
+                        $path !== ''
+                        && strlen($path) > $prefixLen
+                        && strncasecmp($path, $prefix, $prefixLen) === 0
+                        && str_contains(strtolower($path), $keywordLower)
+                    ) {
                         return $path;
                     }
                 }

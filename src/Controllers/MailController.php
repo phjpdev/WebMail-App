@@ -201,6 +201,8 @@ class MailController
 
         // Correspondent-folder privacy: hide messages the viewer is not a party to.
         $list = employee_filter_correspondent_list($folderPath, $list);
+        $list = employee_filter_own_inbox_list($folderPath, $list);
+        $list = employee_merge_personal_sent_list($folderPath, $list);
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -493,6 +495,8 @@ class MailController
 
         // Correspondent-folder privacy: hide messages the viewer is not a party to.
         $list = employee_filter_correspondent_list($folderPath, $list);
+        $list = employee_filter_own_inbox_list($folderPath, $list);
+        $list = employee_merge_personal_sent_list($folderPath, $list);
 
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
 
@@ -500,6 +504,7 @@ class MailController
 
         foreach ($list['messages'] as $msg) {
             $uid = (int) $msg['uid'];
+            $msgFolder = (string) ($msg['list_folder'] ?? $folderPath);
             $isDraft = is_draft_folder($folderPath);
             $listFrom = (string) ($msg['list_from'] ?? '');
             if ($listFrom === '') {
@@ -521,10 +526,10 @@ class MailController
                 'has_attachment' => (bool) ($msg['has_attachment'] ?? false),
                 'avatar_initial' => mail_avatar_initial($rowDisplay['avatar_from']),
                 'avatar_color' => mail_avatar_color($rowDisplay['avatar_from']),
-                'url' => message_url($folderPath, $uid),
-                'reply_url' => url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
-                'reply_all_url' => url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
-                'forward_url' => url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
+                'url' => message_url($msgFolder, $uid),
+                'reply_url' => url('compose/reply?folder=' . encode_folder_path($msgFolder) . '&uid=' . $uid),
+                'reply_all_url' => url('compose/reply-all?folder=' . encode_folder_path($msgFolder) . '&uid=' . $uid),
+                'forward_url' => url('compose/forward?folder=' . encode_folder_path($msgFolder) . '&uid=' . $uid),
             ];
         }
 

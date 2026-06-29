@@ -153,8 +153,17 @@ class FolderCache
                 continue;
             }
 
-            $imapUnread = (int) $imapUnread;
             $sessionUnread = (int) ($_SESSION[self::SESSION_KEY]['unread_counts'][$path] ?? 0);
+
+            if (MailCacheService::usesPerUserRead($path)) {
+                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = MailCacheService::sidebarBadgeCount(
+                    $path,
+                    $sessionUnread
+                );
+                continue;
+            }
+
+            $imapUnread = (int) $imapUnread;
             $indexUnread = 0;
 
             if (MailCacheService::hasFolderData($path) && !MailCacheService::badgeAheadOfIndex($path)) {
