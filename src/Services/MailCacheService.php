@@ -551,20 +551,18 @@ class MailCacheService
                 continue;
             }
 
-            if (!empty($msg['snippet'])) {
-                continue;
+            if (empty($msg['snippet'])) {
+                $body = $bodies[$uid] ?? null;
+                if ($body !== null) {
+                    $msg['snippet'] = mail_list_snippet($body['plain_body'] ?? null, $body['html_body'] ?? null);
+                    if ($isDraft && !empty($body['to_addrs'])) {
+                        $msg['to'] = (string) $body['to_addrs'];
+                        $msg['list_from'] = format_mail_from((string) $body['to_addrs']);
+                    }
+                }
             }
 
-            $body = $bodies[$uid] ?? null;
-            if ($body === null) {
-                continue;
-            }
-
-            $msg['snippet'] = mail_list_snippet($body['plain_body'] ?? null, $body['html_body'] ?? null);
-            if ($isDraft && !empty($body['to_addrs'])) {
-                $msg['to'] = (string) $body['to_addrs'];
-                $msg['list_from'] = format_mail_from((string) $body['to_addrs']);
-            }
+            mail_enrich_list_with_thread_preview($folderPath, $msg);
         }
         unset($msg);
 

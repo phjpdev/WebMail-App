@@ -14,9 +14,10 @@ $hasBody = trim((string) ($segment['body_html'] ?? '')) !== ''
     || trim((string) ($segment['body'] ?? '')) !== '';
 $quotedPlain = trim((string) ($segment['quoted_plain'] ?? ''));
 $quotedHtml = trim((string) ($segment['quoted_html'] ?? ''));
-$hasQuoted = $isLatest && ($quotedPlain !== '' || $quotedHtml !== '');
 $snippet = (string) ($segment['snippet'] ?? '');
+$collapsedPreview = (string) ($display['collapsed_preview'] ?? $snippet);
 $collapsed = !$isLatest && $hasBody;
+$hasQuoted = $isLatest && !$collapsed && ($quotedPlain !== '' || $quotedHtml !== '');
 ?>
 <article class="mail-message-card<?= $isLatest ? ' mail-message-card--latest' : '' ?><?= $collapsed ? ' mail-message-card--collapsed' : '' ?>"
     <?= $collapsed ? ' data-mail-thread-card tabindex="0" role="button" aria-expanded="false"' : '' ?>>
@@ -25,11 +26,11 @@ $collapsed = !$isLatest && $hasBody;
         <div class="mail-message-avatar" style="background-color: <?= e($display['avatar_color']) ?>" aria-hidden="true"><?= e($display['avatar_initial']) ?></div>
         <div class="mail-message-collapsed-main">
             <div class="mail-message-collapsed-top">
-                <span class="mail-message-from-name"><?= e($display['sender_name']) ?></span>
+                <span class="mail-message-from-name"><?= e($display['sender_name']) ?><?php if ($display['sender_email'] !== ''): ?>&lt;<?= e($display['sender_email']) ?>&gt;<?php endif; ?></span>
                 <time class="mail-message-date" datetime="<?= e($segment['date'] ?? '') ?>"><?= e($display['display_date']) ?></time>
             </div>
-            <?php if ($snippet !== ''): ?>
-                <p class="mail-message-snippet"><?= e($snippet) ?></p>
+            <?php if ($collapsedPreview !== ''): ?>
+                <p class="mail-message-snippet"><?= e($collapsedPreview) ?></p>
             <?php endif; ?>
         </div>
     </div>
@@ -41,10 +42,7 @@ $collapsed = !$isLatest && $hasBody;
             <div class="mail-message-sender">
                 <div class="mail-message-sender-row">
                     <div class="mail-message-from">
-                        <span class="mail-message-from-name"><?= e($display['sender_name']) ?></span>
-                        <?php if ($display['sender_email'] !== ''): ?>
-                            <span class="mail-message-from-email">&lt;<?= e($display['sender_email']) ?>&gt;</span>
-                        <?php endif; ?>
+                        <span class="mail-message-from-name"><?= e($display['sender_name']) ?><?php if ($display['sender_email'] !== ''): ?>&lt;<?= e($display['sender_email']) ?>&gt;<?php endif; ?></span>
                     </div>
                     <time class="mail-message-date" datetime="<?= e($segment['date'] ?? '') ?>"><?= e($display['display_date']) ?></time>
                 </div>

@@ -462,6 +462,7 @@ class MailController
                     ? format_mail_from($to)
                     : format_mail_from($msg['from'] ?? '');
             }
+            $rowDisplay = mail_list_row_display($msg, $folderPath);
             $messages[] = [
                 'uid' => $uid,
                 'from' => $listFrom,
@@ -472,6 +473,8 @@ class MailController
                 'seen' => (bool) ($msg['seen'] ?? false),
                 'flagged' => (bool) ($msg['flagged'] ?? false),
                 'has_attachment' => (bool) ($msg['has_attachment'] ?? false),
+                'avatar_initial' => mail_avatar_initial($rowDisplay['avatar_from']),
+                'avatar_color' => mail_avatar_color($rowDisplay['avatar_from']),
                 'url' => message_url($folderPath, $uid),
                 'reply_url' => url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),
                 'reply_all_url' => url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid),

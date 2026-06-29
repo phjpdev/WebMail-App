@@ -1421,9 +1421,10 @@
             });
     }
 
-    function closeComposePanel(restorePane) {
+    function closeComposePanel(restorePane, options) {
+        options = options || {};
         if (document.getElementById('mail-inline-compose')) {
-            closeInlineCompose(restorePane);
+            closeInlineCompose(restorePane, options);
             return;
         }
         if (restorePane === undefined) restorePane = true;
@@ -1432,6 +1433,11 @@
         resetComposeUiState();
         var body = document.getElementById('compose-panel-body');
         if (body) body.innerHTML = '';
+
+        if (!restorePane && options.skipRestore) {
+            composePanelRestoreUid = null;
+            return;
+        }
 
         if (!restorePane) {
             setPaneView('empty');
@@ -1798,6 +1804,27 @@
         }
     }
 
+    function restorePaneAfterReplySend(data, form) {
+        var composeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
+        if (composeMode !== 'reply' && composeMode !== 'reply-all') {
+            return false;
+        }
+
+        var restoreUid = composePanelRestoreUid
+            || (data && data.reply_uid ? parseInt(data.reply_uid, 10) : 0)
+            || parseInt((form.querySelector('input[name="uid"]') || {}).value || '0', 10);
+        if (!restoreUid) {
+            return false;
+        }
+
+        invalidatePaneCache(restoreUid);
+        if (data && data.thread_preview) {
+            applySnippetToRow(restoreUid, data.thread_preview);
+        }
+        openMessageInPaneNow(restoreUid, false);
+        return true;
+    }
+
     function bindComposeFormAjax(form) {
         if (!form || form.dataset.ajaxBound) return;
         form.dataset.ajaxBound = '1';
@@ -1916,22 +1943,23 @@
                     }
                     var inlineCompose = form.closest('#mail-inline-compose');
                     if (inlineCompose) {
-                        var restoreUid = composePanelRestoreUid;
                         var composeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
                         closeInlineCompose(false, { keepUiState: false, skipRestore: true });
                         beginPostSendQuiet(30000);
                         afterSendBadgePolls = 0;
                         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
-                        if (restoreUid && (composeMode === 'reply' || composeMode === 'reply-all')) {
-                            invalidatePaneCache(restoreUid);
-                            openMessageInPaneNow(restoreUid, false);
+                        if (composeMode === 'reply' || composeMode === 'reply-all') {
+                            restorePaneAfterReplySend(data, form);
                         }
                         return;
                     }
                     if (form.closest('#compose-panel')) {
-                        closeComposePanel(false);
-                        stopPaneMessageSync();
-                        setPaneView('empty');
+                        var panelReply = restorePaneAfterReplySend(data, form);
+                        closeComposePanel(false, { skipRestore: true });
+                        if (!panelReply) {
+                            stopPaneMessageSync();
+                            setPaneView('empty');
+                        }
                         beginPostSendQuiet(30000);
                         afterSendBadgePolls = 0;
                         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
@@ -3100,8 +3128,6 @@
         var snippetHtml = '<div class="mail-row-snippet"' +
             (snippet ? ' title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) : ' aria-hidden="true">') +
             '</div>';
-        var initial = fromText.trim().charAt(0).toUpperCase() || '?';
-        var color = avatarColor(fromText);
         var attachHtml = msg.has_attachment
             ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment">' +
                 '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">' +
@@ -3113,7 +3139,6 @@
             '<div class="mail-row-check" onclick="event.stopPropagation()">' +
                 '<input type="checkbox" class="mail-check" value="' + msg.uid + '" aria-label="Select message">' +
             '</div>' +
-            '<div class="mail-row-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
             '<div class="mail-row-body">' +
                 '<div class="mail-row-text">' +
                     '<div class="mail-row-line1">' + draftBadge +
@@ -3153,8 +3178,6 @@
         var snippetHtml = '<div class="mail-row-snippet"' +
             (snippet ? ' title="' + escapeHtml(snippet) + '">' + escapeHtml(snippet) : ' aria-hidden="true">') +
             '</div>';
-        var initial = fromText.trim().charAt(0).toUpperCase() || '?';
-        var color = avatarColor(fromText);
         var attachHtml = msg.has_attachment
             ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>'
             : '';
@@ -3164,7 +3187,6 @@
             '<div class="mail-card-check mail-row-check" onclick="event.stopPropagation()">' +
                 '<input type="checkbox" class="mail-check" value="' + msg.uid + '" aria-label="Select message">' +
             '</div>' +
-            '<div class="mail-card-avatar" style="background-color:' + color + '" aria-hidden="true">' + escapeHtml(initial) + '</div>' +
             '<div class="mail-card-body">' +
                 '<div class="mail-card-line1">' + draftBadge +
                     '<span class="mail-card-from">' + escapeHtml(fromText) + '</span>' +
@@ -4573,6 +4595,16 @@
             h |= 0;
         }
         return colors[Math.abs(h) % colors.length];
+    }
+
+    function avatarInitialsFromDisplay(text) {
+        text = (text || '').trim();
+        if (!text) return '?';
+        var parts = text.split(/\s+/).filter(Boolean);
+        if (parts.length >= 2) {
+            return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+        }
+        return text.charAt(0).toUpperCase();
     }
 
     function parseRecipientToken(token) {

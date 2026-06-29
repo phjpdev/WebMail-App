@@ -118,14 +118,11 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                 <?php
                 $rowDisplay = mail_list_row_display($msg, $folderPath);
                 $fromDisplay = $rowDisplay['list_from'];
-                $avatarInitial = mail_avatar_initial($rowDisplay['avatar_from']);
-                $avatarColor = mail_avatar_color($rowDisplay['avatar_from']);
                 $snippet = $rowDisplay['snippet'];
                 ?>
                 <div class="mail-card-check mail-row-check" onclick="event.stopPropagation()">
                     <input type="checkbox" class="mail-check" value="<?= (int) $msg['uid'] ?>" aria-label="Select message">
                 </div>
-                <div class="mail-card-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
                 <div class="mail-card-body">
                     <div class="mail-card-line1">
                         <?php if ($rowDisplay['is_draft']): ?>

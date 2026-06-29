@@ -5,8 +5,6 @@
  */
 $rowDisplay = mail_list_row_display($msg, $folderPath);
 $fromDisplay = $rowDisplay['list_from'];
-$avatarInitial = mail_avatar_initial($rowDisplay['avatar_from']);
-$avatarColor = mail_avatar_color($rowDisplay['avatar_from']);
 $snippet = $rowDisplay['snippet'];
 $uid = (int) $msg['uid'];
 ?>
@@ -24,7 +22,6 @@ $uid = (int) $msg['uid'];
     <div class="mail-row-check" onclick="event.stopPropagation()">
         <input type="checkbox" class="mail-check" value="<?= $uid ?>" aria-label="Select message">
     </div>
-    <div class="mail-row-avatar" style="background-color: <?= e($avatarColor) ?>" aria-hidden="true"><?= e($avatarInitial) ?></div>
     <div class="mail-row-body">
         <div class="mail-row-text">
             <div class="mail-row-line1">

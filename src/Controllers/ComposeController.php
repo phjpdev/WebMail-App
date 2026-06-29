@@ -281,6 +281,16 @@ class ComposeController
                 $threadReply,
             );
 
+            if ($threadReply !== null) {
+                with_session_write(function () use ($threadReply): void {
+                    mail_store_thread_reply(
+                        (string) $threadReply['folder_path'],
+                        (int) $threadReply['uid'],
+                        $threadReply['reply'],
+                    );
+                });
+            }
+
             if (wants_json()) {
                 json_response([
                     'ok' => true,
@@ -290,6 +300,13 @@ class ComposeController
                         : '',
                     'draft_uid' => $draftUid > 0 ? $draftUid : null,
                     'post_send_token' => $postSendToken,
+                    'reply_uid' => $threadReply !== null ? (int) $threadReply['uid'] : null,
+                    'reply_folder' => $threadReply !== null
+                        ? encode_folder_path((string) $threadReply['folder_path'])
+                        : '',
+                    'thread_preview' => $threadReply !== null
+                        ? mail_conversation_snippet((string) ($threadReply['reply']['body'] ?? ''))
+                        : null,
                 ]);
             }
 
@@ -383,9 +400,8 @@ class ComposeController
         $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
         $sentMessageId = isset($job['sent_message_id']) ? (string) $job['sent_message_id'] : null;
         $fromEmail = (string) ($job['from_email'] ?? '');
-        $threadReply = is_array($job['thread_reply'] ?? null) ? $job['thread_reply'] : null;
 
-        with_session_write(function () use ($destPaths, $sentMessageId, $fromEmail, $threadReply): void {
+        with_session_write(function () use ($destPaths, $sentMessageId, $fromEmail): void {
             unset($_SESSION[self::DRAFT_KEY], $_SESSION[self::FORWARD_KEY]);
             $_SESSION['_post_send_at'] = time();
             unset($_SESSION['_after_send_filter_ran']);
@@ -400,18 +416,6 @@ class ComposeController
             }
             if (count($destPaths) > 1 && $sentMessageId !== null && $sentMessageId !== '') {
                 FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
-            }
-            if (
-                is_array($threadReply)
-                && !empty($threadReply['folder_path'])
-                && (int) ($threadReply['uid'] ?? 0) > 0
-                && is_array($threadReply['reply'] ?? null)
-            ) {
-                mail_store_thread_reply(
-                    (string) $threadReply['folder_path'],
-                    (int) $threadReply['uid'],
-                    $threadReply['reply'],
-                );
             }
         });
     }

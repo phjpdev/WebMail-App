@@ -89,7 +89,7 @@ $messageAttachments = $message['attachments'] ?? [];
     <?php endif; ?>
 </div>
 
-<div class="mail-read-content">
+<div class="mail-read-content<?= $threadCount > 1 ? ' is-thread-expanded' : '' ?>">
     <div class="mail-read-subject-bar">
         <h1 class="mail-read-subject"><?= e($message['subject'] ?: '(no subject)') ?></h1>
     </div>
@@ -98,7 +98,7 @@ $messageAttachments = $message['attachments'] ?? [];
         <?php foreach ($threadDisplay as $i => $segment): ?>
             <?php
             $isLatest = ($i === $threadCount - 1);
-            $display = mail_thread_segment_display($segment, $replyFrom);
+            $display = mail_thread_segment_display($segment, $replyFrom, $folderPath);
             $attachments = !empty($segment['is_current']) ? $messageAttachments : [];
             require base_path('views/partials/mail-thread-card.php');
             ?>
