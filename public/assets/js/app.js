@@ -2072,27 +2072,16 @@
                         if (sentDraftUid) removeRowByUid(sentDraftUid);
                         clearReadingPane();
                         mailSyncPaused = false;
-                        beginPostSendQuiet(4000);
-                        afterSendBadgePolls = 0;
-                        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
-                        scheduleMailPoll(true);
+                        afterComposeSendRefresh(data, form);
                         return;
                     }
                     if (data && data.draft_uid) removeRowByUid(data.draft_uid);
                     mailSyncPaused = false;
-                    if (data && data.unread_counts) {
-                        applyUnreadCounts(data.unread_counts);
-                    }
-                    if (data && data.correspondent_folders) {
-                        applyCorrespondentFolders(data.correspondent_folders);
-                    }
                     var inlineCompose = form.closest('#mail-inline-compose');
                     if (inlineCompose) {
                         var composeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
                         closeInlineCompose(false, { keepUiState: false, skipRestore: true });
-                        beginPostSendQuiet(4000);
-                        afterSendBadgePolls = 0;
-                        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+                        afterComposeSendRefresh(data, form);
                         if (composeMode === 'reply' || composeMode === 'reply-all') {
                             restorePaneAfterReplySend(data, form);
                         }
@@ -2105,11 +2094,10 @@
                             stopPaneMessageSync();
                             setPaneView('empty');
                         }
-                        beginPostSendQuiet(4000);
-                        afterSendBadgePolls = 0;
-                        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+                        afterComposeSendRefresh(data, form);
                         return;
                     }
+                    afterComposeSendRefresh(data, form);
                     var redirectPath = (data && data.return_folder) ? ('folder/' + data.return_folder) : '';
                     window.location = apiUrl(redirectPath);
                 }).catch(function (err) {
@@ -3506,7 +3494,7 @@
     function startPostSendFolderPolls(folderB64List) {
         if (!folderB64List || !folderB64List.length) return;
         clearPostSendFolderPolls();
-        [1000, 3000, 6000, 12000, 20000, 30000].forEach(function (delay) {
+        [600, 1500, 3500, 7000, 12000, 20000].forEach(function (delay) {
             postSendFolderPollTimers.push(window.setTimeout(function () {
                 var card = getListCard();
                 var currentB64 = card ? card.getAttribute('data-folder-b64') : '';
@@ -3608,7 +3596,57 @@
     }
 
     var afterSendBadgePolls = 0;
-    var afterSendBadgeDelays = [400, 2000, 5000, 10000];
+    var afterSendBadgeDelays = [300, 1200, 3000, 6000];
+
+    function collectPostSendPollFolders(data, form) {
+        var folders = [];
+        if (data && Array.isArray(data.dest_folders)) {
+            data.dest_folders.forEach(function (token) {
+                if (token && folders.indexOf(token) < 0) folders.push(token);
+            });
+        }
+        if (data && data.reply_folder && folders.indexOf(data.reply_folder) < 0) {
+            folders.push(data.reply_folder);
+        }
+        var card = getListCard();
+        if (card) {
+            var currentB64 = card.getAttribute('data-folder-b64');
+            if (currentB64 && folders.indexOf(currentB64) < 0) {
+                folders.push(currentB64);
+            }
+        }
+        if (form) {
+            var returnField = form.querySelector('#return_folder');
+            var returnB64 = returnField ? (returnField.value || '').trim() : '';
+            if (returnB64 && folders.indexOf(returnB64) < 0) {
+                folders.push(returnB64);
+            }
+        }
+        return folders;
+    }
+
+    function afterComposeSendRefresh(data, form) {
+        if (data && data.unread_counts) {
+            applyUnreadCounts(data.unread_counts);
+        }
+        if (data && data.correspondent_folders) {
+            applyCorrespondentFolders(data.correspondent_folders);
+        }
+
+        beginPostSendQuiet(5000);
+        afterSendBadgePolls = 0;
+        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+
+        var pollFolders = collectPostSendPollFolders(data, form);
+        if (pollFolders.length) {
+            setMailListLoading(true);
+            startPostSendFolderPolls(pollFolders);
+        }
+
+        scheduleMailPoll(true, true);
+        window.setTimeout(function () { scheduleMailPoll(true, true); }, 1200);
+        window.setTimeout(function () { scheduleMailPoll(true, true); }, 3500);
+    }
 
     function applyPostSendUnreadCounts(counts) {
         if (!counts) return;
@@ -3642,7 +3680,7 @@
         afterSendBadgePolls++;
         afterSendBadgePollInFlight = true;
 
-        fetch(apiUrl('folders/unread'), {
+        fetch(apiUrl('folders/unread?after_send=1&filter=1'), {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })

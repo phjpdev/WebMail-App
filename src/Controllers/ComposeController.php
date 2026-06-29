@@ -337,6 +337,7 @@ class ComposeController
                     );
                 }
                 $jsonPayload['unread_counts'] = mail_post_send_optimistic_unread_counts($fromEmail, $destPaths);
+                $jsonPayload['dest_folders'] = mail_post_send_dest_folder_tokens($destPaths);
                 if ($threadReply !== null) {
                     $jsonPayload['reply_date'] = (string) ($threadReply['reply']['date'] ?? '');
                     $replyFolder = (string) ($threadReply['folder_path'] ?? '');

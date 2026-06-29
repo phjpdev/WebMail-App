@@ -271,6 +271,22 @@ class FolderCache
         ));
     }
 
+    public static function isPendingBadgePath(string $path): bool
+    {
+        $path = self::canonicalUnreadPath($path);
+        if ($path === '') {
+            return false;
+        }
+
+        foreach (self::getPendingBadgePaths() as $pending) {
+            if (strcasecmp($pending, $path) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static function clearPendingBadgePaths(): void
     {
         ensure_session_writable();

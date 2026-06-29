@@ -659,7 +659,7 @@ class MailCacheService
         }
 
         $folderPath = self::indexFolderPath($folderPath);
-        if (in_array($folderPath, FolderCache::getPendingBadgePaths(), true) && !self::hasFolderData($folderPath)) {
+        if (FolderCache::isPendingBadgePath($folderPath)) {
             return false;
         }
 
@@ -1599,7 +1599,11 @@ class MailCacheService
                 return $truth;
             }
             if ($linkedId !== null && self::viewerIsAdmin()) {
+                $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
                 $truth = self::countAdminEmployeeInboxBadge($folderPath);
+                if (FolderCache::isPendingBadgePath($folderPath)) {
+                    $truth = max($truth, $session);
+                }
                 FolderCache::setUnreadCount($folderPath, $truth);
 
                 return $truth;

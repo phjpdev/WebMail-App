@@ -1671,7 +1671,19 @@ function mail_employee_inbox_row_counts_for_badge(string $folderPath, array $row
  */
 function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destPaths): array
 {
-    $user = App\Auth::user();
+    mail_apply_destination_folder_badges($fromEmail, $destPaths);
+
+    return \App\Services\FolderCache::sidebarUnreadCounts();
+}
+
+/**
+ * Bump unread badges for folders that will receive the outbound message.
+ *
+ * @param list<string> $destPaths
+ */
+function mail_apply_destination_folder_badges(string $fromEmail, array $destPaths, ?array $user = null): void
+{
+    $user = $user ?? App\Auth::user();
     $senderInbox = employee_linked_inbox_path($user);
     if ($senderInbox !== null && $senderInbox !== '') {
         \App\Services\FolderCache::setUnreadCount($senderInbox, 0);
@@ -1679,7 +1691,7 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
 
     $senderFolder = folder_for_alias_email($fromEmail);
     if ($senderFolder !== null && $senderFolder !== '') {
-        \App\Services\FolderCache::setUnreadCount($senderFolder, 0);
+        \App\Services\FolderCache::setUnreadCount(\App\Services\FolderCache::resolvePath($senderFolder), 0);
     }
 
     $pending = [];
@@ -1688,13 +1700,33 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
         if ($resolved === '' || sender_suppresses_dest_folder_badge($resolved, $user)) {
             continue;
         }
+        \App\Services\FolderCache::bumpUnread($resolved, 1);
         $pending[] = $resolved;
     }
+
     if ($pending !== []) {
         \App\Services\FolderCache::setPendingBadgePaths($pending);
     }
+}
 
-    return \App\Services\FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+/**
+ * Encoded folder paths for client post-send polling.
+ *
+ * @param list<string> $destPaths
+ * @return list<string>
+ */
+function mail_post_send_dest_folder_tokens(array $destPaths): array
+{
+    $tokens = [];
+    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
+        $resolved = \App\Services\FolderCache::resolvePath((string) $path);
+        if ($resolved === '') {
+            continue;
+        }
+        $tokens[] = encode_folder_path($resolved);
+    }
+
+    return $tokens;
 }
 
 /**
