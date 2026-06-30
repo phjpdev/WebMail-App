@@ -300,13 +300,12 @@ class MailController
         $list = employee_filter_correspondent_list($folderPath, $list);
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
-        $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
 
         // Thread preview runs only on grouped rows (one enrich pass per conversation).
-        $enrichLight = $servedFromCache && $preferCache && !$explicitRefresh;
+        $enrichLight = !$explicitRefresh;
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages'], $enrichLight);
 
         // Decide polling state from the loaded folder data, before privacy
@@ -670,14 +669,10 @@ class MailController
         $list = employee_filter_correspondent_list($folderPath, $list);
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
-        $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
-
-        if (!$light) {
-            $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
-        }
+        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages'], true);
 
         $messages = [];
 
@@ -709,6 +704,7 @@ class MailController
             if (!empty($msg['optimistic'])) {
                 $entry['optimistic'] = true;
             } else {
+                $entry['folder_b64'] = encode_folder_path($msgFolder);
                 $entry['url'] = message_url($msgFolder, $uid);
                 $entry['reply_url'] = url('compose/reply?folder=' . encode_folder_path($msgFolder) . '&uid=' . $uid);
                 $entry['reply_all_url'] = url('compose/reply-all?folder=' . encode_folder_path($msgFolder) . '&uid=' . $uid);
@@ -1575,6 +1571,15 @@ class MailController
     {
         $resolvedFolderPath = FolderCache::resolvePath($folderPath);
         $indexFolderPath = MailCacheService::indexFolderPath($resolvedFolderPath);
+        $uids = array_values(array_filter($uids, static fn (int $u): bool =>
+            $u > 0 && MailCacheService::messageInIndex($indexFolderPath, $u)
+        ));
+        if ($uids === []) {
+            if (wants_json()) {
+                json_response(['ok' => false, 'error' => 'Selected messages are no longer in this folder.'], 422);
+            }
+            $this->actionError('Selected messages are no longer in this folder.', $redirect);
+        }
         $targetPath = mail_resolve_move_target_path($targetPath);
         if ($targetPath === '' || is_draft_folder($targetPath)) {
             if (wants_json()) {
@@ -1593,35 +1598,40 @@ class MailController
         }
 
         if (wants_json()) {
-            $relocated = MailCacheService::relocateCachedMessages($indexFolderPath, $targetIndexPath, $uids);
-            mail_mark_uids_removed($resolvedFolderPath, $uids);
-            mail_clear_removed_uids($targetIndexPath, $uids);
-            if ($siblingMode !== 'none') {
-                $this->removeSiblingCopiesFromCache($resolvedFolderPath, $uids, $targetPath);
-            }
-            if ($relocated === 0 && !is_trash_folder($targetPath)) {
-                MailCacheService::invalidateFolder($targetPath);
-            }
-            if (strcasecmp($targetPath, $filterInbox) === 0) {
-                FilterService::preserveManualInboxPlacementFromIndex($targetIndexPath, $uids);
-            }
+            try {
+                $relocated = MailCacheService::relocateCachedMessages($indexFolderPath, $targetIndexPath, $uids);
+                mail_mark_uids_removed($resolvedFolderPath, $uids);
+                mail_clear_removed_uids($targetIndexPath, $uids);
+                if ($siblingMode !== 'none') {
+                    $this->removeSiblingCopiesFromCache($resolvedFolderPath, $uids, $targetPath);
+                }
+                if ($relocated === 0 && !is_trash_folder($targetPath)) {
+                    MailCacheService::invalidateFolder($targetPath);
+                }
+                if (strcasecmp($targetPath, $filterInbox) === 0) {
+                    FilterService::preserveManualInboxPlacementFromIndex($targetIndexPath, $uids);
+                }
 
-            MailCacheService::reconcileBadgeFromIndex($indexFolderPath);
-            if ($targetIndexPath !== '' && strcasecmp($targetIndexPath, $indexFolderPath) !== 0) {
-                MailCacheService::reconcileBadgeFromIndex($targetIndexPath);
-            }
-            $counts = FolderCache::sidebarUnreadCounts();
+                MailCacheService::reconcileBadgeFromIndex($indexFolderPath);
+                if ($targetIndexPath !== '' && strcasecmp($targetIndexPath, $indexFolderPath) !== 0) {
+                    MailCacheService::reconcileBadgeFromIndex($targetIndexPath);
+                }
+                $counts = FolderCache::sidebarUnreadCountsFromSession();
 
-            json_response_then($this->appendCorrespondentFolderPrune($resolvedFolderPath, [
-                'ok' => true,
-                'moved' => count($uids),
-                'errors' => 0,
-                'uids' => array_values($uids),
-                'target' => $targetPath,
-                'unread_counts' => $counts,
-            ]), function () use ($resolvedFolderPath, $uids, $targetPath, $targetIndexPath, $siblingMode, $filterInbox): void {
-                $this->executeMoveOnServer($resolvedFolderPath, $uids, $targetPath, $siblingMode, $filterInbox, $targetIndexPath);
-            });
+                json_response_then($this->appendCorrespondentFolderPrune($resolvedFolderPath, [
+                    'ok' => true,
+                    'moved' => count($uids),
+                    'errors' => 0,
+                    'uids' => array_values($uids),
+                    'target' => $targetPath,
+                    'unread_counts' => $counts,
+                ]), function () use ($resolvedFolderPath, $uids, $targetPath, $targetIndexPath, $siblingMode, $filterInbox): void {
+                    $this->executeMoveOnServer($resolvedFolderPath, $uids, $targetPath, $siblingMode, $filterInbox, $targetIndexPath);
+                });
+            } catch (\Throwable $e) {
+                app_log('performMove json failed: ' . $e->getMessage());
+                json_response(['ok' => false, 'error' => 'Could not move messages.'], 500);
+            }
         }
 
         $imap = new ImapService();

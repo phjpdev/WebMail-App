@@ -7,6 +7,8 @@ $rowDisplay = mail_list_row_display($msg, $folderPath);
 $fromDisplay = $rowDisplay['list_from'];
 $snippet = $rowDisplay['snippet'];
 $uid = (int) $msg['uid'];
+$rowFolder = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) ($msg['list_folder'] ?? $folderPath)));
+$rowFolderB64 = encode_folder_path($rowFolder);
 ?>
 <div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= $rowDisplay['is_draft'] ? ' mail-row--draft' : '' ?><?= !empty($msg['optimistic']) ? ' mail-row--optimistic' : '' ?>"
     role="option"
@@ -18,10 +20,11 @@ $uid = (int) $msg['uid'];
     <?php if (!empty($msg['optimistic'])): ?>
     data-optimistic="1"
     <?php else: ?>
-    data-href="<?= e(message_url($folderPath, $uid)) ?>"
-    data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>"
-    data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>"
-    data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>"
+    data-href="<?= e(message_url($rowFolder, $uid)) ?>"
+    data-folder-b64="<?= e($rowFolderB64) ?>"
+    data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($rowFolder) . '&uid=' . $uid)) ?>"
+    data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($rowFolder) . '&uid=' . $uid)) ?>"
+    data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($rowFolder) . '&uid=' . $uid)) ?>"
     <?php endif; ?>>
     <div class="mail-row-check" onclick="event.stopPropagation()">
         <input type="checkbox" class="mail-check" value="<?= $uid ?>" aria-label="Select message">

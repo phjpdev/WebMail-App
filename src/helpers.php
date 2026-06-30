@@ -3247,7 +3247,7 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
             $bestUid = $entryUid;
         }
     }
-    if ($bestUid > 0) {
+    if ($bestUid > 0 && \App\Services\MailCacheService::messageInIndex($folderResolved, $bestUid)) {
         $msg['uid'] = $bestUid;
         $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid);
     }

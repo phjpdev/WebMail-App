@@ -270,6 +270,21 @@
     }
 
     function paneFetchUrl(uid) {
+        var row = rowsForUid(uid)[0];
+        if (row) {
+            var href = row.getAttribute('data-href');
+            if (href) {
+                var path = href.replace(/^[^:]+:\\/\//, '').split('?')[0];
+                var m = path.match(/\/folder\/([^/]+)\/message\/(\d+)/);
+                if (m) {
+                    return apiUrl('folder/' + m[1] + '/message/' + m[2] + '/pane');
+                }
+            }
+            var rowFolderB64 = row.getAttribute('data-folder-b64');
+            if (rowFolderB64) {
+                return apiUrl('folder/' + rowFolderB64 + '/message/' + uid + '/pane');
+            }
+        }
         var card = getListCard();
         if (!card) return null;
         var b64 = card.getAttribute('data-folder-b64');
@@ -3448,6 +3463,7 @@
             row.setAttribute('data-optimistic', '1');
         } else {
             row.setAttribute('data-href', msg.url);
+            if (msg.folder_b64) row.setAttribute('data-folder-b64', msg.folder_b64);
             if (msg.reply_url) row.setAttribute('data-reply-url', msg.reply_url);
             if (msg.reply_all_url) row.setAttribute('data-reply-all-url', msg.reply_all_url);
             if (msg.forward_url) row.setAttribute('data-forward-url', msg.forward_url);
@@ -3503,6 +3519,7 @@
             a.setAttribute('data-optimistic', '1');
         } else {
             a.setAttribute('data-href', msg.url);
+            if (msg.folder_b64) a.setAttribute('data-folder-b64', msg.folder_b64);
             if (msg.reply_url) a.setAttribute('data-reply-url', msg.reply_url);
             if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
             if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
