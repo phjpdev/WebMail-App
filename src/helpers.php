@@ -213,6 +213,7 @@ function e(?string $value): string
 function csrf_token(): string
 {
     if (empty($_SESSION['_csrf_token'])) {
+        ensure_session_writable();
         $_SESSION['_csrf_token'] = bin2hex(random_bytes(32));
     }
 
@@ -484,7 +485,14 @@ function releaseSessionLock(): void
 function ensure_session_writable(): void
 {
     if (session_status() === PHP_SESSION_NONE) {
-        session_start();
+        session_start([
+            'cookie_httponly' => true,
+            'cookie_samesite' => 'Lax',
+            'cookie_secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https')
+                || (($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '') === 'on')
+                || ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443),
+        ]);
     }
 }
 

@@ -4509,18 +4509,32 @@
         if (label) label.textContent = seen ? 'Unread' : 'Read';
     }
 
-    function fireAndForgetAction(actionPath, payload) {
-        fetch(apiUrl(actionPath), {
+    function fireAndForgetAction(actionPath, payload, retryOnCsrf) {
+        if (retryOnCsrf === undefined) retryOnCsrf = true;
+        return fetch(apiUrl(actionPath), {
             method: 'POST',
             credentials: 'same-origin',
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',
                 Accept: 'application/json',
-                'Content-Type': 'application/x-www-form-urlencoded'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRF-Token': csrf || ''
             },
             body: payload.toString()
         }).then(function (res) {
+            captureCsrfFromResponse(res);
             return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                if (
+                    res.status === 403
+                    && retryOnCsrf
+                    && data
+                    && String(data.error || '').toLowerCase().indexOf('security token') >= 0
+                ) {
+                    return refreshCsrfToken().then(function () {
+                        payload.set('_csrf', csrf);
+                        return fireAndForgetAction(actionPath, payload, false);
+                    });
+                }
                 if (!res.ok || (data && data.ok === false)) {
                     throw new Error((data && data.error) || 'Action failed.');
                 }
@@ -4538,17 +4552,32 @@
     /** List mutations (move/delete/spam): refresh folder if server rejects optimistic UI. */
     function fireListMutation(actionPath, payload, options) {
         options = options || {};
+        var retryOnCsrf = options.retryOnCsrf !== false;
         return fetch(apiUrl(actionPath), {
             method: 'POST',
             credentials: 'same-origin',
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',
                 Accept: 'application/json',
-                'Content-Type': 'application/x-www-form-urlencoded'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRF-Token': csrf || ''
             },
             body: payload.toString()
         }).then(function (res) {
+            captureCsrfFromResponse(res);
             return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                if (
+                    res.status === 403
+                    && retryOnCsrf
+                    && data
+                    && String(data.error || '').toLowerCase().indexOf('security token') >= 0
+                ) {
+                    return refreshCsrfToken().then(function () {
+                        payload.set('_csrf', csrf);
+                        options.retryOnCsrf = false;
+                        return fireListMutation(actionPath, payload, options);
+                    });
+                }
                 if (!res.ok || (data && data.ok === false)) {
                     throw new Error((data && data.error) || 'Action failed.');
                 }
