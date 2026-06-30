@@ -1069,6 +1069,7 @@
             }
 
             reinitMailListColumn();
+            removeStaleOptimisticRows();
             if (visibleMailRowCount() > 0) {
                 setMailListLoading(false);
                 ensureListVisible(getListCard());
@@ -2566,6 +2567,41 @@
         if (body) count += body.querySelectorAll('.mail-row[data-uid]').length;
         if (mobile) count += mobile.querySelectorAll('.mail-card[data-uid]').length;
         return count;
+    }
+
+    function removeStaleOptimisticRows() {
+        var optimisticRows = document.querySelectorAll('.mail-row[data-optimistic="1"], .mail-card[data-optimistic="1"]');
+        if (!optimisticRows.length) return;
+
+        optimisticRows.forEach(function (optRow) {
+            var optFromEl = optRow.querySelector('.mail-row-from, .mail-card-from');
+            var optFrom = optFromEl ? optFromEl.textContent.trim().toLowerCase() : '';
+            var optSnippetEl = optRow.querySelector('.mail-row-snippet, .mail-card-snippet');
+            var optSnippet = optSnippetEl ? optSnippetEl.textContent.trim().toLowerCase() : '';
+            var hasSyncedCopy = false;
+
+            document.querySelectorAll('.mail-row[data-uid]:not([data-optimistic]), .mail-card[data-uid]:not([data-optimistic])').forEach(function (row) {
+                if (hasSyncedCopy) return;
+                var fromEl = row.querySelector('.mail-row-from, .mail-card-from');
+                var fromText = fromEl ? fromEl.textContent.trim().toLowerCase() : '';
+                if (!optFrom || !fromText) return;
+                if (fromText.indexOf(optFrom) < 0 && optFrom.indexOf(fromText) < 0) return;
+                if (optSnippet) {
+                    var snippetEl = row.querySelector('.mail-row-snippet, .mail-card-snippet');
+                    var snippet = snippetEl ? snippetEl.textContent.trim().toLowerCase() : '';
+                    if (snippet && snippet.indexOf(optSnippet) < 0 && optSnippet.indexOf(snippet) < 0) {
+                        return;
+                    }
+                }
+                hasSyncedCopy = true;
+            });
+
+            if (hasSyncedCopy && optRow.parentNode) {
+                optRow.parentNode.removeChild(optRow);
+            }
+        });
+
+        syncListEmptyState();
     }
 
     function hydrateMailListFromPoll(messages, markNew) {
@@ -4074,6 +4110,7 @@
                     } else if (data.messages.length > 0) {
                         hydrateMailListFromPoll(data.messages, false);
                     }
+                    removeStaleOptimisticRows();
 
                     syncErrorShown = false;
                 })

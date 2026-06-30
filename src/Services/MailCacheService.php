@@ -701,7 +701,8 @@ class MailCacheService
         $rows = Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
                     COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
-                    COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+                    COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs,
+                    b.message_id
              FROM mail_index i
              LEFT JOIN mail_bodies b
                 ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
@@ -2368,6 +2369,7 @@ class MailCacheService
             'flagged' => (bool) ($row['flagged'] ?? false),
             'has_attachment' => (bool) ($row['has_attachment'] ?? false),
             'size' => (int) ($row['size'] ?? 0),
+            'message_id' => (string) ($row['message_id'] ?? ''),
         ];
     }
 

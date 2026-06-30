@@ -2396,11 +2396,22 @@ function mail_merge_post_send_preview_into_list(string $folderPath, array $list)
         return $list;
     }
 
+    if (mail_post_send_preview_already_synced($folderPath, $preview)) {
+        mail_clear_post_send_preview($folderPath);
+
+        return $list;
+    }
+
     $previewId = normalize_message_id((string) ($preview['message_id'] ?? ''));
     $previewFp = mail_list_message_fingerprint($preview);
     foreach ($list['messages'] as $msg) {
         if (!is_array($msg) || !empty($msg['optimistic'])) {
             continue;
+        }
+        if (mail_list_message_matches_post_send_preview($msg, $preview)) {
+            mail_clear_post_send_preview($folderPath);
+
+            return $list;
         }
         if ($previewId !== '' && normalize_message_id((string) ($msg['message_id'] ?? '')) === $previewId) {
             mail_clear_post_send_preview($folderPath);
@@ -2761,10 +2772,161 @@ function employee_filter_own_inbox_list(string $folderPath, array $list): array
 function mail_list_message_fingerprint(array $msg): string
 {
     $parsed = mail_parse_address((string) ($msg['from'] ?? ''));
+    $email = strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($msg['from'] ?? '')));
+    $ts = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+    $minute = $ts > 0 ? (int) floor($ts / 60) : 0;
 
-    return strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($msg['from'] ?? '')))
-        . '|' . trim((string) ($msg['date'] ?? ''))
-        . '|' . mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+    return $email . '|' . $minute . '|' . mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+}
+
+/**
+ * True when a synced index row is the same delivery as a post-send preview row.
+ *
+ * @param array<string, mixed> $msg
+ * @param array<string, mixed> $preview
+ */
+function mail_list_message_matches_post_send_preview(array $msg, array $preview): bool
+{
+    if (!is_array($msg) || !empty($msg['optimistic'])) {
+        return false;
+    }
+
+    $previewId = normalize_message_id((string) ($preview['message_id'] ?? ''));
+    $msgId = normalize_message_id((string) ($msg['message_id'] ?? ''));
+    if ($previewId !== '' && $msgId !== '' && $previewId === $msgId) {
+        return true;
+    }
+
+    $previewFrom = strtolower(normalize_email_token((string) ($preview['from'] ?? '')));
+    $msgFromRaw = strtolower((string) ($msg['from'] ?? ''));
+    $msgFrom = strtolower(normalize_email_token((string) ($msg['from'] ?? '')));
+    if (
+        $previewFrom === ''
+        || ($msgFrom !== $previewFrom && !str_contains($msgFromRaw, $previewFrom))
+    ) {
+        return false;
+    }
+
+    $previewTs = strtotime((string) ($preview['date'] ?? '')) ?: time();
+    $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+    if ($msgTs <= 0 || abs($msgTs - $previewTs) > 300) {
+        return false;
+    }
+
+    $previewSnippet = trim((string) ($preview['snippet'] ?? ''));
+    $msgSnippet = trim((string) ($msg['snippet'] ?? ''));
+    if ($previewSnippet !== '' && $msgSnippet !== '') {
+        return $msgSnippet === $previewSnippet
+            || str_contains($msgSnippet, $previewSnippet)
+            || str_contains($previewSnippet, $msgSnippet);
+    }
+
+    $previewSubject = mail_normalize_thread_subject((string) ($preview['subject'] ?? ''));
+    $msgSubject = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+    if ($previewSubject !== '' && $msgSubject !== '' && $previewSubject === $msgSubject) {
+        return true;
+    }
+
+    return abs($msgTs - $previewTs) <= 180;
+}
+
+/**
+ * @param array<string, mixed> $preview
+ */
+function mail_post_send_preview_already_synced(string $folderPath, array $preview): bool
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return false;
+    }
+
+    $previewId = normalize_message_id((string) ($preview['message_id'] ?? ''));
+    if ($previewId === '') {
+        $previewId = normalize_message_id((string) ($_SESSION['_post_send_message_id'] ?? ''));
+    }
+    if ($previewId !== '') {
+        try {
+            $row = App\Database::fetchOne(
+                'SELECT 1 FROM mail_bodies
+                 WHERE folder_path = ? AND LOWER(TRIM(BOTH "<>" FROM message_id)) = ?
+                 LIMIT 1',
+                [$folderPath, $previewId]
+            );
+            if ($row !== null) {
+                return true;
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+    }
+
+    $previewFrom = strtolower(normalize_email_token((string) ($preview['from'] ?? '')));
+    $previewTs = strtotime((string) ($preview['date'] ?? '')) ?: time();
+    $previewSnippet = trim((string) ($preview['snippet'] ?? ''));
+
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, b.plain_body, b.message_id
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+               ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path = ?
+             ORDER BY i.msg_date DESC
+             LIMIT 40',
+            [$folderPath]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return false;
+    }
+
+    foreach ($rows as $row) {
+        $msg = [
+            'from' => (string) ($row['from_addr'] ?? ''),
+            'subject' => (string) ($row['subject'] ?? ''),
+            'date' => (string) ($row['msg_date'] ?? ''),
+            'snippet' => mail_list_snippet($row['plain_body'] ?? null, null),
+            'message_id' => (string) ($row['message_id'] ?? ''),
+        ];
+        if (mail_list_message_matches_post_send_preview($msg, $preview)) {
+            return true;
+        }
+    }
+
+    if ($previewFrom === '') {
+        return false;
+    }
+
+    $rawSubject = strtolower(trim((string) ($preview['subject'] ?? '')));
+    $placeholderSubject = $rawSubject === '' || $rawSubject === '(no subject)';
+    if (!$placeholderSubject && $previewSnippet === '') {
+        return false;
+    }
+
+    foreach ($rows as $row) {
+        $rowFrom = strtolower(normalize_email_token((string) ($row['from_addr'] ?? '')));
+        if ($rowFrom !== $previewFrom && !str_contains(strtolower((string) ($row['from_addr'] ?? '')), $previewFrom)) {
+            continue;
+        }
+        $rowTs = strtotime((string) ($row['msg_date'] ?? '')) ?: 0;
+        if ($rowTs <= 0 || abs($rowTs - $previewTs) > 180) {
+            continue;
+        }
+        if ($previewSnippet !== '') {
+            $rowSnippet = mail_list_snippet($row['plain_body'] ?? null, null);
+            if ($rowSnippet !== '' && (
+                $rowSnippet === $previewSnippet
+                || str_contains($rowSnippet, $previewSnippet)
+                || str_contains($previewSnippet, $rowSnippet)
+            )) {
+                return true;
+            }
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -4944,7 +5106,27 @@ function mail_dedupe_list_messages(array $messages): array
         $ordered[] = $msg;
     }
 
-    usort($ordered, static function (array $a, array $b): int {
+    $filtered = [];
+    foreach ($ordered as $msg) {
+        if (!empty($msg['optimistic'])) {
+            $hasSyncedCopy = false;
+            foreach ($ordered as $candidate) {
+                if (!empty($candidate['optimistic'])) {
+                    continue;
+                }
+                if (mail_list_message_matches_post_send_preview($candidate, $msg)) {
+                    $hasSyncedCopy = true;
+                    break;
+                }
+            }
+            if ($hasSyncedCopy) {
+                continue;
+            }
+        }
+        $filtered[] = $msg;
+    }
+
+    usort($filtered, static function (array $a, array $b): int {
         $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
         $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
         if ($aTs === $bTs) {
@@ -4954,7 +5136,7 @@ function mail_dedupe_list_messages(array $messages): array
         return $bTs <=> $aTs;
     });
 
-    return $ordered;
+    return $filtered;
 }
 
 /**
