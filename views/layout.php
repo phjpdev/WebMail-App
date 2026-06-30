@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
     <link rel="icon" href="<?= e(url('assets/img/logo.png')) ?>" type="image/png">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=133">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=134">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -143,6 +143,13 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=157" defer></script>
+    <div id="app-busy-overlay" class="app-busy-overlay" hidden aria-hidden="true" aria-live="assertive">
+        <div class="app-busy-overlay-panel" role="status">
+            <span class="reading-pane-spinner app-busy-overlay-spinner" aria-hidden="true"></span>
+            <span id="app-busy-overlay-message" class="app-busy-overlay-message">Working…</span>
+        </div>
+    </div>
+
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=159" defer></script>
 </body>
 </html>

@@ -3531,6 +3531,59 @@ body.modal-open {
     box-shadow: 0 24px 56px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
+.app-busy-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(3px);
+}
+
+.app-busy-overlay[hidden] {
+    display: none !important;
+}
+
+.app-busy-overlay-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.85rem;
+    min-width: 12rem;
+    padding: 1.35rem 1.75rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+}
+
+.app-busy-overlay-message {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--color-text);
+    text-align: center;
+}
+
+.app-busy-overlay-spinner {
+    width: 1.75rem;
+    height: 1.75rem;
+}
+
+body.app-is-busy {
+    overflow: hidden;
+}
+
+[data-theme="dark"] .app-busy-overlay {
+    background: rgba(15, 23, 42, 0.72);
+}
+
+[data-theme="dark"] .app-busy-overlay-panel {
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
 [data-theme="dark"] .app-modal-actions {
     background: var(--color-surface-alt);
 }

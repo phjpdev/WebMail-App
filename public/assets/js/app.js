@@ -235,13 +235,43 @@
                 setButtonLoading(okBtn, false);
             }
         }
-        if (cancelBtn) cancelBtn.disabled = false;
+        if (cancelBtn) cancelBtn.disabled = !!loading;
         if (backdrop) backdrop.style.pointerEvents = loading ? 'none' : '';
         if (dialog) {
             dialog.classList.toggle('app-modal-dialog--busy', !!loading);
             if (loading) dialog.setAttribute('aria-busy', 'true');
             else dialog.removeAttribute('aria-busy');
         }
+    }
+
+    function showAppBusy(message) {
+        var overlay = document.getElementById('app-busy-overlay');
+        var msgEl = document.getElementById('app-busy-overlay-message');
+        if (!overlay) return;
+        if (msgEl) msgEl.textContent = message || 'Working…';
+        overlay.hidden = false;
+        overlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('app-is-busy');
+    }
+
+    function hideAppBusy() {
+        var overlay = document.getElementById('app-busy-overlay');
+        if (!overlay) return;
+        overlay.hidden = true;
+        overlay.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('app-is-busy');
+    }
+
+    function confirmFormLoadingMessage(form) {
+        var custom = form.getAttribute('data-confirm-loading');
+        if (custom) return custom;
+        var action = form.getAttribute('action') || '';
+        if (/\/folders\/[^/]+\/delete/i.test(action)) return 'Deleting folder…';
+        if (/\/users\/[^/]+\/delete/i.test(action)) return 'Deleting user…';
+        var label = form.getAttribute('data-confirm-label') || '';
+        if (/delete/i.test(label)) return 'Deleting…';
+        if (/disable/i.test(label)) return 'Disabling…';
+        return '';
     }
 
     function parseMessagePath(pathname) {
@@ -2790,7 +2820,7 @@
     }
 
     /**
-     * @param {{ title?: string, message?: string, confirmLabel?: string, cancelLabel?: string, danger?: boolean }} opts
+     * @param {{ title?: string, message?: string, confirmLabel?: string, cancelLabel?: string, danger?: boolean, keepOpenOnConfirm?: boolean, loadingLabel?: string }} opts
      * @returns {Promise<boolean>}
      */
     function showConfirm(opts) {
@@ -2855,7 +2885,20 @@
                 }
             };
 
-            if (okBtn) okBtn.onclick = function () { finish(true); };
+            if (okBtn) {
+                okBtn.onclick = function () {
+                    if (opts.keepOpenOnConfirm) {
+                        setConfirmModalLoading(true, opts.loadingLabel || okBtn.textContent.trim());
+                        if (confirmKeyHandler) {
+                            document.removeEventListener('keydown', confirmKeyHandler, true);
+                            confirmKeyHandler = null;
+                        }
+                        resolve(true);
+                        return;
+                    }
+                    finish(true);
+                };
+            }
             if (cancelBtn) cancelBtn.onclick = function () { finish(false); };
             if (backdrop) backdrop.onclick = function () { if (!isAlert) finish(false); };
             if (!isAlert) document.addEventListener('keydown', confirmKeyHandler, true);
@@ -3338,14 +3381,22 @@
             e.preventDefault();
             e.stopPropagation();
 
+            var busyMsg = confirmFormLoadingMessage(form);
+
             showConfirm({
                 title: title || 'Confirm',
                 message: message || '',
                 confirmLabel: form.getAttribute('data-confirm-label') || 'Confirm',
                 cancelLabel: form.getAttribute('data-confirm-cancel') || 'Cancel',
-                danger: form.getAttribute('data-confirm-danger') === '1'
+                danger: form.getAttribute('data-confirm-danger') === '1',
+                keepOpenOnConfirm: !!busyMsg,
+                loadingLabel: busyMsg
             }).then(function (ok) {
                 if (!ok) return;
+                if (busyMsg) {
+                    form.submit();
+                    return;
+                }
                 form.dataset.confirmed = '1';
                 if (typeof form.requestSubmit === 'function') {
                     var submitter = e.submitter;

@@ -52,7 +52,8 @@ $hasChildren = $hasChildren ?? false;
                   data-confirm-title="Delete folder?"
                   data-confirm-message="<?= e('Delete folder "' . $displayName . '" and all of its subfolders? Messages will be removed from the mail server. This cannot be undone.') ?>"
                   data-confirm-danger="1"
-                  data-confirm-label="Delete">
+                  data-confirm-label="Delete"
+                  data-confirm-loading="Deleting folder…">
                 <?= csrf_field() ?>
                 <button type="submit" class="btn-link-danger">Delete</button>
             </form>

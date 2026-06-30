@@ -50,7 +50,8 @@
                                   data-confirm-title="Delete user?"
                                   data-confirm-message="Permanently delete this user, their personal IMAP folder, alias, and routing rules. This cannot be undone."
                                   data-confirm-danger="1"
-                                  data-confirm-label="Delete">
+                                  data-confirm-label="Delete"
+                                  data-confirm-loading="Deleting user…">
                                 <?= csrf_field() ?>
                                 <button type="submit" class="admin-action-link admin-action-link-danger">Delete</button>
                             </form>
