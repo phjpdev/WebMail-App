@@ -268,7 +268,7 @@ class MailController
         }
 
         if ($imapConnected && $query === '') {
-            if ($servedFromCache && $preferCache) {
+            if ($servedFromCache && $preferCache && !folder_badge_uses_index_truth($folderPath)) {
                 // Fast folder switch: keep session badge; client poll reconciles after sync.
                 $folderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
             } else {
@@ -310,6 +310,8 @@ class MailController
         // Thread preview runs only on grouped rows (one enrich pass per conversation).
         $enrichLight = !$explicitRefresh;
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages'], $enrichLight);
+        $list['messages'] = mail_dedupe_list_by_uid($list['messages']);
+        $list['total'] = count($list['messages']);
 
         // Only block the list UI when there is nothing to show yet; otherwise
         // render cached rows immediately and sync in the background.
@@ -324,7 +326,7 @@ class MailController
                 || $sessionFolderUnread > 0
             );
 
-        $sidebarUnread = FolderCache::sidebarUnreadCountsFromSession();
+        $sidebarUnread = FolderCache::sidebarUnreadCounts();
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -675,6 +677,8 @@ class MailController
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages'], true);
+        $list['messages'] = mail_dedupe_list_by_uid($list['messages']);
+        $list['total'] = count($list['messages']);
 
         $messages = [];
 

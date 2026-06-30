@@ -5781,6 +5781,43 @@ function outbound_imap_append_redundant(string $destPath, string $mime): bool
 }
 
 /**
+ * One list row per IMAP uid (thread enrich can remap multiple rows to the same uid).
+ *
+ * @param list<array<string, mixed>> $messages
+ * @return list<array<string, mixed>>
+ */
+function mail_dedupe_list_by_uid(array $messages): array
+{
+    if (count($messages) <= 1) {
+        return $messages;
+    }
+
+    $byUid = [];
+    $orphans = [];
+
+    foreach ($messages as $msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+
+        $uid = (int) ($msg['uid'] ?? 0);
+        if ($uid <= 0) {
+            $orphans[] = $msg;
+            continue;
+        }
+
+        if (!isset($byUid[$uid])) {
+            $byUid[$uid] = $msg;
+            continue;
+        }
+
+        $byUid[$uid] = mail_prefer_list_message_row($byUid[$uid], $msg);
+    }
+
+    return array_merge(array_values($byUid), $orphans);
+}
+
+/**
  * @param list<array<string, mixed>> $messages
  * @return list<array<string, mixed>>
  */

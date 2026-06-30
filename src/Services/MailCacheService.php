@@ -2003,6 +2003,9 @@ class MailCacheService
             if (mail_is_sent_by_user((string) ($msg['from'] ?? ''), $viewerId)) {
                 continue;
             }
+            if (employee_should_hide_inbox_correspondent_message($msg)) {
+                continue;
+            }
             if (!self::effectiveSeen($ownInbox, $uid, $viewerId)) {
                 $count++;
             }

@@ -357,13 +357,29 @@
 
     function setSelectedRow(uid) {
         clearMailRowSelection();
-        rowsForUid(uid).forEach(function (el) {
-            el.classList.add('is-selected');
-            el.classList.add('is-focused');
-            el.setAttribute('aria-selected', 'true');
-        });
+        var escaped = window.CSS && CSS.escape ? CSS.escape(String(uid)) : String(uid);
+        var desktop = document.getElementById('mail-list-body');
+        var mobile = document.getElementById('mail-list-mobile');
+        var scroller = document.getElementById('mail-list-scroller');
+        var useMobile = mobile && !mobile.hidden && (!scroller || scroller.hidden);
+        var container = useMobile ? mobile : desktop;
+        if (!container) {
+            rowsForUid(uid).forEach(function (el) {
+                el.classList.add('is-selected');
+                el.classList.add('is-focused');
+                el.setAttribute('aria-selected', 'true');
+            });
+        } else {
+            container.querySelectorAll('[data-uid="' + escaped + '"]').forEach(function (el) {
+                el.classList.add('is-selected');
+                el.classList.add('is-focused');
+                el.setAttribute('aria-selected', 'true');
+            });
+        }
         setRowAriaSelected(uid);
-        var rows = rowsForUid(uid);
+        var rows = container
+            ? Array.prototype.slice.call(container.querySelectorAll('[data-uid="' + escaped + '"]'))
+            : rowsForUid(uid);
         if (rows[0]) {
             scheduleComposePrefetch(rows[0]);
         }
