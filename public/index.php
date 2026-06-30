@@ -89,6 +89,7 @@ $router->get('/settings', fn () => $settingsController->index());
 $router->post('/settings', fn () => $settingsController->update());
 
 $router->get('/', fn () => $mailController->home());
+$router->get('/search', fn () => $mailController->search());
 $router->get('/mail/bootstrap', fn () => $mailController->mailBootstrap());
 $router->get('/folder/{folderB64}/fragment', fn ($p) => $mailController->folderFragment($p));
 $router->get('/folder/{folderB64}/attachments', fn ($p) => $mailController->messageAttachments($p));

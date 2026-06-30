@@ -704,6 +704,20 @@ function folder_url(string $folderPath, string $suffix = ''): string
 }
 
 /**
+ * @param list<array{path: string, name: string}> $folders
+ */
+function folder_display_name(array $folders, string $path): string
+{
+    foreach ($folders as $folder) {
+        if (strcasecmp((string) ($folder['path'] ?? ''), $path) === 0) {
+            return $folder['path'] === 'INBOX' ? 'Inbox' : (string) $folder['name'];
+        }
+    }
+
+    return $path === 'INBOX' ? 'Inbox' : $path;
+}
+
+/**
  * Personal inbox path for the logged-in employee (e.g. INBOX.Jean).
  */
 function employee_linked_inbox_path(?array $user = null): ?string

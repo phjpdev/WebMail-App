@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=116">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=119">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -46,10 +46,32 @@
                     </button>
                 <?php endif; ?>
                 <h1 class="site-title">
-                    <a href="<?= e(url('')) ?>" class="site-title-link"><?= e(config('app')['name']) ?></a>
+                    <a href="<?= e(url('')) ?>" class="site-brand">
+                        <?php require base_path('views/partials/site-brand-icon.php'); ?>
+                        <span class="site-brand-text">
+                            <span class="site-brand-name"><?= e(config('app')['brand']) ?></span>
+                            <span class="site-brand-suffix"><?= e(config('app')['brand_suffix']) ?></span>
+                        </span>
+                    </a>
                 </h1>
             </div>
             <?php if (!empty($sessionUser)): ?>
+                <div class="header-center">
+                    <form method="get" action="<?= e(url('search')) ?>" class="search-field search-field--header header-search-form" id="global-search-form">
+                        <span class="search-field-icon" aria-hidden="true">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                        </span>
+                        <label class="sr-only" for="global-search">Search all messages</label>
+                        <input type="search" name="q" id="global-search" class="search-field-input"
+                               placeholder="Search all messages…"
+                               value="<?= e($globalSearchQuery ?? '') ?>" autocomplete="off" enterkeyhint="search">
+                        <?php if (!empty($globalSearchQuery)): ?>
+                            <a class="search-field-clear" href="<?= e(url('folder/' . encode_folder_path(default_mail_folder()))) ?>" aria-label="Clear search" title="Clear search">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                            </a>
+                        <?php endif; ?>
+                    </form>
+                </div>
                 <div class="header-user">
                     <div class="header-user-info">
                         <span class="user-avatar" aria-hidden="true"><?= e(strtoupper(substr($sessionUser['name'], 0, 1))) ?></span>
@@ -120,6 +142,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=136" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=137" defer></script>
 </body>
 </html>

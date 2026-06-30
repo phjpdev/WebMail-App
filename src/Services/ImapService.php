@@ -845,6 +845,117 @@ class ImapService
     }
 
     /**
+     * Search across multiple folders and merge results by date.
+     *
+     * @param list<string> $folderPaths
+     * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int}
+     */
+    public function searchAllMessages(array $folderPaths, string $query, int $page = 1, int $perPage = 50): array
+    {
+        $empty = [
+            'messages' => [],
+            'total' => 0,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => 0,
+        ];
+
+        $query = trim($query);
+        if ($query === '' || $folderPaths === []) {
+            return $empty;
+        }
+
+        $hits = [];
+        foreach ($folderPaths as $path) {
+            if ($path === '') {
+                continue;
+            }
+            if (!$this->openFolder($path)) {
+                continue;
+            }
+
+            $uids = $this->searchUids($path, $query);
+            if ($uids === []) {
+                continue;
+            }
+
+            foreach (array_chunk($uids, 50) as $chunk) {
+                $overview = @imap_fetch_overview($this->connection, implode(',', $chunk), FT_UID);
+                if (!is_array($overview)) {
+                    continue;
+                }
+
+                foreach ($overview as $row) {
+                    $uid = (int) ($row->uid ?? 0);
+                    if ($uid <= 0 || mail_is_uid_removed($path, $uid)) {
+                        continue;
+                    }
+
+                    $hits[] = [
+                        'folder' => $path,
+                        'uid' => $uid,
+                        'date' => strtotime((string) ($row->date ?? '')) ?: 0,
+                    ];
+                }
+            }
+        }
+
+        if ($hits === []) {
+            return $empty;
+        }
+
+        usort($hits, static fn (array $a, array $b): int => $b['date'] <=> $a['date'] ?: $b['uid'] <=> $a['uid']);
+
+        $total = count($hits);
+        $totalPages = (int) max(1, (int) ceil($total / $perPage));
+        $page = max(1, min($page, $totalPages));
+        $offset = ($page - 1) * $perPage;
+        $pageHits = array_slice($hits, $offset, $perPage);
+
+        $byFolder = [];
+        foreach ($pageHits as $hit) {
+            $byFolder[$hit['folder']][] = $hit['uid'];
+        }
+
+        $messages = [];
+        foreach ($byFolder as $folderPath => $uids) {
+            if (!$this->openFolder($folderPath)) {
+                continue;
+            }
+
+            foreach ($this->overviewForUids($uids) as $msg) {
+                $uid = (int) ($msg['uid'] ?? 0);
+                if ($uid <= 0) {
+                    continue;
+                }
+
+                $msg['_folder_path'] = $folderPath;
+                $filtered = employee_filter_correspondent_list($folderPath, [
+                    'messages' => [$msg],
+                    'total' => 1,
+                    'page' => 1,
+                    'per_page' => 1,
+                    'total_pages' => 1,
+                ]);
+                $filtered = employee_filter_own_inbox_list($folderPath, $filtered);
+                if (($filtered['messages'][0] ?? null) !== null) {
+                    $messages[] = $filtered['messages'][0];
+                }
+            }
+        }
+
+        usort($messages, static fn (array $a, array $b): int => strtotime((string) ($b['date'] ?? '')) <=> strtotime((string) ($a['date'] ?? '')));
+
+        return [
+            'messages' => $messages,
+            'total' => $total,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => $totalPages,
+        ];
+    }
+
+    /**
      * @return list<int>
      */
     private function searchUids(string $path, string $query): array

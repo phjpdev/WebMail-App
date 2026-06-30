@@ -29,6 +29,9 @@ $uid = (int) $msg['uid'];
     <div class="mail-row-body">
         <div class="mail-row-text">
             <div class="mail-row-line1">
+                <?php if (!empty($showFolder) && !empty($msg['_folder_label'])): ?>
+                    <span class="mail-row-folder"><?= e($msg['_folder_label']) ?></span>
+                <?php endif; ?>
                 <?php if ($rowDisplay['is_draft']): ?>
                     <span class="mail-row-draft-badge">[Draft]</span>
                 <?php endif; ?>

@@ -37,22 +37,6 @@
         <span class="page-header-count page-header-count--hidden" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="0" title="<?= e($headerTitle) ?>" hidden aria-hidden="true"></span>
         <?php endif; ?>
     </div>
-    <form method="get" action="<?= e(folder_url($folderPath)) ?>" class="search-field search-field--mail mail-search-form" id="mail-search-form">
-        <?php if (!empty($perPage)): ?>
-            <input type="hidden" name="per_page" value="<?= (int) $perPage ?>">
-        <?php endif; ?>
-        <span class="search-field-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        </span>
-        <input type="search" name="q" id="mail-search" class="search-field-input"
-               placeholder="Search in <?= e($title ?? 'folder') ?>…"
-               value="<?= e($searchQuery ?? '') ?>" autocomplete="off" enterkeyhint="search">
-        <?php if (!empty($searchQuery)): ?>
-            <a class="search-field-clear" href="<?= e(folder_url($folderPath) . (!empty($perPage) ? '?per_page=' . (int) $perPage : '')) ?>" aria-label="Clear search" title="Clear search">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-            </a>
-        <?php endif; ?>
-    </form>
 </section>
 
 <?php if (!$imapConnected): ?>

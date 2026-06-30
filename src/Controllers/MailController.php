@@ -20,6 +20,71 @@ class MailController
         redirect('folder/' . encode_folder_path(default_mail_folder()));
     }
 
+    public function search(): void
+    {
+        requireAuth();
+        releaseSessionLock();
+
+        $query = trim($_GET['q'] ?? '');
+        if ($query === '') {
+            redirect('folder/' . encode_folder_path(default_mail_folder()));
+        }
+
+        $page = max(1, (int) ($_GET['page'] ?? 1));
+        $perPage = mail_per_page();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        $folders = $folderData['folders'];
+        $imapConnected = $folderData['connected'];
+        $imapError = $folderData['error'];
+
+        $list = MailCacheService::searchAllMessages($query, $page, $perPage);
+
+        if ($list['total'] === 0 && $imapConnected) {
+            $accessiblePaths = [];
+            foreach ($folders as $folder) {
+                $path = (string) ($folder['path'] ?? '');
+                if ($path !== '' && FolderCache::canAccess($path)) {
+                    $accessiblePaths[] = $path;
+                }
+            }
+
+            if ($accessiblePaths !== []) {
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    $list = $imap->searchAllMessages($accessiblePaths, $query, $page, $perPage);
+                } else {
+                    $imapConnected = false;
+                    $imapError = $imap->getLastError();
+                }
+            }
+        }
+
+        foreach ($list['messages'] as &$msg) {
+            $folderPath = (string) ($msg['_folder_path'] ?? '');
+            $msg['_folder_label'] = folder_display_name($folders, $folderPath);
+        }
+        unset($msg);
+
+        $prefs = user_preferences();
+
+        $this->renderMailView('mail/search', [
+            'title' => 'Search',
+            'searchQuery' => $query,
+            'globalSearchQuery' => $query,
+            'folders' => $folders,
+            'messages' => $list['messages'],
+            'page' => $list['page'],
+            'totalPages' => $list['total_pages'],
+            'totalMessages' => $list['total'],
+            'imapConnected' => $imapConnected,
+            'imapError' => $imapError,
+            'pollInterval' => $prefs['poll_interval'] ?? config('app')['mail_poll_interval'],
+            'perPage' => $perPage,
+            'showFolder' => true,
+            'activeFolder' => '',
+        ]);
+    }
+
     /**
      * @param array<string, string> $params
      */

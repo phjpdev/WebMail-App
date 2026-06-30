@@ -15,7 +15,13 @@
     </div>
 
     <header class="login-header">
-        <span class="login-brand"><?= e(config('app')['name']) ?></span>
+        <a href="<?= e(url('')) ?>" class="site-brand login-brand">
+            <?php require base_path('views/partials/site-brand-icon.php'); ?>
+            <span class="site-brand-text">
+                <span class="site-brand-name"><?= e(config('app')['brand']) ?></span>
+                <span class="site-brand-suffix"><?= e(config('app')['brand_suffix']) ?></span>
+            </span>
+        </a>
     </header>
 
     <div class="login-page">

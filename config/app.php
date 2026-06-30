@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 return [
     'name' => env('APP_NAME', 'D&J Webmail'),
+    'brand' => env('APP_BRAND', 'DJ Group'),
+    'brand_suffix' => env('APP_BRAND_SUFFIX', 'Webmail'),
     'timezone' => env('APP_TIMEZONE', 'America/New_York'),
     'url' => app_base_url(),
     'debug' => filter_var(env('APP_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN),

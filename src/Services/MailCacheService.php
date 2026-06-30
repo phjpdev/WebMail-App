@@ -2013,6 +2013,125 @@ class MailCacheService
     }
 
     /**
+     * Search messages across all accessible folders (local cache).
+     *
+     * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int, from_cache: bool}
+     */
+    public static function searchAllMessages(string $query, int $page, int $perPage): array
+    {
+        $query = trim($query);
+        $empty = [
+            'messages' => [],
+            'total' => 0,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => 0,
+            'from_cache' => true,
+        ];
+
+        if ($query === '') {
+            return $empty;
+        }
+
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        $accessiblePaths = [];
+        foreach ($folderData['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path !== '' && FolderCache::canAccess($path)) {
+                $accessiblePaths[] = self::indexFolderPath($path);
+            }
+        }
+
+        if ($accessiblePaths === []) {
+            return $empty;
+        }
+
+        $like = '%' . $query . '%';
+        $placeholders = implode(',', array_fill(0, count($accessiblePaths), '?'));
+        $params = array_merge($accessiblePaths, [$like, $like, $like, $like]);
+
+        $countRow = Database::fetchOne(
+            "SELECT COUNT(*) AS c
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+                ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path IN ({$placeholders})
+               AND (
+                    i.subject LIKE ?
+                    OR i.from_addr LIKE ?
+                    OR i.to_addrs LIKE ?
+                    OR b.plain_body LIKE ?
+               )",
+            $params
+        );
+        $total = (int) ($countRow['c'] ?? 0);
+
+        if ($total === 0) {
+            return $empty;
+        }
+
+        $totalPages = (int) max(1, (int) ceil($total / $perPage));
+        $page = max(1, min($page, $totalPages));
+        $offset = ($page - 1) * $perPage;
+
+        $rows = Database::query(
+            "SELECT i.folder_path, i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged,
+                    i.has_attachment, i.size,
+                    COALESCE(NULLIF(i.to_addrs, ''), b.to_addrs) AS to_addrs,
+                    COALESCE(NULLIF(i.cc_addrs, ''), b.cc_addrs) AS cc_addrs,
+                    b.plain_body, b.html_body
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+                ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path IN ({$placeholders})
+               AND (
+                    i.subject LIKE ?
+                    OR i.from_addr LIKE ?
+                    OR i.to_addrs LIKE ?
+                    OR b.plain_body LIKE ?
+               )
+             ORDER BY i.msg_date DESC, i.imap_uid DESC
+             LIMIT " . (int) $perPage . ' OFFSET ' . (int) $offset,
+            $params
+        )->fetchAll();
+
+        $messages = [];
+        foreach ($rows as $row) {
+            $folderPath = (string) ($row['folder_path'] ?? '');
+            if ($folderPath === '' || mail_is_uid_removed($folderPath, (int) ($row['imap_uid'] ?? 0))) {
+                continue;
+            }
+
+            $msg = self::indexRowToMessage($row, $folderPath);
+            $msg['_folder_path'] = $folderPath;
+
+            $filtered = employee_filter_correspondent_list($folderPath, [
+                'messages' => [$msg],
+                'total' => 1,
+                'page' => 1,
+                'per_page' => 1,
+                'total_pages' => 1,
+            ]);
+            $filtered = employee_filter_own_inbox_list($folderPath, $filtered);
+
+            if (($filtered['messages'][0] ?? null) === null) {
+                continue;
+            }
+
+            $messages[] = $filtered['messages'][0];
+        }
+
+        return [
+            'messages' => $messages,
+            'total' => $total,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => $totalPages,
+            'from_cache' => true,
+        ];
+    }
+
+    /**
      * UIDs from the local header cache (fast path for bulk select-all).
      *
      * @return list<int>

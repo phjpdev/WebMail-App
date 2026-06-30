@@ -4012,11 +4012,17 @@
     }
 
     function currentSearchQuery() {
-        var input = document.getElementById('mail-search');
+        var input = document.getElementById('global-search');
         return input && input.value ? input.value.trim() : '';
     }
 
+    function isGlobalSearchView() {
+        var card = document.querySelector('.mail-list-card[data-global-search="1"]');
+        return !!card;
+    }
+
     function selectionScopeLabel() {
+        if (isGlobalSearchView()) return 'matching your search';
         return currentSearchQuery() ? 'matching your search' : 'in this folder';
     }
 
