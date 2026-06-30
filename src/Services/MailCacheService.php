@@ -347,6 +347,71 @@ class MailCacheService
     }
 
     /**
+     * Employee's own inbox copy of mail they sent elsewhere: read for them, unseen for admin.
+     */
+    public static function reconcileSenderInboxOutboundCopy(
+        string $folderPath,
+        int $employeeUserId,
+        string $fromEmail,
+        ?string $sentMessageId = null,
+        int $limit = 5,
+    ): void {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '' || $employeeUserId <= 0) {
+            return;
+        }
+
+        $emails = mail_user_emails($employeeUserId);
+        $fromEmail = strtolower(trim($fromEmail));
+        if ($fromEmail !== '' && !in_array($fromEmail, $emails, true)) {
+            $emails[] = $fromEmail;
+        }
+        if ($emails === []) {
+            return;
+        }
+
+        $fromClauses = [];
+        $params = [$folderPath];
+        foreach ($emails as $email) {
+            $fromClauses[] = 'LOWER(i.from_addr) LIKE ?';
+            $params[] = '%' . strtolower($email) . '%';
+        }
+
+        try {
+            $rows = Database::query(
+                'SELECT i.imap_uid, b.message_id
+                 FROM mail_index i
+                 LEFT JOIN mail_bodies b
+                    ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                 WHERE i.folder_path = ? AND (' . implode(' OR ', $fromClauses) . ')
+                 ORDER BY i.msg_date DESC, i.imap_uid DESC
+                 LIMIT ' . (int) max(1, $limit),
+                $params
+            )->fetchAll();
+        } catch (\Throwable) {
+            return;
+        }
+
+        $normalizedId = normalize_message_id($sentMessageId);
+
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+            if ($normalizedId !== '') {
+                $msgId = normalize_message_id((string) ($row['message_id'] ?? ''));
+                if ($msgId === '' || $msgId !== $normalizedId) {
+                    continue;
+                }
+            }
+
+            self::markReadForUser($folderPath, $uid, $employeeUserId);
+            self::updateIndexSeen($folderPath, $uid, true);
+        }
+    }
+
+    /**
      * Per-user read flags for a page of messages (one query instead of N).
      *
      * @param list<int> $uids

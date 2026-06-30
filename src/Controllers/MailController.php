@@ -300,6 +300,7 @@ class MailController
         $list = employee_filter_correspondent_list($folderPath, $list);
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
+        $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
@@ -312,13 +313,17 @@ class MailController
         // trimming, so a folder with no viewer-visible mail doesn't poll forever.
         $sessionFolderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
         $listAwaitingSync = $query === ''
-            && empty($list['messages'])
             && $imapConnected
             && (
-                ($servedFromCache && ($badgePending || !empty($list['stale'])))
+                (empty($list['messages']) && (
+                    ($servedFromCache && ($badgePending || !empty($list['stale'])))
+                    || MailCacheService::badgeAheadOfIndex($folderPath)
+                    || mail_get_post_send_preview($folderPath) !== null
+                    || $sessionFolderUnread > 0
+                ))
                 || MailCacheService::badgeAheadOfIndex($folderPath)
                 || mail_get_post_send_preview($folderPath) !== null
-                || $sessionFolderUnread > 0
+                || ($badgePending && $servedFromCache && !empty($list['stale']))
             );
 
         $sidebarUnread = FolderCache::sidebarUnreadCountsFromSession();
@@ -665,6 +670,7 @@ class MailController
         $list = employee_filter_correspondent_list($folderPath, $list);
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
+        $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);

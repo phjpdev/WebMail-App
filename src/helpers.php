@@ -801,6 +801,28 @@ function employee_linked_inbox_path(?array $user = null): ?string
 }
 
 /**
+ * Linked inbox for a platform user id (works when admin composes as an employee).
+ */
+function employee_linked_inbox_path_for_user_id(int $userId): ?string
+{
+    if ($userId <= 0) {
+        return null;
+    }
+
+    return employee_linked_inbox_path(['id' => $userId, 'role' => 'employee']);
+}
+
+/**
+ * Linked inbox for a send-as address (e.g. jean@… → INBOX.Jean.Inbox).
+ */
+function employee_linked_inbox_path_for_email(string $fromEmail): ?string
+{
+    $userId = mail_user_id_from_email($fromEmail);
+
+    return $userId !== null ? employee_linked_inbox_path_for_user_id($userId) : null;
+}
+
+/**
  * @return array{path: string, name: string}|null
  */
 function folder_registry_meta(string $path): ?array
@@ -1839,9 +1861,13 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
 function mail_apply_destination_folder_badges(string $fromEmail, array $destPaths, ?array $user = null): void
 {
     $user = $user ?? App\Auth::user();
-    $senderInbox = employee_linked_inbox_path($user);
+    $senderInbox = employee_linked_inbox_path($user)
+        ?? employee_linked_inbox_path_for_email($fromEmail);
     if ($senderInbox !== null && $senderInbox !== '') {
-        \App\Services\FolderCache::setUnreadCount($senderInbox, 0);
+        \App\Services\FolderCache::setUnreadCount(
+            \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderInbox)),
+            0,
+        );
     }
 
     $senderFolder = folder_for_alias_email($fromEmail);
@@ -2684,6 +2710,118 @@ function employee_merge_personal_sent_list(string $folderPath, array $list): arr
 }
 
 /**
+ * Linked employee inbox (admin view): include outbound copies stored in correspondent folders.
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_merge_linked_inbox_correspondent_list(string $folderPath, array $list): array
+{
+    $linkedId = mail_linked_user_id_for_inbox($folderPath);
+    if (
+        $linkedId === null
+        || !\App\Services\MailCacheService::viewerIsAdmin()
+        || !isset($list['messages'])
+        || !is_array($list['messages'])
+    ) {
+        return $list;
+    }
+
+    $employeeInbox = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($folderPath));
+    if ($employeeInbox === '') {
+        return $list;
+    }
+
+    $emails = mail_user_emails($linkedId);
+    if ($emails === []) {
+        return $list;
+    }
+
+    $fingerprints = [];
+    foreach ($list['messages'] as $msg) {
+        if (is_array($msg)) {
+            $fingerprints[mail_list_message_fingerprint($msg)] = true;
+        }
+    }
+
+    $fromClauses = [];
+    $baseParams = [];
+    foreach ($emails as $email) {
+        $fromClauses[] = 'LOWER(i.from_addr) LIKE ?';
+        $baseParams[] = '%' . strtolower($email) . '%';
+    }
+
+    try {
+        $corrFolders = App\Database::query(
+            "SELECT DISTINCT f.imap_path
+             FROM folders f
+             WHERE f.active = 1
+               AND f.folder_type = 'employee'
+               AND (f.linked_user_id IS NULL OR f.linked_user_id != ?)
+               AND LOWER(f.imap_path) != LOWER(?)",
+            [$linkedId, $employeeInbox]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return $list;
+    }
+
+    $extra = [];
+    foreach ($corrFolders as $folderRow) {
+        $corrPath = \App\Services\FolderCache::resolvePath(
+            employee_messages_imap_path((string) ($folderRow['imap_path'] ?? ''))
+        );
+        if ($corrPath === '' || strcasecmp($corrPath, $employeeInbox) === 0) {
+            continue;
+        }
+
+        $params = array_merge([$corrPath], $baseParams);
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                        b.plain_body, b.html_body,
+                        COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                        COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+                 FROM mail_index i
+                 LEFT JOIN mail_bodies b
+                    ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                 WHERE i.folder_path = ? AND (' . implode(' OR ', $fromClauses) . ')
+                 ORDER BY i.msg_date DESC, i.imap_uid DESC
+                 LIMIT 40',
+                $params
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $corrPath);
+            $msg['seen'] = true;
+            $msg['list_folder'] = $corrPath;
+            $fp = mail_list_message_fingerprint($msg);
+            if (isset($fingerprints[$fp])) {
+                continue;
+            }
+            $fingerprints[$fp] = true;
+            $extra[] = $msg;
+        }
+    }
+
+    if ($extra === []) {
+        return $list;
+    }
+
+    $merged = array_merge($list['messages'], $extra);
+
+    return mail_filter_removed_messages($employeeInbox, [
+        'messages' => $merged,
+        'total' => count($merged),
+        'page' => (int) ($list['page'] ?? 1),
+        'per_page' => (int) ($list['per_page'] ?? mail_per_page()),
+        'total_pages' => (int) ($list['total_pages'] ?? 1),
+    ]);
+}
+
+/**
  * One list row per conversation thread (latest message only).
  */
 function mail_should_group_list_by_thread(string $folderPath): bool
@@ -3303,6 +3441,73 @@ function deliver_outbound_copies_to_folders(string $mime, array $destPaths, stri
         } catch (\Throwable $e) {
             app_log('Outbound index sync for ' . $destPath . ' failed: ' . $e->getMessage());
         }
+    }
+
+    deliver_outbound_sender_inbox_copy($imap, $mime, $destPaths, $fromEmail);
+}
+
+/**
+ * Keep a seen copy in the employee's own inbox when they send into correspondent folders.
+ *
+ * @param list<string> $destPaths
+ */
+function deliver_outbound_sender_inbox_copy(
+    App\Services\ImapService $imap,
+    string $mime,
+    array $destPaths,
+    string $fromEmail,
+): void {
+    if ($mime === '' || $destPaths === []) {
+        return;
+    }
+
+    $employeeUserId = mail_user_id_from_email($fromEmail);
+    if ($employeeUserId === null || $employeeUserId <= 0) {
+        return;
+    }
+
+    $senderInbox = employee_linked_inbox_path_for_user_id($employeeUserId);
+    if ($senderInbox === null || $senderInbox === '') {
+        return;
+    }
+
+    $senderInbox = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderInbox));
+    if ($senderInbox === '') {
+        return;
+    }
+
+    $sentElsewhere = false;
+    foreach ($destPaths as $destPath) {
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $destPath));
+        if ($resolved !== '' && strcasecmp($resolved, $senderInbox) !== 0) {
+            $sentElsewhere = true;
+            break;
+        }
+    }
+    if (!$sentElsewhere) {
+        return;
+    }
+
+    $sentMessageId = extract_message_id_from_mime($mime);
+    if (!outbound_imap_append_redundant($senderInbox, $mime)) {
+        if (!$imap->appendMessage($senderInbox, $mime, '\\Seen')) {
+            app_log('Outbound sender inbox copy failed for ' . $senderInbox . ': ' . $imap->getLastError());
+
+            return;
+        }
+    }
+
+    try {
+        \App\Services\MailCacheService::syncFolderHeaders($imap, $senderInbox, 15);
+        \App\Services\MailCacheService::reconcileSenderInboxOutboundCopy(
+            $senderInbox,
+            $employeeUserId,
+            $fromEmail,
+            $sentMessageId,
+        );
+        \App\Services\MailCacheService::reconcileBadgeFromIndex($senderInbox);
+    } catch (\Throwable $e) {
+        app_log('Outbound sender inbox sync for ' . $senderInbox . ' failed: ' . $e->getMessage());
     }
 }
 
@@ -4647,12 +4852,17 @@ function reconcile_correspondent_outbound_echoes(
     int $limit = 30,
 ): void {
     $user = App\Auth::user();
-    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+    $employeeId = 0;
+    if ($user !== null && ($user['role'] ?? '') === 'employee') {
+        $employeeId = (int) $user['id'];
+    } else {
+        $employeeId = (int) (mail_user_id_from_email($fromEmail) ?? 0);
+    }
+    if ($employeeId <= 0) {
         return;
     }
 
-    $employeeId = (int) $user['id'];
-    $ownInbox = employee_linked_inbox_path($user);
+    $ownInbox = employee_linked_inbox_path_for_user_id($employeeId);
 
     foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
         $path = \App\Services\FolderCache::resolvePath((string) $path);

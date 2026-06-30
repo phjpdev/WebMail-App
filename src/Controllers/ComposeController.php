@@ -1318,6 +1318,11 @@ class ComposeController
                 $routedPaths
             ))));
 
+            $senderInbox = employee_linked_inbox_path_for_email($fromEmail);
+            if ($senderInbox !== null && $senderInbox !== '') {
+                $pathsToSync[] = $senderInbox;
+            }
+
             foreach ($pathsToSync as $path) {
                 if ($path !== '') {
                     $imap->removeDuplicateDeliveries($path, 12);
