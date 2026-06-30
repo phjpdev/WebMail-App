@@ -2126,7 +2126,8 @@ function mail_apply_destination_folder_badges(string $fromEmail, array $destPath
 
     $senderFolder = folder_for_alias_email($fromEmail);
     if ($senderFolder !== null && $senderFolder !== '') {
-        \App\Services\FolderCache::setUnreadCount(\App\Services\FolderCache::resolvePath($senderFolder), 0);
+        $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
+        \App\Services\FolderCache::setUnreadCount($senderResolved, 0);
     }
 
     $pending = [];
@@ -2198,7 +2199,19 @@ function mail_store_post_send_previews(
             $senderResolved !== ''
             && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved)
         ) {
-            $previewPaths[] = $senderResolved;
+            $senderIsDest = false;
+            foreach ($destPaths as $destPath) {
+                $destResolved = \App\Services\FolderCache::resolvePath(
+                    employee_messages_imap_path((string) $destPath)
+                );
+                if ($destResolved !== '' && strcasecmp($destResolved, $senderResolved) === 0) {
+                    $senderIsDest = true;
+                    break;
+                }
+            }
+            if ($senderIsDest) {
+                $previewPaths[] = $senderResolved;
+            }
         }
     }
 
@@ -2791,16 +2804,8 @@ function employee_should_hide_inbox_correspondent_message(array $msg): bool
         return false;
     }
 
-    $baseSubject = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
-    if ($baseSubject === '') {
-        return false;
-    }
-
-    if (mail_find_correspondent_outbound_for_subject($corrFolder, $baseSubject) !== []) {
-        return true;
-    }
-
-    return mail_find_correspondent_inbound_for_subject($corrFolder, $baseSubject) !== [];
+    // Inbound from a correspondent alias (e.g. support@) belongs in that folder.
+    return true;
 }
 
 /**
@@ -3015,6 +3020,220 @@ function mail_post_send_preview_already_synced(string $folderPath, array $previe
     }
 
     return false;
+}
+
+/**
+ * Outbound copy in a shared mailbox sent from that folder's alias (e.g. support@).
+ * These must not inflate the Support badge for admin — only inbound mail counts.
+ *
+ * @param array<string, mixed> $msg
+ */
+function mail_is_shared_mailbox_alias_sent_echo(string $folderPath, array $msg): bool
+{
+    if (!\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
+        return false;
+    }
+
+    $aliasEmail = alias_email_for_folder($folderPath);
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        $root = employee_mailbox_root_prefix($folderPath);
+        if ($root !== '') {
+            $aliasEmail = alias_email_for_folder($root);
+        }
+    }
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        return false;
+    }
+
+    $aliasLower = strtolower(trim($aliasEmail));
+    $fromRaw = strtolower((string) ($msg['from'] ?? ''));
+    $fromToken = strtolower(normalize_email_token((string) ($msg['from'] ?? '')));
+
+    return $fromToken === $aliasLower || str_contains($fromRaw, $aliasLower);
+}
+
+/**
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_merge_correspondent_inbox_inbound_list(string $folderPath, array $list): array
+{
+    if (
+        !employee_is_correspondent_folder($folderPath)
+        || \App\Services\MailCacheService::viewerIsAdmin()
+        || !isset($list['messages'])
+        || !is_array($list['messages'])
+    ) {
+        return $list;
+    }
+
+    $ownInbox = employee_linked_inbox_path();
+    if ($ownInbox === null || $ownInbox === '') {
+        return $list;
+    }
+    $ownInbox = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($ownInbox));
+
+    $corrFolder = \App\Services\FolderCache::resolvePath($folderPath);
+    $aliasEmail = alias_email_for_folder($corrFolder);
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        $root = employee_mailbox_root_prefix($corrFolder);
+        if ($root !== '') {
+            $aliasEmail = alias_email_for_folder($root);
+        }
+    }
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        return $list;
+    }
+
+    $userEmails = mail_user_emails();
+    if ($userEmails === []) {
+        return $list;
+    }
+
+    $fingerprints = [];
+    foreach ($list['messages'] as $msg) {
+        if (is_array($msg)) {
+            $fingerprints[mail_list_message_fingerprint($msg)] = true;
+        }
+    }
+
+    $like = '%' . strtolower(trim($aliasEmail)) . '%';
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                    b.plain_body, b.html_body, b.message_id,
+                    COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                    COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+             FROM mail_index i
+             LEFT JOIN mail_bodies b
+                ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?
+             ORDER BY i.msg_date DESC, i.imap_uid DESC
+             LIMIT 80',
+            [$ownInbox, $like]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return $list;
+    }
+
+    $extra = [];
+    foreach ($rows as $row) {
+        $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $ownInbox);
+        if (!mail_message_involves_user($msg, $userEmails)) {
+            continue;
+        }
+        if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
+            continue;
+        }
+        $msg['list_folder'] = $ownInbox;
+        if (!empty($row['message_id'])) {
+            $msg['message_id'] = (string) $row['message_id'];
+        }
+        $fp = mail_list_message_fingerprint($msg);
+        if (isset($fingerprints[$fp])) {
+            continue;
+        }
+        $fingerprints[$fp] = true;
+        $extra[] = $msg;
+    }
+
+    if ($extra === []) {
+        return $list;
+    }
+
+    $merged = array_merge($list['messages'], $extra);
+    usort($merged, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+        if ($aTs === $bTs) {
+            return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
+        }
+
+        return $bTs <=> $aTs;
+    });
+
+    $list['messages'] = $merged;
+    $list['total'] = count($merged);
+    if (isset($list['per_page'])) {
+        $perPage = max(1, (int) $list['per_page']);
+        $list['total_pages'] = (int) max(1, (int) ceil(count($merged) / $perPage));
+    }
+
+    return mail_filter_removed_messages($corrFolder, $list);
+}
+
+/**
+ * Unread messages in the employee's own inbox that arrived from a correspondent alias.
+ *
+ * @param list<string> $emails lowercase participant addresses
+ */
+function mail_count_correspondent_inbox_inbound_unseen(string $corrFolder, array $emails): int
+{
+    if ($emails === [] || !employee_is_correspondent_folder($corrFolder)) {
+        return 0;
+    }
+
+    $ownInbox = employee_linked_inbox_path();
+    if ($ownInbox === null || $ownInbox === '') {
+        return 0;
+    }
+    $ownInbox = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($ownInbox));
+
+    $corrFolder = \App\Services\FolderCache::resolvePath($corrFolder);
+    $aliasEmail = alias_email_for_folder($corrFolder);
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        $root = employee_mailbox_root_prefix($corrFolder);
+        if ($root !== '') {
+            $aliasEmail = alias_email_for_folder($root);
+        }
+    }
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        return 0;
+    }
+
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    if ($viewerId <= 0) {
+        return 0;
+    }
+
+    $like = '%' . strtolower(trim($aliasEmail)) . '%';
+    try {
+        $rows = App\Database::query(
+            'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen,
+                    COALESCE(i.to_addrs, \'\') AS to_addrs,
+                    COALESCE(i.cc_addrs, \'\') AS cc_addrs
+             FROM mail_index i
+             WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?
+             ORDER BY i.msg_date DESC',
+            [$ownInbox, $like]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return 0;
+    }
+
+    $count = 0;
+    foreach ($rows as $row) {
+        $msg = [
+            'from' => (string) ($row['from_addr'] ?? ''),
+            'to' => (string) ($row['to_addrs'] ?? ''),
+            'cc' => (string) ($row['cc_addrs'] ?? ''),
+        ];
+        if (!mail_message_involves_user($msg, $emails)) {
+            continue;
+        }
+        if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
+            continue;
+        }
+        $uid = (int) ($row['imap_uid'] ?? 0);
+        if ($uid <= 0) {
+            continue;
+        }
+        if (!\App\Services\MailCacheService::effectiveSeen($ownInbox, $uid, $viewerId)) {
+            $count++;
+        }
+    }
+
+    return $count;
 }
 
 /**

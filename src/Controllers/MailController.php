@@ -301,6 +301,7 @@ class MailController
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
         $list = employee_merge_shared_mailbox_outbound_list($folderPath, $list);
+        $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
         $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
@@ -668,6 +669,7 @@ class MailController
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
         $list = employee_merge_shared_mailbox_outbound_list($folderPath, $list);
+        $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
         $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);

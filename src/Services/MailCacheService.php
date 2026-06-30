@@ -855,6 +855,10 @@ class MailCacheService
                 if ($uid <= 0) {
                     continue;
                 }
+                $msg = ['from' => (string) ($row['from_addr'] ?? '')];
+                if (mail_is_shared_mailbox_alias_sent_echo($folderPath, $msg)) {
+                    continue;
+                }
                 if (mail_is_employee_outbound_echo($folderPath, $uid, (string) ($row['from_addr'] ?? ''))) {
                     continue;
                 }
@@ -903,6 +907,9 @@ class MailCacheService
         foreach ($groups as $msg) {
             $uid = (int) ($msg['uid'] ?? 0);
             if ($uid <= 0) {
+                continue;
+            }
+            if (mail_is_shared_mailbox_alias_sent_echo($folderPath, $msg)) {
                 continue;
             }
             if (!self::effectiveSeen($folderPath, $uid, $viewerId)) {
@@ -1740,9 +1747,14 @@ class MailCacheService
                     $unreadThreads++;
                 }
             } elseif (empty($msg['seen'])) {
+                if (mail_is_shared_mailbox_alias_sent_echo($folderPath, $msg)) {
+                    continue;
+                }
                 $unreadThreads++;
             }
         }
+
+        $unreadThreads += mail_count_correspondent_inbox_inbound_unseen($folderPath, $emails);
 
         return $unreadThreads;
     }
