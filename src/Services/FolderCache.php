@@ -901,14 +901,18 @@ class FolderCache
         }
 
         foreach (employee_correspondent_folder_paths() as $corrPath) {
-            if ($corrPath === '' || isset($existing[strtoupper($corrPath)])) {
+            if ($corrPath === '') {
                 continue;
             }
-            $meta = folder_registry_meta($corrPath);
+            $corrRoot = employee_mailbox_root_prefix(self::resolvePath($corrPath));
+            if ($corrRoot === '' || isset($existing[strtoupper($corrRoot)])) {
+                continue;
+            }
+            $meta = folder_registry_meta($corrPath) ?? folder_registry_meta($corrRoot);
             if ($meta === null) {
                 continue;
             }
-            $resolved = self::resolvePath($meta['path']);
+            $resolved = self::resolvePath($corrRoot);
             $filtered[] = [
                 'path' => $resolved,
                 'name' => $meta['name'],
@@ -921,7 +925,83 @@ class FolderCache
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
+        return $this->filterEmployeeSidebarFolders($data, $prefix);
+    }
+
+    /**
+     * Employee sidebar: own system folders in primary nav; correspondent mailboxes
+     * as flat entries under Folders (like admin), without nested Sent/Drafts/etc.
+     *
+     * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
+     * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
+     */
+    private function filterEmployeeSidebarFolders(array $data, ?string $ownPrefix): array
+    {
+        if ($ownPrefix === null || $ownPrefix === '') {
+            return $data;
+        }
+
+        $ownRoot = employee_mailbox_root_prefix($ownPrefix);
+        $correspondentRoots = [];
+        foreach (employee_correspondent_folder_paths() as $corrPath) {
+            $root = employee_mailbox_root_prefix(self::resolvePath($corrPath));
+            if ($root !== '') {
+                $correspondentRoots[strtoupper($root)] = self::resolvePath($root);
+            }
+        }
+
+        $filtered = [];
+        $counts = [];
+
+        foreach ($data['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '' || $this->shouldHideEmployeeSidebarFolder($path, $ownRoot, $correspondentRoots)) {
+                continue;
+            }
+
+            $filtered[] = $folder;
+            $counts[$path] = (int) ($data['unread_counts'][$path] ?? 0);
+        }
+
+        $data['folders'] = $filtered;
+        $data['unread_counts'] = $counts;
+
         return $data;
+    }
+
+    /**
+     * @param array<string, string> $correspondentRoots upper(root) => root
+     */
+    private function shouldHideEmployeeSidebarFolder(string $path, string $ownRoot, array $correspondentRoots): bool
+    {
+        $path = self::resolvePath($path);
+
+        if (employee_path_under_mailbox_root($path, $ownRoot)) {
+            if (employee_is_mailbox_container($path)) {
+                return true;
+            }
+
+            $messagesPath = employee_messages_imap_path($ownRoot);
+            if (
+                $messagesPath !== ''
+                && strcasecmp($messagesPath, $ownRoot) !== 0
+                && strcasecmp($path, $ownRoot) === 0
+            ) {
+                return true;
+            }
+
+            return false;
+        }
+
+        foreach ($correspondentRoots as $corrRoot) {
+            if (!employee_path_under_mailbox_root($path, $corrRoot)) {
+                continue;
+            }
+
+            return strcasecmp($path, $corrRoot) !== 0;
+        }
+
+        return false;
     }
 
     /**
