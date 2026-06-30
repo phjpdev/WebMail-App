@@ -238,37 +238,89 @@ class AdminFolderService
     }
 
     /**
+     * Employee mailbox roots (INBOX.Name) for a user — used when purging mail.
+     *
+     * @return list<string>
+     */
+    public function mailboxRootsForUser(int $userId): array
+    {
+        $roots = [];
+        $rows = Database::query(
+            'SELECT imap_path FROM folders WHERE linked_user_id = ?',
+            [$userId]
+        )->fetchAll();
+
+        foreach ($rows as $row) {
+            $path = trim((string) ($row['imap_path'] ?? ''));
+            if ($path === '') {
+                continue;
+            }
+            $root = employee_mailbox_root_prefix(FolderCache::resolvePath($path));
+            if ($root !== '') {
+                $roots[strtoupper($root)] = $root;
+            }
+        }
+
+        return array_values($roots);
+    }
+
+    /**
      * Remove an employee's entire mailbox tree from IMAP and the folder registry.
      */
     public function purgeUserMailboxTree(int $userId): void
     {
-        $roots = Database::query(
+        $rows = Database::query(
             "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee'",
             [$userId]
         )->fetchAll();
 
-        if ($roots === []) {
-            $roots = Database::query(
+        if ($rows === []) {
+            $rows = Database::query(
                 'SELECT imap_path FROM folders WHERE linked_user_id = ? ORDER BY LENGTH(imap_path) ASC',
                 [$userId]
             )->fetchAll();
         }
 
         $rootPaths = [];
-        foreach ($roots as $row) {
+        foreach ($rows as $row) {
             $path = trim((string) ($row['imap_path'] ?? ''));
-            if ($path !== '') {
-                $rootPaths[] = $path;
+            if ($path === '') {
+                continue;
+            }
+            $root = employee_mailbox_root_prefix(FolderCache::resolvePath($path));
+            if ($root !== '') {
+                $rootPaths[strtoupper($root)] = $root;
+            }
+        }
+
+        if ($rootPaths === []) {
+            $userRow = Database::fetchOne('SELECT username FROM users WHERE id = ?', [$userId]);
+            $username = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($userRow['username'] ?? ''));
+            if ($username !== '') {
+                $candidate = 'INBOX.' . $username;
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    foreach ($imap->listFolders() as $folder) {
+                        $serverPath = FolderCache::resolvePath((string) ($folder['path'] ?? ''));
+                        if ($serverPath === '') {
+                            continue;
+                        }
+                        if (strcasecmp(employee_mailbox_root_prefix($serverPath), $candidate) === 0) {
+                            $rootPaths[strtoupper($candidate)] = $candidate;
+                        }
+                    }
+                }
             }
         }
 
         if ($rootPaths === []) {
             Database::query('DELETE FROM folders WHERE linked_user_id = ?', [$userId]);
+            Database::query('DELETE FROM mail_user_read WHERE user_id = ?', [$userId]);
 
             return;
         }
 
-        foreach ($rootPaths as $root) {
+        foreach (array_values($rootPaths) as $root) {
             $this->purgeMailboxSubtree($root, $userId);
         }
     }

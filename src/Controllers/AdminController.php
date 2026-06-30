@@ -334,7 +334,7 @@ class AdminController
 
         FilterService::reprocess();
         $this->audit('user_delete', 'Deleted user #' . $id);
-        flash('success', 'User and personal folder deleted.');
+        flash('success', 'User, mailbox, and related messages deleted.');
         redirect('admin/users');
     }
 

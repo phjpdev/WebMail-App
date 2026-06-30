@@ -1073,6 +1073,99 @@ class MailCacheService
         Database::query('DELETE FROM mail_index WHERE folder_path = ?', [$folderPath]);
         Database::query('DELETE FROM mail_bodies WHERE folder_path = ?', [$folderPath]);
         Database::query('DELETE FROM mail_sync_state WHERE folder_path = ?', [$folderPath]);
+        Database::query('DELETE FROM mail_user_read WHERE folder_path = ?', [$folderPath]);
+    }
+
+    /**
+     * Remove every indexed/IMAP copy of mail tied to a user outside their own mailbox tree.
+     *
+     * @param list<string> $emails lowercase addresses (aliases + primary)
+     * @param list<string> $mailboxRoots INBOX.Name roots left to purgeUserMailboxTree
+     */
+    public static function purgeMessagesForUser(int $userId, array $emails, array $mailboxRoots = []): void
+    {
+        $emails = array_values(array_unique(array_filter(array_map(
+            static fn (string $email): string => strtolower(trim($email)),
+            $emails
+        ), static fn (string $email): bool => $email !== '')));
+
+        if ($userId > 0) {
+            Database::query('DELETE FROM mail_user_read WHERE user_id = ?', [$userId]);
+        }
+
+        if ($emails === []) {
+            return;
+        }
+
+        $matchClauses = [];
+        $params = [];
+        foreach ($emails as $email) {
+            $like = '%' . $email . '%';
+            $matchClauses[] = '(LOWER(from_addr) LIKE ? OR LOWER(COALESCE(to_addrs, \'\')) LIKE ? OR LOWER(COALESCE(cc_addrs, \'\')) LIKE ?)';
+            $params[] = $like;
+            $params[] = $like;
+            $params[] = $like;
+        }
+
+        $excludeClauses = [];
+        $excludeParams = [];
+        foreach ($mailboxRoots as $root) {
+            $root = FolderCache::resolvePath(rtrim($root, '.'));
+            if ($root === '') {
+                continue;
+            }
+            $excludeClauses[] = '(LOWER(folder_path) <> LOWER(?) AND LOWER(folder_path) NOT LIKE LOWER(?))';
+            $excludeParams[] = $root;
+            $excludeParams[] = $root . '.%';
+        }
+
+        $where = '(' . implode(' OR ', $matchClauses) . ')';
+        if ($excludeClauses !== []) {
+            $where .= ' AND ' . implode(' AND ', $excludeClauses);
+        }
+
+        try {
+            $rows = Database::query(
+                "SELECT folder_path, imap_uid FROM mail_index WHERE {$where}",
+                array_merge($params, $excludeParams)
+            )->fetchAll();
+        } catch (\Throwable) {
+            return;
+        }
+
+        /** @var array<string, list<int>> $byFolder */
+        $byFolder = [];
+        foreach ($rows as $row) {
+            $folderPath = trim((string) ($row['folder_path'] ?? ''));
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($folderPath === '' || $uid <= 0) {
+                continue;
+            }
+            $byFolder[$folderPath][] = $uid;
+        }
+
+        if ($byFolder === []) {
+            return;
+        }
+
+        $imap = new ImapService();
+        $connected = $imap->connect();
+
+        foreach ($byFolder as $folderPath => $uids) {
+            $uids = array_values(array_unique(array_filter(
+                array_map('intval', $uids),
+                static fn (int $uid): bool => $uid > 0
+            )));
+            if ($uids === []) {
+                continue;
+            }
+
+            $resolved = FolderCache::resolvePath($folderPath);
+            if ($connected) {
+                $imap->deleteMessages($resolved, $uids);
+            }
+            self::removeMessages($folderPath, $uids);
+        }
     }
 
     /** Move cached mail rows when an IMAP folder is renamed. */
@@ -2296,6 +2389,10 @@ class MailCacheService
                 "DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
                 $params
             );
+            Database::query(
+                "DELETE FROM mail_user_read WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+                $params
+            );
         }
 
         $lookup = strtolower($indexPath !== '' ? $indexPath : $resolved);
@@ -2307,6 +2404,10 @@ class MailCacheService
             );
             Database::query(
                 "DELETE FROM mail_bodies WHERE LOWER(folder_path) = ? AND imap_uid IN ({$placeholders})",
+                $params
+            );
+            Database::query(
+                "DELETE FROM mail_user_read WHERE LOWER(folder_path) = ? AND imap_uid IN ({$placeholders})",
                 $params
             );
         }
