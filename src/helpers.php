@@ -5581,7 +5581,7 @@ function sidebar_folder_tree_label(array $folder): string
  * @param list<array{path: string, name?: string, delimiter?: string}> $items
  * @return list<array{folder: array<string, mixed>, children: list}>
  */
-function build_sidebar_other_folder_tree(array $items, string $pathKey = 'path', string $delimiter = '.'): array
+function build_sidebar_other_folder_tree(array $items, string $pathKey = 'path', string $delimiter = '.', bool $sortByCreatedAt = false): array
 {
     $employeeRoots = sidebar_employee_root_path_set();
     $byPath = [];
@@ -5612,21 +5612,17 @@ function build_sidebar_other_folder_tree(array $items, string $pathKey = 'path',
         $roots[] = $item;
     }
 
-    $buildNode = static function (array $folder) use (&$buildNode, $childrenOf, $pathKey): array {
-        $key = strtolower((string) ($folder[$pathKey] ?? ''));
-        $kids = $childrenOf[$key] ?? [];
-        usort($kids, static fn (array $a, array $b): int => strcasecmp(
-            (string) ($a[$pathKey] ?? ''),
-            (string) ($b[$pathKey] ?? '')
-        ));
+    $sortItems = static function (array $a, array $b) use ($pathKey, $employeeRoots, $sortByCreatedAt): int {
+        if ($sortByCreatedAt) {
+            $aCreated = strtotime((string) ($a['created_at'] ?? '')) ?: 0;
+            $bCreated = strtotime((string) ($b['created_at'] ?? '')) ?: 0;
+            if ($aCreated !== $bCreated) {
+                return $aCreated <=> $bCreated;
+            }
 
-        return [
-            'folder' => $folder,
-            'children' => array_map($buildNode, $kids),
-        ];
-    };
+            return strcasecmp((string) ($a[$pathKey] ?? ''), (string) ($b[$pathKey] ?? ''));
+        }
 
-    usort($roots, static function (array $a, array $b) use ($employeeRoots, $pathKey): int {
         $aPath = strtolower((string) ($a[$pathKey] ?? ''));
         $bPath = strtolower((string) ($b[$pathKey] ?? ''));
         $aEmployee = isset($employeeRoots[$aPath]);
@@ -5636,9 +5632,107 @@ function build_sidebar_other_folder_tree(array $items, string $pathKey = 'path',
         }
 
         return strcasecmp((string) ($a[$pathKey] ?? ''), (string) ($b[$pathKey] ?? ''));
-    });
+    };
+
+    $buildNode = static function (array $folder) use (&$buildNode, $childrenOf, $pathKey, $sortItems): array {
+        $key = strtolower((string) ($folder[$pathKey] ?? ''));
+        $kids = $childrenOf[$key] ?? [];
+        usort($kids, $sortItems);
+
+        return [
+            'folder' => $folder,
+            'children' => array_map($buildNode, $kids),
+        ];
+    };
+
+    usort($roots, $sortItems);
 
     return array_map($buildNode, $roots);
+}
+
+/**
+ * Admin folder tree: hide employee Sent/Drafts/etc. noise; same parent rules as sidebar.
+ *
+ * @param list<array<string, mixed>> $items
+ * @return list<array{folder: array<string, mixed>, children: list}>
+ */
+function build_admin_folder_tree(array $items, string $pathKey = 'imap_path', string $delimiter = '.'): array
+{
+    $filtered = [];
+    foreach ($items as $item) {
+        $path = trim((string) ($item[$pathKey] ?? ''));
+        if ($path === '' || is_nested_employee_system_subfolder($path)) {
+            continue;
+        }
+        $filtered[] = $item;
+    }
+
+    return build_sidebar_other_folder_tree($filtered, $pathKey, $delimiter, true);
+}
+
+/**
+ * Shared-mailbox system folder bucket for admin list (Inbox, Sent, Drafts, etc.).
+ *
+ * @param array<string, mixed> $folder
+ */
+function admin_folder_primary_bucket(array $folder): ?string
+{
+    $path = trim((string) ($folder['imap_path'] ?? ''));
+    $type = (string) ($folder['folder_type'] ?? '');
+
+    if (strcasecmp($path, 'INBOX') === 0 || $type === 'inbox') {
+        return 'inbox';
+    }
+
+    if (!preg_match('/^INBOX\.([^.]+)$/i', $path, $matches)) {
+        return null;
+    }
+
+    $bucket = system_folder_bucket_for_leaf((string) $matches[1]);
+
+    $order = sidebar_primary_folder_order();
+    if ($bucket === null || !in_array($bucket, $order, true)) {
+        return null;
+    }
+
+    return $bucket;
+}
+
+/**
+ * @param list<array<string, mixed>> $folders
+ * @return array{primary: list<array<string, mixed>>, custom_tree: list<array{folder: array<string, mixed>, children: list}>}
+ */
+function partition_admin_folders_for_display(array $folders): array
+{
+    $primaryMap = array_fill_keys(sidebar_primary_folder_order(), null);
+    $custom = [];
+
+    foreach ($folders as $folder) {
+        $path = trim((string) ($folder['imap_path'] ?? ''));
+        if ($path === '' || is_nested_employee_system_subfolder($path)) {
+            continue;
+        }
+
+        $bucket = admin_folder_primary_bucket($folder);
+        if ($bucket !== null && $primaryMap[$bucket] === null) {
+            $primaryMap[$bucket] = $folder;
+            continue;
+        }
+
+        $custom[] = $folder;
+    }
+
+    $primary = [];
+    foreach (sidebar_primary_folder_order() as $bucket) {
+        if ($primaryMap[$bucket] !== null) {
+            $primary[] = $primaryMap[$bucket];
+        }
+    }
+
+    return [
+        'primary' => $primary,
+        'custom_tree' => build_admin_folder_tree($custom, 'imap_path'),
+    ];
 }
 
 /**

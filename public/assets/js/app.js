@@ -6129,10 +6129,11 @@
             branch.classList.toggle('is-open', open);
             branch.setAttribute('aria-expanded', open ? 'true' : 'false');
             var children = branch.querySelector(':scope > .admin-folder-branch-children');
-            if (children) children.classList.toggle('is-open', open);
+            if (children) {
+                children.hidden = !open;
+            }
             var toggle = branch.querySelector(':scope > .admin-folder-tree-row .admin-folder-branch-toggle');
             if (toggle) {
-                toggle.classList.toggle('is-open', open);
                 toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
             }
             if (persist) {
