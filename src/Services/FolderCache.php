@@ -1012,6 +1012,7 @@ class FolderCache
      */
     private function filterAdminFolders(array $data): array
     {
+        $imapEmployeeRoots = $this->discoverImapEmployeeMailboxRoots($data['folders']);
         $employeeRoots = $this->employeeMailboxRoots();
         $registry = $this->registeredActiveFolders();
         $orphanPrefixes = $this->orphanedEmployeeFolderPrefixes();
@@ -1047,7 +1048,7 @@ class FolderCache
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
-        return $this->finalizeAdminEmployeeFolderSidebar($data);
+        return $this->finalizeAdminEmployeeFolderSidebar($data, $imapEmployeeRoots);
     }
 
     /**
@@ -1057,9 +1058,15 @@ class FolderCache
      * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
-    private function finalizeAdminEmployeeFolderSidebar(array $data): array
+    private function finalizeAdminEmployeeFolderSidebar(array $data, array $imapEmployeeRoots = []): array
     {
         $registryEmployees = $this->registeredEmployeeMailboxRoots();
+        foreach ($imapEmployeeRoots as $upper => $info) {
+            if (!isset($registryEmployees[$upper])) {
+                $registryEmployees[$upper] = $info;
+            }
+        }
+
         if ($registryEmployees === []) {
             return $data;
         }
@@ -1139,6 +1146,60 @@ class FolderCache
     }
 
     /**
+     * @param list<array{path: string, name?: string, delimiter?: string}> $folders
+     * @return array<string, array{path: string, display_name: string}>
+     */
+    private function discoverImapEmployeeMailboxRoots(array $folders): array
+    {
+        $paths = [];
+        foreach ($folders as $folder) {
+            $path = self::resolvePath((string) ($folder['path'] ?? ''));
+            if ($path !== '') {
+                $paths[strtoupper($path)] = $path;
+            }
+        }
+
+        $roots = [];
+        foreach ($folders as $folder) {
+            $path = self::resolvePath((string) ($folder['path'] ?? ''));
+            if (!preg_match('/^INBOX\.([^.]+)$/i', $path)) {
+                continue;
+            }
+
+            if (!$this->imapPathLooksLikeEmployeeMailboxRoot($path, $paths)) {
+                continue;
+            }
+
+            $name = trim((string) ($folder['name'] ?? ''));
+            if ($name === '' || strcasecmp($name, $path) === 0) {
+                $name = preg_replace('/^INBOX\./i', '', $path);
+            }
+
+            $roots[strtoupper($path)] = [
+                'path' => $path,
+                'display_name' => $name,
+            ];
+        }
+
+        return $roots;
+    }
+
+    /**
+     * @param array<string, string> $paths upper(path) => path
+     */
+    private function imapPathLooksLikeEmployeeMailboxRoot(string $root, array $paths): bool
+    {
+        $prefix = rtrim($root, '.') . '.';
+        foreach (['Inbox', 'Sent', 'Drafts'] as $sub) {
+            if (isset($paths[strtoupper($prefix . $sub)])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @return array<string, array{path: string, display_name: string}>
      */
     private function registeredEmployeeMailboxRoots(): array
@@ -1146,17 +1207,64 @@ class FolderCache
         $roots = [];
 
         try {
-            $rows = Database::query(
-                "SELECT imap_path, display_name FROM folders WHERE active = 1 AND folder_type = 'employee'"
+            $employees = Database::query(
+                "SELECT u.id, u.name, u.username, f.imap_path, f.display_name
+                 FROM users u
+                 LEFT JOIN folders f ON f.linked_user_id = u.id AND f.active = 1 AND f.folder_type = 'employee'
+                 WHERE u.role = 'employee' AND u.active = 1"
             )->fetchAll();
 
-            foreach ($rows as $row) {
+            foreach ($employees as $row) {
+                $imapPath = trim((string) ($row['imap_path'] ?? ''));
+                if ($imapPath === '') {
+                    $safeFolder = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($row['username'] ?? ''));
+                    if ($safeFolder === '') {
+                        continue;
+                    }
+                    $imapPath = 'INBOX.' . $safeFolder;
+                }
+
+                $root = employee_mailbox_root_prefix(self::resolvePath($imapPath));
+                if ($root === '') {
+                    continue;
+                }
+
+                $displayName = trim((string) ($row['display_name'] ?? ''));
+                if ($displayName === '') {
+                    $displayName = trim((string) ($row['name'] ?? ''));
+                }
+                if ($displayName === '') {
+                    $displayName = preg_replace('/^INBOX\./i', '', $root);
+                }
+
+                $roots[strtoupper($root)] = [
+                    'path' => $root,
+                    'display_name' => $displayName,
+                ];
+            }
+
+            $aliasRows = Database::query(
+                "SELECT f.imap_path, f.display_name
+                 FROM folders f
+                 WHERE f.active = 1 AND f.folder_type = 'employee'
+                   AND (f.linked_user_id IS NULL OR NOT EXISTS (
+                       SELECT 1 FROM users u
+                       WHERE u.id = f.linked_user_id AND u.role = 'employee' AND u.active = 1
+                   ))"
+            )->fetchAll();
+
+            foreach ($aliasRows as $row) {
                 $root = employee_mailbox_root_prefix(self::resolvePath((string) ($row['imap_path'] ?? '')));
                 if ($root === '') {
                     continue;
                 }
 
-                $roots[strtoupper($root)] = [
+                $upper = strtoupper($root);
+                if (isset($roots[$upper])) {
+                    continue;
+                }
+
+                $roots[$upper] = [
                     'path' => $root,
                     'display_name' => (string) ($row['display_name'] ?? preg_replace('/^INBOX\./i', '', $root)),
                 ];
