@@ -546,6 +546,8 @@ class ImapService
      */
     public function moveMessages(string $fromPath, array $uids, string $toPath): array
     {
+        $fromPath = FolderCache::resolvePath(employee_messages_imap_path($fromPath));
+        $toPath = FolderCache::resolvePath(employee_messages_imap_path($toPath));
         $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
         if ($uids === [] || !$this->openFolder($fromPath)) {
             return ['moved' => 0, 'errors' => count($uids), 'uids' => []];

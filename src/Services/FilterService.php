@@ -134,6 +134,53 @@ class FilterService
     }
 
     /**
+     * Keep user-moved mail in the filter inbox instead of auto-routing it again.
+     *
+     * @param list<int> $uids
+     */
+    public static function preserveManualInboxPlacement(ImapService $imap, string $inboxPath, array $uids): void
+    {
+        $inboxPath = FolderCache::resolvePath($inboxPath);
+        if ($inboxPath === '') {
+            return;
+        }
+
+        $service = new self();
+        foreach (array_values(array_unique(array_filter(array_map('intval', $uids)))) as $uid) {
+            if ($uid <= 0) {
+                continue;
+            }
+            $headers = $imap->fetchFilterHeaders($inboxPath, $uid);
+            $service->markProcessed($uid, $inboxPath, $headers['message_id'] ?? null);
+        }
+    }
+
+    /**
+     * Mark relocated index rows so the next inbox filter pass leaves them alone.
+     *
+     * @param list<int> $uids
+     */
+    public static function preserveManualInboxPlacementFromIndex(string $inboxPath, array $uids): void
+    {
+        $inboxPath = FolderCache::resolvePath($inboxPath);
+        if ($inboxPath === '') {
+            return;
+        }
+
+        $service = new self();
+        foreach (array_values(array_unique(array_filter(array_map('intval', $uids)))) as $uid) {
+            if ($uid <= 0) {
+                continue;
+            }
+            $row = Database::fetchOne(
+                'SELECT message_id FROM mail_index WHERE folder_path = ? AND imap_uid = ? LIMIT 1',
+                [$inboxPath, $uid]
+            );
+            $service->markProcessed($uid, $inboxPath, $row['message_id'] ?? null);
+        }
+    }
+
+    /**
      *
      * Uses a file lock so only one pass runs at a time, and a minimum interval
      * so opening mail repeatedly does not hammer IMAP. Set $force true for

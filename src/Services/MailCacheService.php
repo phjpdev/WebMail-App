@@ -1859,6 +1859,42 @@ class MailCacheService
         self::reconcileSyncStateFromIndex($indexPath !== '' ? $indexPath : $resolved);
     }
 
+    /**
+     * Optimistically move cached headers/bodies to the destination folder.
+     *
+     * @param list<int> $uids
+     */
+    public static function relocateCachedMessages(string $fromPath, string $toPath, array $uids): int
+    {
+        $fromPath = self::indexFolderPath(FolderCache::resolvePath($fromPath));
+        $toPath = self::indexFolderPath(FolderCache::resolvePath($toPath));
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
+        if ($fromPath === '' || $toPath === '' || $uids === [] || strcasecmp($fromPath, $toPath) === 0) {
+            return 0;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($uids), '?'));
+        $params = array_merge([$toPath, $fromPath], $uids);
+
+        $indexMoved = Database::query(
+            "UPDATE mail_index SET folder_path = ?, seen = 1 WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        )->rowCount();
+
+        Database::query(
+            "UPDATE mail_bodies SET folder_path = ? WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            $params
+        );
+
+        if ($indexMoved > 0) {
+            self::reconcileSyncStateFromIndex($fromPath);
+            $indexed = self::countListableMessagesInIndex($toPath);
+            self::touchSyncState($toPath, max($indexed, $indexMoved), $indexed);
+        }
+
+        return $indexMoved;
+    }
+
     /** Keep mail_sync_state totals aligned after local index removals. */
     public static function reconcileSyncStateFromIndex(string $folderPath): void
     {

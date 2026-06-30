@@ -627,6 +627,17 @@ function mail_folder_path(string $encoded): string
     return \App\Services\FolderCache::resolvePath(employee_messages_imap_path($path));
 }
 
+/** Resolve a move target from sidebar/toolbar to the appendable IMAP mailbox path. */
+function mail_resolve_move_target_path(string $targetPath): string
+{
+    $resolved = \App\Services\FolderCache::resolvePath($targetPath);
+    if ($resolved === '') {
+        return '';
+    }
+
+    return \App\Services\FolderCache::resolvePath(employee_messages_imap_path($resolved));
+}
+
 function folder_url(string $folderPath, string $suffix = ''): string
 {
     $encoded = encode_folder_path($folderPath);

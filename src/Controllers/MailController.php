@@ -1476,8 +1476,10 @@ class MailController
     {
         $resolvedFolderPath = FolderCache::resolvePath($folderPath);
         $indexFolderPath = MailCacheService::indexFolderPath($resolvedFolderPath);
-        $targetPath = FolderCache::resolvePath($targetPath);
+        $targetPath = mail_resolve_move_target_path($targetPath);
+        $targetIndexPath = MailCacheService::indexFolderPath($targetPath);
         $siblingMode = $this->siblingCopyModeForTarget($targetPath);
+        $filterInbox = FolderCache::resolvePath((string) (config('app')['filter_source_folder'] ?? 'INBOX'));
 
         $unreadDelta = max(0, (int) ($_POST['unread_delta'] ?? 0));
         if ($unreadDelta === 0 && ($_POST['all_in_folder'] ?? '') === '1') {
@@ -1486,32 +1488,23 @@ class MailController
         }
 
         if (wants_json()) {
-            MailCacheService::removeMessages($indexFolderPath, $uids);
+            $relocated = MailCacheService::relocateCachedMessages($indexFolderPath, $targetIndexPath, $uids);
             mail_mark_uids_removed($resolvedFolderPath, $uids);
-            $siblingFoldersTouched = false;
             if ($siblingMode !== 'none') {
-                $siblingFoldersTouched = count($this->removeSiblingCopiesFromCache($resolvedFolderPath, $uids)) > 1;
+                $this->removeSiblingCopiesFromCache($resolvedFolderPath, $uids, $targetPath);
             }
-            if (!is_trash_folder($targetPath)) {
+            if ($relocated === 0 && !is_trash_folder($targetPath)) {
                 MailCacheService::invalidateFolder($targetPath);
             }
-
-            if ($siblingFoldersTouched) {
-                $counts = FolderCache::sidebarUnreadCounts();
-            } elseif (folder_uses_draft_badge($resolvedFolderPath)) {
-                MailCacheService::reconcileBadgeFromIndex($indexFolderPath);
-                $counts = FolderCache::sidebarUnreadCounts();
-            } elseif ($unreadDelta > 0) {
-                $unreadDelta = min($unreadDelta, count($uids));
-                $counts = FolderCache::bumpUnread($resolvedFolderPath, -$unreadDelta);
-                if (folder_shows_unread_badge($targetPath)) {
-                    $counts = FolderCache::bumpUnread($targetPath, $unreadDelta);
-                } else {
-                    FolderCache::setUnreadCount($targetPath, 0);
-                }
-            } else {
-                $counts = FolderCache::bumpUnread($resolvedFolderPath, 0);
+            if (strcasecmp($targetPath, $filterInbox) === 0) {
+                FilterService::preserveManualInboxPlacementFromIndex($targetIndexPath, $uids);
             }
+
+            MailCacheService::reconcileBadgeFromIndex($indexFolderPath);
+            if ($targetIndexPath !== '' && strcasecmp($targetIndexPath, $indexFolderPath) !== 0) {
+                MailCacheService::reconcileBadgeFromIndex($targetIndexPath);
+            }
+            $counts = FolderCache::sidebarUnreadCounts();
 
             json_response_then($this->appendCorrespondentFolderPrune($resolvedFolderPath, [
                 'ok' => true,
@@ -1520,8 +1513,8 @@ class MailController
                 'uids' => array_values($uids),
                 'target' => $targetPath,
                 'unread_counts' => $counts,
-            ]), function () use ($resolvedFolderPath, $uids, $targetPath, $siblingMode): void {
-                $this->executeMoveOnServer($resolvedFolderPath, $uids, $targetPath, $siblingMode);
+            ]), function () use ($resolvedFolderPath, $uids, $targetPath, $targetIndexPath, $siblingMode, $filterInbox): void {
+                $this->executeMoveOnServer($resolvedFolderPath, $uids, $targetPath, $siblingMode, $filterInbox, $targetIndexPath);
             });
         }
 
@@ -1545,6 +1538,15 @@ class MailController
 
         if ($movedUids !== []) {
             MailCacheService::removeMessages($indexFolderPath, $movedUids);
+            if (strcasecmp($targetPath, $filterInbox) === 0) {
+                FilterService::preserveManualInboxPlacement($imap, $targetPath, $movedUids);
+            }
+            try {
+                MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
+                MailCacheService::reconcileBadgeFromIndex($targetPath);
+            } catch (\Throwable $e) {
+                app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
+            }
         }
 
         if ($siblingMode !== 'none' && $movedUids !== []) {
@@ -1589,10 +1591,11 @@ class MailController
      * @param list<int> $uids
      * @return list<string> folder paths touched in the cache
      */
-    private function removeSiblingCopiesFromCache(string $sourceFolder, array $uids): array
+    private function removeSiblingCopiesFromCache(string $sourceFolder, array $uids, string $targetPath = ''): array
     {
         $affected = [];
         $seenMessageIds = [];
+        $targetPath = FolderCache::resolvePath($targetPath);
 
         foreach ($uids as $uid) {
             $uid = (int) $uid;
@@ -1610,6 +1613,12 @@ class MailController
                 $copyPath = FolderCache::resolvePath($copy['folder_path']);
                 $copyUid = (int) $copy['imap_uid'];
                 if ($copyUid <= 0 || !FolderCache::canAccess($copyPath)) {
+                    continue;
+                }
+                if ($targetPath !== '' && strcasecmp($copyPath, $targetPath) === 0) {
+                    continue;
+                }
+                if (strcasecmp($copyPath, FolderCache::resolvePath($sourceFolder)) === 0 && $copyUid === $uid) {
                     continue;
                 }
 
@@ -1750,6 +1759,8 @@ class MailController
         array $uids,
         string $targetPath,
         string $siblingMode = 'none',
+        string $filterInbox = '',
+        string $targetIndexPath = '',
     ): void {
         $uids = array_values(array_unique(array_filter(
             array_map('intval', $uids),
@@ -1840,6 +1851,16 @@ class MailController
             return;
         }
 
+        $resolvedTarget = FolderCache::resolvePath($targetPath);
+        $resolvedInbox = $filterInbox !== '' ? FolderCache::resolvePath($filterInbox) : '';
+        if ($resolvedInbox !== '' && strcasecmp($resolvedTarget, $resolvedInbox) === 0 && $allMovedUids !== []) {
+            try {
+                FilterService::preserveManualInboxPlacement($imap, $resolvedTarget, $allMovedUids);
+            } catch (\Throwable $e) {
+                app_log('Manual inbox preserve failed: ' . $e->getMessage());
+            }
+        }
+
         if ($siblingMode === 'trash' && $allMovedUids !== []) {
             try {
                 $this->handleSiblingCopies($imap, $folderPath, $allMovedUids, $targetPath, 'trash');
@@ -1848,21 +1869,28 @@ class MailController
             }
         }
 
-        if ($siblingMode === 'delete') {
-            try {
-                $imap->removeDuplicateDeliveries($targetPath, 20);
-            } catch (\Throwable $e) {
-                app_log('Post-spam dedupe failed: ' . $e->getMessage());
-            }
-        }
-
         if (!is_trash_folder($targetPath)) {
             try {
-                MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
+                $syncPath = $targetIndexPath !== '' ? $targetIndexPath : $targetPath;
+                MailCacheService::syncFolderHeaders($imap, $syncPath, 30);
+                if ($allMovedUids !== []) {
+                    MailCacheService::updateIndexSeenBulk($syncPath, $allMovedUids, true);
+                    foreach ($allMovedUids as $uid) {
+                        $imap->markSeen($syncPath, (int) $uid);
+                    }
+                }
+                MailCacheService::reconcileBadgeFromIndex($syncPath);
             } catch (\Throwable $e) {
                 app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
                 MailCacheService::invalidateFolder($targetPath);
             }
+        }
+
+        try {
+            MailCacheService::syncFolderHeaders($imap, $folderPath, 15);
+            MailCacheService::reconcileBadgeFromIndex($folderPath);
+        } catch (\Throwable $e) {
+            app_log('Post-move source sync failed for ' . $folderPath . ': ' . $e->getMessage());
         }
 
         ImapService::closeShared();

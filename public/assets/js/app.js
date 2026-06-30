@@ -2887,8 +2887,7 @@
     function isSpamFolderPath(path) {
         if (!path) return false;
         var lower = String(path).toLowerCase();
-        if (lower.indexOf('junk') >= 0) return false;
-        return lower.indexOf('spam') >= 0;
+        return lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0;
     }
 
     function collectMoveFoldersFromSidebar() {
@@ -4528,6 +4527,13 @@
             if (data && data.remove_correspondent_folder) {
                 removeCorrespondentFolder(data.remove_correspondent_folder);
             }
+            if (data && data.target) {
+                var card = getListCard();
+                var plain = card ? (card.getAttribute('data-folder-plain') || '') : '';
+                if (plain && plain.toLowerCase() === String(data.target).toLowerCase()) {
+                    scheduleMailPoll(true, false);
+                }
+            }
             return data;
         }).catch(function (err) {
             if (!options.suppressErrorToast) {
@@ -4560,9 +4566,6 @@
 
         var counts = Object.assign({}, lastUnreadCounts);
         counts[plain] = Math.max(0, (counts[plain] || 0) - delta);
-        if (action === 'move' && targetFolder) {
-            counts[targetFolder] = (counts[targetFolder] || 0) + delta;
-        }
         applyUnreadCounts(counts);
     }
 
@@ -5962,11 +5965,6 @@
             removeRowByUid(uid);
             if (affectsBadge) {
                 bumpFolderUnread(-1);
-                if (kind === 'move' && extra.target_folder) {
-                    var moveCounts = Object.assign({}, lastUnreadCounts);
-                    moveCounts[extra.target_folder] = (moveCounts[extra.target_folder] || 0) + 1;
-                    applyUnreadCounts(moveCounts);
-                }
             }
 
             if (kind === 'trash') {
