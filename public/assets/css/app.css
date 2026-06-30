@@ -2656,6 +2656,14 @@ a:hover {
     margin-left: 0.85rem;
 }
 
+.admin-folders-page .admin-nav {
+    margin-bottom: 0.5rem;
+}
+
+.admin-folders-page .card {
+    margin-bottom: 0;
+}
+
 /* Admin folder tree */
 .admin-folder-tree-toolbar {
     display: flex;
