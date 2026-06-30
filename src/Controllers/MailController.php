@@ -301,6 +301,7 @@ class MailController
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
+        $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
 
         // Thread preview runs only on grouped rows (one enrich pass per conversation).
@@ -665,6 +666,7 @@ class MailController
         $list = employee_filter_own_inbox_list($folderPath, $list);
         $list = employee_merge_personal_sent_list($folderPath, $list);
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
+        $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
 
         if (!$light) {

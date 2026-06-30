@@ -362,15 +362,13 @@ class ComposeController
                     }
                     dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
                 });
-            }
+            } else {
+                dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
 
-            dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
-
-            // Shared hosts often block loopback async requests — deliver synchronously
-            // so employee/client folders update even when the background job never runs.
-            if ($destPaths !== [] && $sentMime !== '') {
-                deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
-                reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId);
+                if ($destPaths !== [] && $sentMime !== '') {
+                    deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
+                    reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId);
+                }
             }
 
             with_session_write(function () use ($destPaths, $sentMessageId): void {
@@ -425,13 +423,6 @@ class ComposeController
             (int) ($job['draft_uid'] ?? 0),
         );
         $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
-        if ($destPaths !== [] && $sentMime !== '') {
-            deliver_outbound_copies_to_folders(
-                $sentMime,
-                $destPaths,
-                (string) ($job['from_email'] ?? '')
-            );
-        }
         $this->syncMailboxAfterSend(
             (string) ($job['from_email'] ?? ''),
             (string) ($job['return_folder'] ?? ''),
@@ -1317,8 +1308,8 @@ class ComposeController
             ))));
 
             foreach ($pathsToSync as $path) {
-                if ($path === $contextFolder && $contextFolder !== '') {
-                    $imap->removeDuplicateDeliveries($contextFolder, 8);
+                if ($path !== '') {
+                    $imap->removeDuplicateDeliveries($path, 12);
                 }
                 try {
                     MailCacheService::syncFolderHeaders($imap, $path, $headerLimit);

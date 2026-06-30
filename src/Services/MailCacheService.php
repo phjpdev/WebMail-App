@@ -739,19 +739,35 @@ class MailCacheService
             return false;
         }
 
+        $candidates = [$folderPath];
+        $root = employee_mailbox_root_prefix($folderPath);
+        if ($root !== '' && strcasecmp($root, $folderPath) !== 0) {
+            $candidates[] = $root;
+        }
+        $messagesPath = employee_messages_imap_path($folderPath);
+        if ($messagesPath !== '' && strcasecmp($messagesPath, $folderPath) !== 0) {
+            $candidates[] = $messagesPath;
+        }
+
         try {
-            $row = Database::fetchOne(
-                'SELECT folder_type, linked_user_id FROM folders
-                 WHERE active = 1 AND LOWER(imap_path) = LOWER(?) LIMIT 1',
-                [$folderPath]
-            );
+            foreach (array_values(array_unique($candidates)) as $candidate) {
+                $row = Database::fetchOne(
+                    'SELECT folder_type, linked_user_id FROM folders
+                     WHERE active = 1 AND LOWER(imap_path) = LOWER(?)
+                     LIMIT 1',
+                    [$candidate]
+                );
+                if ($row !== null
+                    && ($row['folder_type'] ?? '') === 'employee'
+                    && ($row['linked_user_id'] ?? null) === null) {
+                    return true;
+                }
+            }
         } catch (\Throwable) {
             return false;
         }
 
-        return $row !== null
-            && ($row['folder_type'] ?? '') === 'employee'
-            && ($row['linked_user_id'] ?? null) === null;
+        return false;
     }
 
     /**

@@ -3164,6 +3164,9 @@ function deliver_outbound_copies_to_folders(string $mime, array $destPaths, stri
         if ($resolvedFrom !== '' && strcasecmp($destPath, $resolvedFrom) === 0) {
             continue;
         }
+        if (outbound_imap_append_redundant($destPath, $mime)) {
+            continue;
+        }
 
         if (!$imap->appendMessage($destPath, $mime)) {
             app_log('Outbound deliver to ' . $destPath . ' failed: ' . $imap->getLastError());
@@ -4316,6 +4319,141 @@ function extract_message_id_from_mime(string $mime): ?string
     $id = trim((string) ($matches[1] ?? ''));
 
     return $id !== '' ? trim($id, '<>') : null;
+}
+
+/**
+ * @return list<string>
+ */
+function extract_recipients_from_mime(string $mime): array
+{
+    $emails = [];
+    foreach (['To', 'Cc', 'Bcc'] as $header) {
+        if (!preg_match('/^' . $header . ':\s*(.+)$/im', $mime, $matches)) {
+            continue;
+        }
+        $parsed = parse_email_list((string) ($matches[1] ?? ''));
+        foreach ($parsed['valid'] as $email) {
+            $emails[strtolower($email)] = true;
+        }
+    }
+
+    return array_keys($emails);
+}
+
+/**
+ * True when SMTP already delivers this MIME to the destination folder (skip IMAP append).
+ */
+function outbound_imap_append_redundant(string $destPath, string $mime): bool
+{
+    $destPath = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($destPath));
+    if ($destPath === '') {
+        return false;
+    }
+
+    foreach (extract_recipients_from_mime($mime) as $email) {
+        $aliasFolder = folder_for_alias_email($email);
+        if ($aliasFolder === null) {
+            continue;
+        }
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($aliasFolder));
+        if ($resolved !== '' && strcasecmp($resolved, $destPath) === 0) {
+            return true;
+        }
+    }
+
+    $messageId = extract_message_id_from_mime($mime);
+    if ($messageId !== null && $messageId !== '') {
+        $normalized = normalize_message_id($messageId);
+        try {
+            $row = App\Database::fetchOne(
+                'SELECT 1 FROM mail_bodies
+                 WHERE folder_path = ? AND LOWER(TRIM(BOTH "<>" FROM message_id)) = ?
+                 LIMIT 1',
+                [$destPath, $normalized]
+            );
+            if ($row !== null) {
+                return true;
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @param list<array<string, mixed>> $messages
+ * @return list<array<string, mixed>>
+ */
+function mail_dedupe_list_messages(array $messages): array
+{
+    if (count($messages) <= 1) {
+        return $messages;
+    }
+
+    $byMessageId = [];
+    $byFingerprint = [];
+    $ordered = [];
+
+    foreach ($messages as $msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+
+        $msgId = normalize_message_id((string) ($msg['message_id'] ?? ''));
+        if ($msgId !== '') {
+            if (isset($byMessageId[$msgId])) {
+                $byMessageId[$msgId] = mail_prefer_list_message_row($byMessageId[$msgId], $msg);
+                continue;
+            }
+            $byMessageId[$msgId] = $msg;
+            continue;
+        }
+
+        $fp = mail_list_message_fingerprint($msg);
+        if (isset($byFingerprint[$fp])) {
+            $byFingerprint[$fp] = mail_prefer_list_message_row($byFingerprint[$fp], $msg);
+            continue;
+        }
+        $byFingerprint[$fp] = $msg;
+    }
+
+    foreach ($byMessageId as $msg) {
+        $ordered[] = $msg;
+    }
+    foreach ($byFingerprint as $msg) {
+        $ordered[] = $msg;
+    }
+
+    usort($ordered, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+        if ($aTs === $bTs) {
+            return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
+        }
+
+        return $bTs <=> $aTs;
+    });
+
+    return $ordered;
+}
+
+/**
+ * @param array<string, mixed> $existing
+ * @param array<string, mixed> $candidate
+ * @return array<string, mixed>
+ */
+function mail_prefer_list_message_row(array $existing, array $candidate): array
+{
+    if (!empty($existing['optimistic']) && empty($candidate['optimistic'])) {
+        return $candidate;
+    }
+    if (empty($existing['optimistic']) && !empty($candidate['optimistic'])) {
+        return $existing;
+    }
+
+    return ((int) ($candidate['uid'] ?? 0)) > ((int) ($existing['uid'] ?? 0)) ? $candidate : $existing;
 }
 
 /**
