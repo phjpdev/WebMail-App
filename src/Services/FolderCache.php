@@ -1086,7 +1086,6 @@ class FolderCache
      */
     private function filterAdminFolders(array $data): array
     {
-        $imapEmployeeRoots = $this->discoverImapEmployeeMailboxRoots($data['folders']);
         $employeeRoots = $this->employeeMailboxRoots();
         $registry = $this->registeredActiveFolders();
         $orphanPrefixes = $this->orphanedEmployeeFolderPrefixes();
@@ -1122,7 +1121,7 @@ class FolderCache
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
-        return $this->finalizeAdminEmployeeFolderSidebar($data, $imapEmployeeRoots);
+        return $this->finalizeAdminEmployeeFolderSidebar($data);
     }
 
     /**
@@ -1132,14 +1131,9 @@ class FolderCache
      * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
-    private function finalizeAdminEmployeeFolderSidebar(array $data, array $imapEmployeeRoots = []): array
+    private function finalizeAdminEmployeeFolderSidebar(array $data): array
     {
         $registryEmployees = $this->registeredEmployeeMailboxRoots();
-        foreach ($imapEmployeeRoots as $upper => $info) {
-            if (!isset($registryEmployees[$upper])) {
-                $registryEmployees[$upper] = $info;
-            }
-        }
 
         if ($registryEmployees === []) {
             return $data;
@@ -1217,60 +1211,6 @@ class FolderCache
         $data['unread_counts'] = $newCounts;
 
         return $data;
-    }
-
-    /**
-     * @param list<array{path: string, name?: string, delimiter?: string}> $folders
-     * @return array<string, array{path: string, display_name: string}>
-     */
-    private function discoverImapEmployeeMailboxRoots(array $folders): array
-    {
-        $paths = [];
-        foreach ($folders as $folder) {
-            $path = self::resolvePath((string) ($folder['path'] ?? ''));
-            if ($path !== '') {
-                $paths[strtoupper($path)] = $path;
-            }
-        }
-
-        $roots = [];
-        foreach ($folders as $folder) {
-            $path = self::resolvePath((string) ($folder['path'] ?? ''));
-            if (!preg_match('/^INBOX\.([^.]+)$/i', $path)) {
-                continue;
-            }
-
-            if (!$this->imapPathLooksLikeEmployeeMailboxRoot($path, $paths)) {
-                continue;
-            }
-
-            $name = trim((string) ($folder['name'] ?? ''));
-            if ($name === '' || strcasecmp($name, $path) === 0) {
-                $name = preg_replace('/^INBOX\./i', '', $path);
-            }
-
-            $roots[strtoupper($path)] = [
-                'path' => $path,
-                'display_name' => $name,
-            ];
-        }
-
-        return $roots;
-    }
-
-    /**
-     * @param array<string, string> $paths upper(path) => path
-     */
-    private function imapPathLooksLikeEmployeeMailboxRoot(string $root, array $paths): bool
-    {
-        $prefix = rtrim($root, '.') . '.';
-        foreach (['Inbox', 'Sent', 'Drafts'] as $sub) {
-            if (isset($paths[strtoupper($prefix . $sub)])) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
