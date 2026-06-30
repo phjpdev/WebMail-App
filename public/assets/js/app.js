@@ -5028,12 +5028,11 @@
             finishBulkSelectionUi(action, allInFolder, uids);
             clearReadingPaneIfShowingUids(uids);
             if (action === 'delete') {
-                fireListMutation(actionPath, payload, { suppressErrorToast: true })
+                return fireListMutation(actionPath, payload, { suppressErrorToast: true })
                     .finally(function () {
                         listMutationInFlight = false;
                         endListMutationQuiet(800);
                     });
-                return Promise.resolve(true);
             }
             showToast('success', successMsg);
             fireListMutation(actionPath, payload).finally(function () {
@@ -6473,9 +6472,8 @@
 
             if (kind === 'trash') {
                 clearReadingPaneIfShowingUids([uid]);
-                fireListMutation('message/' + kind, movePayload, { suppressErrorToast: true })
+                return fireListMutation('message/' + kind, movePayload, { suppressErrorToast: true })
                     .finally(function () { endListMutationQuiet(800); });
-                return Promise.resolve(true);
             }
 
             if (kind === 'spam') {
