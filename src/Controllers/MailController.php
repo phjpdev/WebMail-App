@@ -455,16 +455,9 @@ class MailController
             return;
         }
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            http_response_code(503);
-            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
-            return;
-        }
-
         $bootstrapped = (new SystemBootstrapService())->ensureDefaults();
         if ($bootstrapped) {
-            $folderData = FolderCache::load(skipUnreadRefresh: true);
+            $folderData = FolderCache::load(refresh: true, skipUnreadRefresh: true);
             if (!$folderData['connected']) {
                 http_response_code(503);
                 echo json_encode(['ok' => false, 'error' => $folderData['error'] ?: 'IMAP unavailable']);
@@ -474,6 +467,13 @@ class MailController
 
         $paths = $this->bootstrapFolderPaths($folderData['folders'], $_GET['folder'] ?? '');
         $paths = array_values(array_filter($paths, fn (string $p) => FolderCache::canAccess($p)));
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
+            return;
+        }
 
         FilterService::runBackground(true, 10);
 
@@ -489,6 +489,7 @@ class MailController
         echo json_encode([
             'ok' => true,
             'synced' => $synced,
+            'folders_changed' => $bootstrapped,
             'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
         ]);
     }

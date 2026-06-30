@@ -13,6 +13,7 @@ use App\Database;
 class SystemBootstrapService
 {
     private static bool $ranThisRequest = false;
+    private static bool $lastChanged = false;
 
     /**
      * @return bool true when anything was created or updated
@@ -20,7 +21,7 @@ class SystemBootstrapService
     public function ensureDefaults(): bool
     {
         if (self::$ranThisRequest) {
-            return false;
+            return self::$lastChanged;
         }
         self::$ranThisRequest = true;
 
@@ -34,6 +35,8 @@ class SystemBootstrapService
             FilterService::reprocess();
             (new FolderCache())->clear();
         }
+
+        self::$lastChanged = $changed;
 
         return $changed;
     }

@@ -721,6 +721,13 @@ class FolderCache
     {
         $cache = new self();
 
+        if (Auth::user() !== null) {
+            $bootstrapped = (new SystemBootstrapService())->ensureDefaults();
+            if ($bootstrapped) {
+                $refresh = true;
+            }
+        }
+
         if (!$refresh) {
             $cached = $cache->get();
             if ($cached !== null) {
@@ -1410,21 +1417,21 @@ class FolderCache
         $roots = [];
         try {
             $rows = Database::query(
-                "SELECT imap_path FROM folders WHERE folder_type = 'employee' AND linked_user_id IS NOT NULL AND active = 1"
+                "SELECT imap_path FROM folders WHERE folder_type = 'employee' AND active = 1"
             )->fetchAll();
             foreach ($rows as $row) {
-                $path = (string) ($row['imap_path'] ?? '');
-                if ($path !== '') {
-                    $roots[] = $path;
+                $root = employee_mailbox_root_prefix((string) ($row['imap_path'] ?? ''));
+                if ($root !== '') {
+                    $roots[strtoupper($root)] = $root;
                 }
             }
         } catch (\Throwable) {
             // ignore
         }
 
-        self::$employeeRootsCache = $roots;
+        self::$employeeRootsCache = array_values($roots);
 
-        return $roots;
+        return self::$employeeRootsCache;
     }
 
     /**

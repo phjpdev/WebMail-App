@@ -6876,6 +6876,10 @@
         fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
             .then(function (r) { return r.json(); })
             .then(function (data) {
+                if (data && data.folders_changed) {
+                    window.location.reload();
+                    return;
+                }
                 if (data && data.unread_counts) {
                     applyUnreadCounts(data.unread_counts);
                 }
