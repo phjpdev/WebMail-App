@@ -265,13 +265,28 @@
     function confirmFormLoadingMessage(form) {
         var custom = form.getAttribute('data-confirm-loading');
         if (custom) return custom;
+
         var action = form.getAttribute('action') || '';
+        var label = (form.getAttribute('data-confirm-label') || '').trim();
+        var title = (form.getAttribute('data-confirm-title') || '').trim();
+
         if (/\/folders\/[^/]+\/delete/i.test(action)) return 'Deleting folder…';
         if (/\/users\/[^/]+\/delete/i.test(action)) return 'Deleting user…';
-        var label = form.getAttribute('data-confirm-label') || '';
-        if (/delete/i.test(label)) return 'Deleting…';
-        if (/disable/i.test(label)) return 'Disabling…';
-        return '';
+        if (/\/users\/[^/]+\/disable/i.test(action)) return 'Disabling user…';
+        if (/\/users\/backfill/i.test(action)) return 'Running backfill…';
+        if (/\/aliases\/[^/]+\/delete/i.test(action)) return 'Deleting alias…';
+        if (/\/rules\/[^/]+\/delete/i.test(action)) return 'Deleting rule…';
+        if (/\/reprocess/i.test(action)) return 'Reprocessing…';
+
+        var text = (label || title).toLowerCase();
+        if (text.indexOf('delete') !== -1) return 'Deleting…';
+        if (text.indexOf('disable') !== -1) return 'Disabling…';
+        if (text.indexOf('backfill') !== -1) return 'Running backfill…';
+        if (text.indexOf('reprocess') !== -1) return 'Reprocessing…';
+        if (text.indexOf('remove') !== -1) return 'Removing…';
+
+        if (label) return label.replace(/\.\.\.$/, '') + '…';
+        return 'Working…';
     }
 
     function parseMessagePath(pathname) {
@@ -3373,15 +3388,10 @@
             var message = form.getAttribute('data-confirm-message');
             if (!title && !message) return;
 
-            if (form.dataset.confirmed === '1') {
-                delete form.dataset.confirmed;
-                return;
-            }
-
             e.preventDefault();
             e.stopPropagation();
 
-            var busyMsg = confirmFormLoadingMessage(form);
+            var loadingMsg = confirmFormLoadingMessage(form);
 
             showConfirm({
                 title: title || 'Confirm',
@@ -3389,25 +3399,11 @@
                 confirmLabel: form.getAttribute('data-confirm-label') || 'Confirm',
                 cancelLabel: form.getAttribute('data-confirm-cancel') || 'Cancel',
                 danger: form.getAttribute('data-confirm-danger') === '1',
-                keepOpenOnConfirm: !!busyMsg,
-                loadingLabel: busyMsg
+                keepOpenOnConfirm: true,
+                loadingLabel: loadingMsg
             }).then(function (ok) {
                 if (!ok) return;
-                if (busyMsg) {
-                    form.submit();
-                    return;
-                }
-                form.dataset.confirmed = '1';
-                if (typeof form.requestSubmit === 'function') {
-                    var submitter = e.submitter;
-                    if (submitter) {
-                        form.requestSubmit(submitter);
-                    } else {
-                        form.requestSubmit();
-                    }
-                } else {
-                    form.submit();
-                }
+                form.submit();
             });
         }, true);
     }
@@ -4621,15 +4617,18 @@
             }
             if (isSpamFolderPath(moveTargetPath)) {
                 var spamCount = effectiveSelectionCount();
-                showConfirm({
+                showConfirmAction({
                     title: spamCount === 1 ? 'Move to Spam?' : 'Move ' + spamCount + ' messages to Spam?',
                     message: spamCount === 1
                         ? 'This message will be moved to the Spam folder.'
                         : 'These messages will be moved to the Spam folder.',
                     confirmLabel: 'Move to Spam',
-                    danger: false
-                }).then(function (ok) {
-                    if (ok) runBulkCommandExecute(action, uids, folderEnc, triggerBtn);
+                    danger: false,
+                    loadingLabel: spamCount === 1 ? 'Moving to Spam…' : 'Moving messages…',
+                    action: function () {
+                        runBulkCommandExecute(action, uids, folderEnc, triggerBtn);
+                        return Promise.resolve();
+                    }
                 });
                 return;
             }
@@ -6335,19 +6334,17 @@
             };
         }
         if (confirmCfg) {
+            var actionOpts = {
+                loadingLabel: kind === 'trash' ? deleteLoadingMessage(1) : 'Moving to Spam…',
+                action: function () {
+                    return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn);
+                }
+            };
             if (kind === 'trash') {
-                return showConfirmAction(Object.assign({}, confirmCfg, {
-                    loadingLabel: deleteLoadingMessage(1),
-                    successMessage: deleteSuccessMessage(1),
-                    action: function () {
-                        return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn);
-                    }
-                })).then(function (ok) { return !!ok; });
+                actionOpts.successMessage = deleteSuccessMessage(1);
             }
-            return showConfirm(confirmCfg).then(function (ok) {
-                if (!ok) return false;
-                return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn).then(function () { return true; });
-            });
+            return showConfirmAction(Object.assign({}, confirmCfg, actionOpts))
+                .then(function (ok) { return !!ok; });
         }
         return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn).then(function () { return true; });
     }

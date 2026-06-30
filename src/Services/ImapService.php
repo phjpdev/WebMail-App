@@ -1694,6 +1694,9 @@ class ImapService
 
         $errors = imap_errors() ?: [];
         $this->lastError = 'Failed to delete folder: ' . implode('; ', $errors);
+        if (self::isMissingMailboxError($this->lastError)) {
+            return true;
+        }
         app_log($this->lastError);
 
         return false;
@@ -1906,6 +1909,20 @@ class ImapService
         }
 
         return imap_utf7_encode($path);
+    }
+
+    private static function isMissingMailboxError(string $error): bool
+    {
+        if ($error === '') {
+            return false;
+        }
+
+        $lower = strtolower($error);
+
+        return str_contains($lower, 'nonexistent')
+            || str_contains($lower, "doesn't exist")
+            || str_contains($lower, 'does not exist')
+            || str_contains($lower, 'no such mailbox');
     }
 
     /**

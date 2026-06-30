@@ -396,7 +396,12 @@ class AdminFolderService
                 continue;
             }
             if (!$imap->deleteFolder($path)) {
-                $failures[] = $path . ': ' . $imap->getLastError();
+                $error = $imap->getLastError();
+                if ($error !== '' && self::isBenignFolderDeleteError($error)) {
+                    app_log('IMAP folder delete skipped (already gone): ' . $path . ' — ' . $error);
+                    continue;
+                }
+                $failures[] = $path . ': ' . $error;
             }
         }
 
@@ -467,5 +472,15 @@ class AdminFolderService
         }
 
         return $pathsToRemove;
+    }
+
+    private static function isBenignFolderDeleteError(string $error): bool
+    {
+        $lower = strtolower($error);
+
+        return str_contains($lower, 'nonexistent')
+            || str_contains($lower, "doesn't exist")
+            || str_contains($lower, 'does not exist')
+            || str_contains($lower, 'no such mailbox');
     }
 }
