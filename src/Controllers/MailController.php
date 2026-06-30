@@ -2466,13 +2466,7 @@ class MailController
      */
     private function folderDisplayName(array $folders, string $path): string
     {
-        foreach ($folders as $folder) {
-            if (strcasecmp((string) ($folder['path'] ?? ''), $path) === 0) {
-                return $folder['path'] === 'INBOX' ? 'Inbox' : $folder['name'];
-            }
-        }
-
-        return $path === 'INBOX' ? 'Inbox' : $path;
+        return folder_display_name($folders, $path);
     }
 
     private function renderMailView(string $viewName, array $data): void

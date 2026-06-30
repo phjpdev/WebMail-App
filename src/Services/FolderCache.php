@@ -1047,7 +1047,125 @@ class FolderCache
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
+        return $this->finalizeAdminEmployeeFolderSidebar($data);
+    }
+
+    /**
+     * One flat sidebar entry per registered employee mailbox (INBOX.Erik), even when
+     * IMAP stores mail in INBOX.Erik.Inbox and the registry row uses either path.
+     *
+     * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
+     * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
+     */
+    private function finalizeAdminEmployeeFolderSidebar(array $data): array
+    {
+        $registryEmployees = $this->registeredEmployeeMailboxRoots();
+        if ($registryEmployees === []) {
+            return $data;
+        }
+
+        $filtered = [];
+        $counts = $data['unread_counts'] ?? [];
+        $newCounts = [];
+        $seenEmployeeRoots = [];
+
+        foreach ($data['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '') {
+                continue;
+            }
+
+            $root = employee_mailbox_root_prefix($path);
+            $upperRoot = strtoupper($root);
+
+            if (isset($registryEmployees[$upperRoot])) {
+                if (isset($seenEmployeeRoots[$upperRoot])) {
+                    continue;
+                }
+
+                $seenEmployeeRoots[$upperRoot] = true;
+                $displayPath = self::resolvePath($registryEmployees[$upperRoot]['path']);
+                $filtered[] = [
+                    'path' => $displayPath,
+                    'name' => $registryEmployees[$upperRoot]['display_name'],
+                    'delimiter' => (string) ($folder['delimiter'] ?? '.'),
+                ];
+
+                $messagesPath = employee_messages_imap_path($displayPath);
+                $count = max(
+                    (int) ($counts[$path] ?? 0),
+                    (int) ($counts[$displayPath] ?? 0),
+                    (int) ($counts[$messagesPath] ?? 0),
+                );
+                $newCounts[$displayPath] = $count;
+                if (strcasecmp($messagesPath, $displayPath) !== 0) {
+                    $newCounts[$messagesPath] = $count;
+                }
+
+                continue;
+            }
+
+            $filtered[] = $folder;
+            $newCounts[$path] = (int) ($counts[$path] ?? 0);
+        }
+
+        foreach ($registryEmployees as $upperRoot => $info) {
+            if (isset($seenEmployeeRoots[$upperRoot])) {
+                continue;
+            }
+
+            $displayPath = self::resolvePath($info['path']);
+            $filtered[] = [
+                'path' => $displayPath,
+                'name' => $info['display_name'],
+                'delimiter' => '.',
+            ];
+
+            $messagesPath = employee_messages_imap_path($displayPath);
+            $count = max(
+                (int) ($counts[$displayPath] ?? 0),
+                (int) ($counts[$messagesPath] ?? 0),
+            );
+            $newCounts[$displayPath] = $count;
+            if (strcasecmp($messagesPath, $displayPath) !== 0) {
+                $newCounts[$messagesPath] = $count;
+            }
+        }
+
+        $data['folders'] = $filtered;
+        $data['unread_counts'] = $newCounts;
+
         return $data;
+    }
+
+    /**
+     * @return array<string, array{path: string, display_name: string}>
+     */
+    private function registeredEmployeeMailboxRoots(): array
+    {
+        $roots = [];
+
+        try {
+            $rows = Database::query(
+                "SELECT imap_path, display_name FROM folders WHERE active = 1 AND folder_type = 'employee'"
+            )->fetchAll();
+
+            foreach ($rows as $row) {
+                $root = employee_mailbox_root_prefix(self::resolvePath((string) ($row['imap_path'] ?? '')));
+                if ($root === '') {
+                    continue;
+                }
+
+                $roots[strtoupper($root)] = [
+                    'path' => $root,
+                    'display_name' => (string) ($row['display_name'] ?? preg_replace('/^INBOX\./i', '', $root)),
+                ];
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+
+        return $roots;
     }
 
     /**
@@ -1118,8 +1236,11 @@ class FolderCache
      */
     private function isUnregisteredInboxOrphan(string $path, array $registry): bool
     {
-        if (isset($registry[strtoupper($path)])) {
-            return false;
+        foreach ($registry as $key => $entry) {
+            $regPath = (string) ($entry['path'] ?? $key);
+            if ($this->pathMatchesRegistryMailbox($path, $regPath)) {
+                return false;
+            }
         }
 
         if (system_folder_bucket_for_path($path) !== null) {
@@ -1135,6 +1256,24 @@ class FolderCache
         }
 
         return true;
+    }
+
+    private function pathMatchesRegistryMailbox(string $path, string $registryPath): bool
+    {
+        $path = self::resolvePath($path);
+        $registryPath = self::resolvePath($registryPath);
+        if ($path === '' || $registryPath === '') {
+            return false;
+        }
+
+        if (strcasecmp($path, $registryPath) === 0) {
+            return true;
+        }
+
+        return strcasecmp(
+            employee_mailbox_root_prefix($path),
+            employee_mailbox_root_prefix($registryPath),
+        ) === 0;
     }
 
     /**

@@ -716,10 +716,26 @@ function folder_url(string $folderPath, string $suffix = ''): string
  */
 function folder_display_name(array $folders, string $path): string
 {
+    $path = \App\Services\FolderCache::resolvePath($path);
+
     foreach ($folders as $folder) {
-        if (strcasecmp((string) ($folder['path'] ?? ''), $path) === 0) {
-            return $folder['path'] === 'INBOX' ? 'Inbox' : (string) $folder['name'];
+        $folderPath = (string) ($folder['path'] ?? '');
+        if (strcasecmp($folderPath, $path) === 0) {
+            return $folderPath === 'INBOX' ? 'Inbox' : (string) $folder['name'];
         }
+
+        $navPath = sidebar_folder_nav_path($folderPath);
+        if ($navPath !== '' && strcasecmp($navPath, $path) === 0) {
+            return (string) $folder['name'];
+        }
+    }
+
+    $meta = folder_registry_meta($path);
+    if ($meta === null) {
+        $meta = folder_registry_meta(employee_mailbox_root_prefix($path));
+    }
+    if ($meta !== null && ($meta['name'] ?? '') !== '') {
+        return (string) $meta['name'];
     }
 
     return $path === 'INBOX' ? 'Inbox' : $path;
