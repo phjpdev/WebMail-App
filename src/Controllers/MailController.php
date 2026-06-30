@@ -304,23 +304,34 @@ class MailController
         $list = mail_group_list_by_thread($folderPath, $list);
 
         // Thread preview runs only on grouped rows (one enrich pass per conversation).
-        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages']);
+        $enrichLight = $servedFromCache && $preferCache && !$explicitRefresh;
+        $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages'], $enrichLight);
 
         // Decide polling state from the loaded folder data, before privacy
         // trimming, so a folder with no viewer-visible mail doesn't poll forever.
+        $sessionFolderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
         $listAwaitingSync = $query === ''
-            && $servedFromCache
             && empty($list['messages'])
-            && ($badgePending || !empty($list['stale']));
+            && $imapConnected
+            && (
+                ($servedFromCache && ($badgePending || !empty($list['stale'])))
+                || MailCacheService::badgeAheadOfIndex($folderPath)
+                || mail_get_post_send_preview($folderPath) !== null
+                || $sessionFolderUnread > 0
+            );
+
+        $sidebarUnread = FolderCache::sidebarUnreadCountsFromSession();
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
             'folderPath' => $folderPath,
             'folderB64' => encode_folder_path($folderPath),
             'folders' => $folders,
-            'unreadCounts' => $folderData['unread_counts'] ?? [],
+            'unreadCounts' => $sidebarUnread,
             'unreadCount' => folder_shows_unread_badge($folderPath)
-                ? (int) ($folderData['unread_counts'][$folderPath] ?? 0)
+                ? (int) ($sidebarUnread[$folderPath]
+                    ?? $sidebarUnread[employee_messages_imap_path($folderPath)]
+                    ?? 0)
                 : 0,
             'activeFolder' => $folderPath,
             'messages' => $list['messages'],
@@ -365,11 +376,11 @@ class MailController
     private function maybeRunFilter(string $folderPath, bool $force = false): ?array
     {
         if ($this->isFilterSource($folderPath)) {
-            return FilterService::runBeforeMailList();
+            return FilterService::runBackground($force);
         }
 
         if (is_routed_destination_folder($folderPath)) {
-            return FilterService::runBackground(true);
+            return FilterService::runBackground($force);
         }
 
         return FilterService::runBackground($force);
@@ -514,14 +525,21 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $perPage = mail_per_page();
 
-        // Lightweight poll: MySQL cache only — no IMAP (keeps polling fast).
+        // Lightweight poll: MySQL cache only — never IMAP (keeps polling fast).
         if ($light && $query === '') {
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
-            if ($cached !== null) {
-                $this->echoFolderSyncJson($folderPath, $cached, light: true);
-
-                return;
+            if ($cached === null) {
+                $cached = [
+                    'messages' => [],
+                    'total' => 0,
+                    'page' => $page,
+                    'per_page' => $perPage,
+                    'total_pages' => 0,
+                ];
             }
+            $this->echoFolderSyncJson($folderPath, $cached, light: true);
+
+            return;
         }
 
         $forceFilter = ($_GET['filter'] ?? '') === '1';
@@ -696,7 +714,9 @@ class MailController
             'page' => $list['page'],
             'total_pages' => $list['total_pages'],
             'messages' => $messages,
-            'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
+            'unread_counts' => $light
+                ? FolderCache::sidebarUnreadCountsFromSession()
+                : FolderCache::sidebarUnreadCounts(),
         ]);
     }
 
@@ -711,7 +731,7 @@ class MailController
 
         // Fast path: session badge counts only (post-send-deferred handles IMAP/filter work).
         if ($light || $afterSend) {
-            echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
+            echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCountsFromSession()]);
 
             return;
         }
@@ -907,8 +927,8 @@ class MailController
                 'was_unread' => false,
                 'html' => $html,
                 'is_draft_editor' => true,
-                'unread_counts' => FolderCache::sidebarUnreadCounts(),
-                'folder_unread' => (int) (FolderCache::sidebarUnreadCounts()[$folderPath] ?? 0),
+                'unread_counts' => FolderCache::sidebarUnreadCountsFromSession(),
+                'folder_unread' => (int) (FolderCache::sidebarUnreadCountsFromSession()[$folderPath] ?? 0),
             ]);
         }
 
@@ -1180,7 +1200,7 @@ class MailController
         if ($markRead && $wasUnread) {
             FolderCache::clearPendingBadgePath($folderPath);
         }
-        $unreadCounts = FolderCache::sidebarUnreadCounts();
+        $unreadCounts = FolderCache::sidebarUnreadCountsFromSession();
 
         $aliasService = new AliasService();
         $userId = Auth::user()['id'] ?? null;

@@ -532,15 +532,55 @@ class FolderCache
 
         foreach ($folderData['folders'] ?? [] as $folder) {
             $path = (string) ($folder['path'] ?? '');
-            if ($path !== '' && folder_shows_unread_badge($path)) {
-                $sessionCount = (int) ($session[$path] ?? 0);
-                $messagesPath = employee_messages_imap_path($path);
-                if (strcasecmp($messagesPath, $path) !== 0 && isset($session[$messagesPath])) {
-                    $sessionCount = max($sessionCount, (int) $session[$messagesPath]);
-                }
-                $result[$path] = $sessionCount > 0
-                    ? $sessionCount
-                    : \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount);
+            if ($path === '' || !folder_shows_unread_badge($path)) {
+                continue;
+            }
+
+            $sessionCount = (int) ($session[$path] ?? 0);
+            $messagesPath = employee_messages_imap_path($path);
+            if (strcasecmp($messagesPath, $path) !== 0 && isset($session[$messagesPath])) {
+                $sessionCount = max($sessionCount, (int) $session[$messagesPath]);
+            }
+
+            $count = $sessionCount > 0
+                ? $sessionCount
+                : \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount);
+
+            $result[$path] = $count;
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $result[$messagesPath] = $count;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Fast sidebar badges for polling — session only, no per-folder DB/IMAP work.
+     *
+     * @return array<string, int>
+     */
+    public static function sidebarUnreadCountsFromSession(): array
+    {
+        $folderData = self::load(skipUnreadRefresh: true);
+        $session = self::normalizeUnreadCounts($folderData['unread_counts'] ?? []);
+        $result = [];
+
+        foreach ($folderData['folders'] ?? [] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '' || !folder_shows_unread_badge($path)) {
+                continue;
+            }
+
+            $messagesPath = employee_messages_imap_path($path);
+            $count = (int) ($session[$path] ?? 0);
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $count = max($count, (int) ($session[$messagesPath] ?? 0));
+            }
+
+            $result[$path] = $count;
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $result[$messagesPath] = $count;
             }
         }
 
@@ -552,6 +592,26 @@ class FolderCache
         $resolved = self::resolvePath($path);
 
         return self::resolvePath(employee_messages_imap_path($resolved));
+    }
+
+    /**
+     * Read a sidebar badge from session counts (no per-folder DB/IMAP recompute).
+     *
+     * @param array<string, int> $session
+     */
+    private static function sessionUnreadForSidebarPath(string $path, array $session): int
+    {
+        if ($path === '' || !folder_shows_unread_badge($path)) {
+            return 0;
+        }
+
+        $count = (int) ($session[$path] ?? 0);
+        $messagesPath = employee_messages_imap_path($path);
+        if (strcasecmp($messagesPath, $path) !== 0) {
+            $count = max($count, (int) ($session[$messagesPath] ?? 0));
+        }
+
+        return max(0, $count);
     }
 
     /**
@@ -770,9 +830,9 @@ class FolderCache
         foreach ($data['folders'] as $folder) {
             if ($this->isEmployeeFolderAllowed($folder['path'], $prefix)) {
                 $filtered[] = $folder;
-                $counts[$folder['path']] = \App\Services\MailCacheService::sidebarBadgeCount(
+                $counts[$folder['path']] = self::sessionUnreadForSidebarPath(
                     $folder['path'],
-                    (int) ($data['unread_counts'][$folder['path']] ?? 0)
+                    $data['unread_counts'] ?? []
                 );
             }
         }
@@ -791,10 +851,7 @@ class FolderCache
                 continue;
             }
             $filtered[] = $folder;
-            $counts[$path] = \App\Services\MailCacheService::sidebarBadgeCount(
-                $path,
-                (int) ($data['unread_counts'][$path] ?? 0)
-            );
+            $counts[$path] = self::sessionUnreadForSidebarPath($path, $data['unread_counts'] ?? []);
             $existing[strtoupper($path)] = true;
         }
 
@@ -812,12 +869,7 @@ class FolderCache
                 'name' => $meta['name'],
                 'delimiter' => '.',
             ];
-            $counts[$resolved] = \App\Services\MailCacheService::sidebarBadgeCount(
-                $resolved,
-                (int) ($data['unread_counts'][$resolved]
-                    ?? $data['unread_counts'][$meta['path']]
-                    ?? 0)
-            );
+            $counts[$resolved] = self::sessionUnreadForSidebarPath($resolved, $data['unread_counts'] ?? []);
             $existing[strtoupper($resolved)] = true;
         }
 
@@ -860,10 +912,11 @@ class FolderCache
             }
 
             $filtered[] = $folder;
-            $counts[$path] = \App\Services\MailCacheService::sidebarBadgeCount(
-                $path,
-                (int) ($data['unread_counts'][$path] ?? 0)
-            );
+            $counts[$path] = self::sessionUnreadForSidebarPath($path, $data['unread_counts'] ?? []);
+            $messagesPath = employee_messages_imap_path($path);
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $counts[$messagesPath] = $counts[$path];
+            }
         }
 
         $data['folders'] = $filtered;

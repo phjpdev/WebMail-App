@@ -58,17 +58,32 @@ class MailCacheService
             return self::$linkedUserCache[$key];
         }
 
+        $candidates = [$folderPath];
+        $root = employee_mailbox_root_prefix($folderPath);
+        if ($root !== '' && strcasecmp($root, $folderPath) !== 0) {
+            $candidates[] = $root;
+        }
+        $messagesPath = employee_messages_imap_path($folderPath);
+        if ($messagesPath !== '' && strcasecmp($messagesPath, $folderPath) !== 0) {
+            $candidates[] = $messagesPath;
+        }
+
         try {
-            $row = Database::fetchOne(
-                "SELECT linked_user_id FROM folders
-                 WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
-                 AND LOWER(imap_path) = LOWER(?)
-                 LIMIT 1",
-                [$folderPath]
-            );
-            self::$linkedUserCache[$key] = isset($row['linked_user_id'])
-                ? (int) $row['linked_user_id']
-                : null;
+            $linkedId = null;
+            foreach (array_values(array_unique($candidates)) as $candidate) {
+                $row = Database::fetchOne(
+                    "SELECT linked_user_id FROM folders
+                     WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
+                     AND LOWER(imap_path) = LOWER(?)
+                     LIMIT 1",
+                    [$candidate]
+                );
+                if ($row !== null && !empty($row['linked_user_id'])) {
+                    $linkedId = (int) $row['linked_user_id'];
+                    break;
+                }
+            }
+            self::$linkedUserCache[$key] = $linkedId;
         } catch (\Throwable) {
             self::$linkedUserCache[$key] = null;
         }
@@ -561,12 +576,6 @@ class MailCacheService
 
         $count = 0;
         $groupRows = array_values($groups);
-        $readMap = self::usesPerUserRead($folderPath)
-            ? self::batchUserReadState($folderPath, array_map(
-                static fn (array $row): int => (int) ($row['imap_uid'] ?? 0),
-                $groupRows
-            ), $userId)
-            : null;
 
         foreach ($groupRows as $row) {
             $uid = (int) ($row['imap_uid'] ?? 0);
@@ -574,12 +583,7 @@ class MailCacheService
                 continue;
             }
 
-            $msg = self::indexRowToMessage($row, $folderPath, $readMap, $userId);
-            if (mail_resolve_correspondent_thread_context($folderPath, $msg) !== null) {
-                mail_enrich_correspondent_folder_list_row($folderPath, $msg);
-            }
-
-            if (empty($msg['seen'])) {
+            if (!self::effectiveSeen($folderPath, $uid, $userId)) {
                 $count++;
             }
         }
@@ -594,32 +598,40 @@ class MailCacheService
     {
         $folderPath = self::indexFolderPath($folderPath);
         $state = self::getSyncState($folderPath);
-        if ($state === null || empty($state['last_sync_at'])) {
-            return null;
-        }
-
-        $total = (int) ($state['imap_total'] ?? 0);
         $indexed = self::countListableMessagesInIndex($folderPath);
-        if ($indexed > 0 || self::hasFolderData($folderPath)) {
-            $total = $indexed;
-        } elseif ($total <= 0) {
-            $total = $indexed;
-        }
 
-        if ($total === 0) {
-            return mail_filter_removed_messages($folderPath, [
-                'messages' => [],
-                'total' => 0,
-                'page' => 1,
-                'per_page' => $perPage,
-                'total_pages' => 0,
-                'from_cache' => true,
-            ]);
-        }
+        if ($state === null || empty($state['last_sync_at'])) {
+            if ($indexed <= 0) {
+                return null;
+            }
 
-        $totalPages = (int) max(1, (int) ceil($total / $perPage));
-        $page = max(1, min($page, $totalPages));
-        $offset = ($page - 1) * $perPage;
+            $total = $indexed;
+            $totalPages = (int) max(1, (int) ceil($total / $perPage));
+            $page = max(1, min($page, $totalPages));
+            $offset = ($page - 1) * $perPage;
+        } else {
+            $total = (int) ($state['imap_total'] ?? 0);
+            if ($indexed > 0 || self::hasFolderData($folderPath)) {
+                $total = $indexed;
+            } elseif ($total <= 0) {
+                $total = $indexed;
+            }
+
+            if ($total === 0) {
+                return mail_filter_removed_messages($folderPath, [
+                    'messages' => [],
+                    'total' => 0,
+                    'page' => 1,
+                    'per_page' => $perPage,
+                    'total_pages' => 0,
+                    'from_cache' => true,
+                ]);
+            }
+
+            $totalPages = (int) max(1, (int) ceil($total / $perPage));
+            $page = max(1, min($page, $totalPages));
+            $offset = ($page - 1) * $perPage;
+        }
 
         $rows = Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
@@ -694,6 +706,11 @@ class MailCacheService
         $state = self::getSyncState($folderPath);
         $imapTotal = (int) ($state['imap_total'] ?? 0);
         if ($imapTotal <= 0) {
+            $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            if ($session > 0 || self::badgeAheadOfIndex($folderPath)) {
+                return false;
+            }
+
             return true;
         }
 
@@ -783,8 +800,6 @@ class MailCacheService
                 $key = 'uid:' . (int) ($msg['uid'] ?? 0);
             }
 
-            mail_enrich_correspondent_folder_list_row($folderPath, $msg);
-
             $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
             $existingTs = isset($groups[$key])
                 ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
@@ -798,9 +813,14 @@ class MailCacheService
             }
         }
 
+        $viewerId = (int) (Auth::user()['id'] ?? 0);
         $count = 0;
         foreach ($groups as $msg) {
-            if (empty($msg['seen'])) {
+            $uid = (int) ($msg['uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+            if (!self::effectiveSeen($folderPath, $uid, $viewerId)) {
                 $count++;
             }
         }
@@ -1338,7 +1358,7 @@ class MailCacheService
      * @param list<array<string, mixed>> $messages
      * @return list<array<string, mixed>>
      */
-    public static function enrichListMessages(string $folderPath, array $messages): array
+    public static function enrichListMessages(string $folderPath, array $messages, bool $light = false): array
     {
         if ($messages === []) {
             return $messages;
@@ -1384,7 +1404,9 @@ class MailCacheService
                 }
             }
 
-            mail_enrich_list_with_thread_preview($folderPath, $msg);
+            if (!$light) {
+                mail_enrich_list_with_thread_preview($folderPath, $msg);
+            }
             mail_note_correspondent_from_list_message($msg);
         }
         unset($msg);

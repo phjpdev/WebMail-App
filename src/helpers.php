@@ -1129,17 +1129,32 @@ function mail_linked_user_id_for_inbox(string $folderPath): ?int
         return $cache[$key];
     }
 
+    $candidates = [$folderPath];
+    $root = employee_mailbox_root_prefix($folderPath);
+    if ($root !== '' && strcasecmp($root, $folderPath) !== 0) {
+        $candidates[] = $root;
+    }
+    $messagesPath = employee_messages_imap_path($folderPath);
+    if ($messagesPath !== '' && strcasecmp($messagesPath, $folderPath) !== 0) {
+        $candidates[] = $messagesPath;
+    }
+
     try {
-        $row = App\Database::fetchOne(
-            "SELECT linked_user_id FROM folders
-             WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
-               AND LOWER(imap_path) = LOWER(?)
-             LIMIT 1",
-            [$folderPath]
-        );
-        $cache[$key] = ($row !== null && !empty($row['linked_user_id']))
-            ? (int) $row['linked_user_id']
-            : null;
+        $linkedId = null;
+        foreach (array_values(array_unique($candidates)) as $candidate) {
+            $row = App\Database::fetchOne(
+                "SELECT linked_user_id FROM folders
+                 WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
+                   AND LOWER(imap_path) = LOWER(?)
+                 LIMIT 1",
+                [$candidate]
+            );
+            if ($row !== null && !empty($row['linked_user_id'])) {
+                $linkedId = (int) $row['linked_user_id'];
+                break;
+            }
+        }
+        $cache[$key] = $linkedId;
     } catch (\Throwable) {
         $cache[$key] = null;
     }

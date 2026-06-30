@@ -2316,6 +2316,23 @@
         return path.toLowerCase().indexOf('trash') < 0;
     }
 
+    function folderUnreadLookup(lookup, path) {
+        if (!path) return 0;
+        if (lookup[path] != null) return lookup[path];
+        var lower = path.toLowerCase();
+        if (lookup[lower] != null) return lookup[lower];
+        var containerMatch = /^INBOX\.([^.]+)\.Inbox$/i.exec(path);
+        if (containerMatch) {
+            var container = 'INBOX.' + containerMatch[1];
+            if (lookup[container] != null) return lookup[container];
+            var containerLower = container.toLowerCase();
+            if (lookup[containerLower] != null) return lookup[containerLower];
+        }
+        if (lastUnreadCounts[path] != null) return lastUnreadCounts[path];
+        if (lastUnreadCounts[lower] != null) return lastUnreadCounts[lower];
+        return 0;
+    }
+
     function updateMailCount(total, unread) {
         var label = document.getElementById('mail-count-label');
         if (!label) return;
@@ -2508,10 +2525,49 @@
         var empty = document.getElementById('mail-list-empty');
         var scroller = document.getElementById('mail-list-scroller');
         if (!empty) return;
-        var hasRows = (body && body.children.length > 0) || (mobile && mobile.children.length > 0);
+        var hasRows = (body && body.querySelectorAll('.mail-row[data-uid]').length > 0)
+            || (mobile && mobile.querySelectorAll('.mail-card[data-uid]').length > 0);
         empty.hidden = hasRows;
         if (scroller) scroller.hidden = !hasRows;
         if (mobile) mobile.hidden = !hasRows;
+    }
+
+    function visibleMailRowCount() {
+        var body = document.getElementById('mail-list-body');
+        var mobile = document.getElementById('mail-list-mobile');
+        var count = 0;
+        if (body) count += body.querySelectorAll('.mail-row[data-uid]').length;
+        if (mobile) count += mobile.querySelectorAll('.mail-card[data-uid]').length;
+        return count;
+    }
+
+    function hydrateMailListFromPoll(messages, markNew) {
+        if (!messages || !messages.length) return false;
+
+        var tbody = document.getElementById('mail-list-body');
+        var mobile = document.getElementById('mail-list-mobile');
+        var inserted = 0;
+
+        messages.forEach(function (msg) {
+            var uid = String(msg.uid);
+            if (isUidPendingRemoval(uid)) return;
+            if (tbody && !tbody.querySelector('[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(uid) : uid) + '"]')) {
+                tbody.insertBefore(buildDesktopRow(msg, !!markNew), tbody.firstChild);
+                inserted++;
+            }
+            if (mobile && !mobile.querySelector('[data-uid="' + (window.CSS && CSS.escape ? CSS.escape(uid) : uid) + '"]')) {
+                mobile.insertBefore(buildMobileCard(msg, !!markNew), mobile.firstChild);
+                inserted++;
+            }
+        });
+
+        if (inserted > 0) {
+            setMailListLoading(false);
+            ensureListVisible(getListCard());
+            syncListEmptyState();
+        }
+
+        return inserted > 0;
     }
 
     function reorderMailListFromPoll(messages) {
@@ -3501,9 +3557,7 @@
         document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
             var path = link.getAttribute('data-folder-path');
             if (!path) return;
-            var n = folderShowsUnreadBadge(path)
-                ? (lookup[path] ?? lookup[path.toLowerCase()] ?? lastUnreadCounts[path] ?? 0)
-                : 0;
+            var n = folderShowsUnreadBadge(path) ? folderUnreadLookup(lookup, path) : 0;
             var badge = link.querySelector('.folder-badge');
             if (n > 0) {
                 if (!badge) {
@@ -3522,7 +3576,7 @@
             group.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
                 var p = link.getAttribute('data-folder-path');
                 if (p && folderShowsUnreadBadge(p)) {
-                    total += (lastUnreadCounts[p] ?? lastUnreadCounts[p.toLowerCase()] ?? 0);
+                    total += folderUnreadLookup(lookup, p);
                 }
             });
             var toggle = group.querySelector('.sidebar-group-toggle');
@@ -3915,7 +3969,7 @@
                     if (!data || !Array.isArray(data.messages)) return;
                     var plainPath = liveCard.getAttribute('data-folder-plain') || '';
                     var folderUnread = (data.unread_counts && plainPath)
-                        ? (folderShowsUnreadBadge(plainPath) ? (data.unread_counts[plainPath] || 0) : 0)
+                        ? (folderShowsUnreadBadge(plainPath) ? folderUnreadLookup(data.unread_counts, plainPath) : 0)
                         : 0;
                     updateMailCount(data.total, folderUnread);
                     if (data.unread_counts) {
@@ -3923,6 +3977,18 @@
                     }
 
                     if (page !== 1) {
+                        return;
+                    }
+
+                    if (visibleMailRowCount() === 0 && data.messages.length > 0) {
+                        if (hydrateMailListFromPoll(data.messages, true)) {
+                            playNewMailSound();
+                            notifyNewMail(data.messages.length);
+                            scheduleListSnippets(liveCard);
+                        }
+                        reorderMailListFromPoll(data.messages);
+                        syncListEmptyState();
+                        syncErrorShown = false;
                         return;
                     }
 
@@ -3971,6 +4037,7 @@
                     });
 
                     reorderMailListFromPoll(data.messages);
+                    syncListEmptyState();
 
                     syncErrorShown = false;
                 })
