@@ -1151,10 +1151,7 @@ class MailController
             'sanitizedHtml' => $sanitizedHtml,
             'conversationThread' => $conversationThread,
             'replyFrom' => $replyFrom,
-            'moveTargets' => array_values(array_filter(
-                $folders,
-                static fn ($f) => $f['path'] !== $folderPath && !is_draft_folder($f['path'])
-            )),
+            'moveTargets' => mail_move_target_folders($folders, $folderPath),
             'pollInterval' => (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']),
             'wasUnread' => $wasUnread,
         ];

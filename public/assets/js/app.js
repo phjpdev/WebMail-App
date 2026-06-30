@@ -2895,6 +2895,21 @@
         return lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0;
     }
 
+    function canonicalJunkFolder(current) {
+        var link = document.querySelector('.sidebar-primary-folders .folder-icon-spam');
+        if (!link) return null;
+        var anchor = link.closest('.sidebar-link[data-folder-path]');
+        if (!anchor) return null;
+        var path = anchor.getAttribute('data-folder-path');
+        if (!path || path === current) return null;
+        return {
+            path: path,
+            name: 'Junk',
+            icon: 'spam',
+            depth: folderDepthFromPath(path)
+        };
+    }
+
     function collectMoveFoldersFromSidebar() {
         var out = [];
         var active = document.querySelector('.sidebar-link.active[data-folder-path]');
@@ -2912,6 +2927,8 @@
                 depth: folderDepthFromPath(path)
             });
         });
+        var junk = canonicalJunkFolder(current);
+        if (junk) out.push(junk);
         out.sort(function (a, b) {
             return folderSortKey(a).localeCompare(folderSortKey(b));
         });
@@ -2924,6 +2941,9 @@
         var out = [];
         sel.querySelectorAll('option').forEach(function (opt) {
             if (!opt.value || isDraftFolderPath(opt.value)) return;
+            if (isSpamFolderPath(opt.value)) {
+                if (out.some(function (f) { return isSpamFolderPath(f.path); })) return;
+            }
             out.push({
                 path: opt.value,
                 name: opt.textContent.trim(),
@@ -2940,6 +2960,9 @@
         var out = [];
         sel.querySelectorAll('option').forEach(function (opt) {
             if (!opt.value || isDraftFolderPath(opt.value)) return;
+            if (isSpamFolderPath(opt.value)) {
+                if (out.some(function (f) { return isSpamFolderPath(f.path); })) return;
+            }
             out.push({
                 path: opt.value,
                 name: opt.textContent.trim(),

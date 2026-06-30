@@ -635,7 +635,59 @@ function mail_resolve_move_target_path(string $targetPath): string
         return '';
     }
 
+    if (sidebar_folder_bucket($resolved) === 'spam') {
+        return \App\Services\FolderCache::resolvePath(spam_folder_path());
+    }
+
     return \App\Services\FolderCache::resolvePath(employee_messages_imap_path($resolved));
+}
+
+/**
+ * Folders offered in Move-to pickers (toolbar, reading pane, context menu).
+ *
+ * @param list<array{path: string, name: string, delimiter?: string}> $folders
+ * @return list<array{path: string, name: string}>
+ */
+function mail_move_target_folders(array $folders, string $currentFolder): array
+{
+    $currentFolder = \App\Services\FolderCache::resolvePath($currentFolder);
+    $out = [];
+    $seenPaths = [];
+    $junkAdded = false;
+
+    foreach ($folders as $folder) {
+        $path = (string) ($folder['path'] ?? '');
+        if ($path === '') {
+            continue;
+        }
+        $resolved = \App\Services\FolderCache::resolvePath($path);
+        if (strcasecmp($resolved, $currentFolder) === 0 || is_draft_folder($path)) {
+            continue;
+        }
+
+        if (sidebar_folder_bucket($path) === 'spam') {
+            if ($junkAdded) {
+                continue;
+            }
+            $junkAdded = true;
+            $canonical = spam_folder_path();
+            $out[] = ['path' => $canonical, 'name' => 'Junk'];
+            $seenPaths[strtolower($canonical)] = true;
+            continue;
+        }
+
+        $key = strtolower($resolved);
+        if (isset($seenPaths[$key])) {
+            continue;
+        }
+        $seenPaths[$key] = true;
+        $out[] = [
+            'path' => $path,
+            'name' => (string) ($folder['name'] ?? $path),
+        ];
+    }
+
+    return $out;
 }
 
 function folder_url(string $folderPath, string $suffix = ''): string
