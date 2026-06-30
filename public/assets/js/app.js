@@ -2015,8 +2015,7 @@
             );
         }
         rowsForUid(restoreUid).forEach(function (el) {
-            el.classList.remove('is-unread');
-            el.removeAttribute('data-unread');
+            setRowSeen(restoreUid, true);
         });
         if (data && data.unread_counts) {
             applyUnreadCounts(data.unread_counts);
@@ -2024,7 +2023,9 @@
         mailSyncPaused = false;
         postSendQuietUntil = 0;
         resetComposeUiState();
-        openMessageInPaneNow(restoreUid, false);
+        window.setTimeout(function () {
+            openMessageInPaneNow(restoreUid, false);
+        }, 0);
         return true;
     }
 
@@ -2184,21 +2185,25 @@
                     var inlineCompose = form.closest('#mail-inline-compose');
                     if (inlineCompose) {
                         var composeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
+                        var isReplySend = composeMode === 'reply' || composeMode === 'reply-all';
                         closeInlineCompose(false, { keepUiState: false, skipRestore: true });
-                        afterComposeSendRefresh(data, form);
-                        if (composeMode === 'reply' || composeMode === 'reply-all') {
+                        afterComposeSendRefresh(data, form, { isReply: isReplySend });
+                        if (isReplySend) {
                             restorePaneAfterReplySend(data, form);
                         }
                         return;
                     }
                     if (form.closest('#compose-panel')) {
-                        var panelReply = restorePaneAfterReplySend(data, form);
+                        var panelComposeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
+                        var panelReplySend = panelComposeMode === 'reply' || panelComposeMode === 'reply-all';
                         closeComposePanel(false, { skipRestore: true });
-                        if (!panelReply) {
+                        afterComposeSendRefresh(data, form, { isReply: panelReplySend });
+                        if (panelReplySend) {
+                            restorePaneAfterReplySend(data, form);
+                        } else {
                             stopPaneMessageSync();
                             setPaneView('empty');
                         }
-                        afterComposeSendRefresh(data, form);
                         return;
                     }
                     afterComposeSendRefresh(data, form);
@@ -3872,7 +3877,9 @@
         return folders;
     }
 
-    function afterComposeSendRefresh(data, form) {
+    function afterComposeSendRefresh(data, form, options) {
+        options = options || {};
+        var isReply = !!options.isReply;
         if (data && data.unread_counts) {
             applyUnreadCounts(data.unread_counts);
         }
@@ -3892,7 +3899,11 @@
         var card = getListCard();
         var currentB64 = card ? card.getAttribute('data-folder-b64') : '';
         if (currentB64 && pollFolders.indexOf(currentB64) >= 0) {
-            loadFolderAjax(currentB64, false, true);
+            if (isReply) {
+                window.setTimeout(function () { scheduleMailPoll(true, false); }, 0);
+            } else {
+                loadFolderAjax(currentB64, false, true);
+            }
         } else if (pollFolders.length) {
             if (card) card.classList.add('is-syncing');
             startPostSendFolderPolls(pollFolders);
