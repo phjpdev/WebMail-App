@@ -130,6 +130,7 @@
     var afterSendBadgePollInFlight = false;
     var postSendFolderPollTimers = [];
     var postSendRefreshFolders = [];
+    var mailListLoadingGuard = null;
     var attachmentHintsTimer = null;
     var listSnippetsTimer = null;
     var panePrefetchInFlight = {};
@@ -1046,6 +1047,12 @@
         scheduleAttachmentHints(document);
         scheduleListSnippets(document);
         prefetchUnreadInList(document);
+
+        var loadingEl = document.getElementById('mail-list-loading');
+        if (loadingEl && !loadingEl.hidden) {
+            armMailListLoadingGuard();
+            window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
+        }
     }
 
     function isListMutationQuiet() {
@@ -1147,6 +1154,7 @@
                 ensureListVisible(getListCard());
             }
             if (data.list_loading) {
+                armMailListLoadingGuard();
                 var syncCard = getListCard();
                 if (syncCard) syncCard.classList.add('is-syncing');
                 window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
@@ -3833,6 +3841,22 @@
         });
     }
 
+    function clearMailListLoadingGuard() {
+        if (mailListLoadingGuard) {
+            window.clearTimeout(mailListLoadingGuard);
+            mailListLoadingGuard = null;
+        }
+    }
+
+    function armMailListLoadingGuard() {
+        clearMailListLoadingGuard();
+        mailListLoadingGuard = window.setTimeout(function () {
+            mailListLoadingGuard = null;
+            setMailListLoading(false);
+            syncListEmptyState();
+        }, 25000);
+    }
+
     function setMailListLoading(loading) {
         var card = getListCard();
         var loadingEl = document.getElementById('mail-list-loading');
@@ -3866,6 +3890,7 @@
             return;
         }
 
+        clearMailListLoadingGuard();
         if (loadingEl) loadingEl.hidden = true;
         var hasRows = document.querySelector('#mail-list-body .mail-row, #mail-list-mobile .mail-card');
         if (hasRows) {
@@ -4120,6 +4145,7 @@
                     }
 
                     if (page !== 1) {
+                        setMailListLoading(false);
                         return;
                     }
 
@@ -4131,6 +4157,8 @@
                         }
                         reorderMailListFromPoll(data.messages);
                         syncListEmptyState();
+                        setMailListLoading(false);
+                        if (liveCard) liveCard.setAttribute('data-cache-stale', '0');
                         syncErrorShown = false;
                         return;
                     }
@@ -4187,7 +4215,11 @@
                         ensureListVisible(liveCard);
                     } else if (data.messages.length > 0) {
                         hydrateMailListFromPoll(data.messages, false);
+                        setMailListLoading(false);
+                    } else {
+                        setMailListLoading(false);
                     }
+                    if (liveCard) liveCard.setAttribute('data-cache-stale', '0');
                     removeStaleOptimisticRows();
 
                     syncErrorShown = false;
@@ -4200,6 +4232,8 @@
                         syncErrorShown = true;
                         showToast('error', 'Live mail updates are paused — connection to the mail server failed.');
                     }
+                    setMailListLoading(false);
+                    syncListEmptyState();
                 })
                 .finally(function () {
                     var doneCard = document.querySelector('[data-mail-sync="1"]');

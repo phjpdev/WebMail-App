@@ -316,7 +316,6 @@ class MailController
 
         // Only block the list UI when there is nothing to show yet; otherwise
         // render cached rows immediately and sync in the background.
-        $sessionFolderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
         $listAwaitingSync = $query === ''
             && $imapConnected
             && empty($list['messages'])
@@ -324,7 +323,6 @@ class MailController
                 ($servedFromCache && ($badgePending || !empty($list['stale'])))
                 || MailCacheService::badgeAheadOfIndex($folderPath)
                 || mail_get_post_send_preview($folderPath) !== null
-                || $sessionFolderUnread > 0
             );
 
         $sidebarUnread = FolderCache::sidebarUnreadCounts();
