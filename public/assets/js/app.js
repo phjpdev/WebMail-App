@@ -274,7 +274,10 @@
         if (row) {
             var href = row.getAttribute('data-href');
             if (href) {
-                var path = href.replace(/^[^:]+:\\/\//, '').split('?')[0];
+                var path = href.split('?')[0];
+                try {
+                    path = new URL(href, window.location.href).pathname;
+                } catch (e) { /* relative path */ }
                 var m = path.match(/\/folder\/([^/]+)\/message\/(\d+)/);
                 if (m) {
                     return apiUrl('folder/' + m[1] + '/message/' + m[2] + '/pane');
