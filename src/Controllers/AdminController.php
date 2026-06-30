@@ -468,6 +468,7 @@ class AdminController
         $this->render('admin/folders/form', [
             'title' => 'Add folder',
             'folder' => null,
+            'parentFolders' => $this->folders->listParentChoices(),
             'adminSection' => 'folders',
         ]);
     }
@@ -487,7 +488,7 @@ class AdminController
             $newId = $this->folders->createClientFolder([
                 'display_name' => $displayName,
                 'folder_type' => $folderType,
-                'imap_path' => trim($_POST['imap_path'] ?? '') ?: null,
+                'parent_folder_id' => (int) ($_POST['parent_folder_id'] ?? 0),
                 'create_rule' => isset($_POST['create_rule']),
                 'rule_field' => $_POST['rule_field'] ?? 'subject',
                 'rule_operator' => $_POST['rule_operator'] ?? 'contains',
@@ -501,7 +502,7 @@ class AdminController
 
         FilterService::reprocess();
         $this->audit('folder_create', 'Created folder #' . $newId . ' ' . $displayName);
-        flash('success', 'Folder created on IMAP and in database.');
+        flash('success', 'Folder created.');
         redirect('admin/folders');
     }
 
@@ -567,7 +568,7 @@ class AdminController
         }
 
         if (!$this->folders->isDeletable($folder)) {
-            flash('error', 'This folder cannot be deleted. Only employee and client folders can be removed.');
+            flash('error', 'This folder cannot be deleted. Inbox, Sent, Drafts, Trash, Spam, and other system folders are protected.');
             redirect('admin/folders');
         }
 

@@ -338,6 +338,17 @@
                 var toggle = link.closest('.sidebar-group').querySelector('.sidebar-group-toggle');
                 if (toggle) toggle.setAttribute('aria-expanded', 'true');
             }
+            if (active) {
+                var branch = link.closest('.sidebar-folder-branch');
+                while (branch) {
+                    branch.classList.add('is-open');
+                    var branchChildren = branch.querySelector(':scope > .sidebar-folder-branch-children');
+                    if (branchChildren) branchChildren.hidden = false;
+                    var branchToggle = branch.querySelector(':scope > .sidebar-tree-row .sidebar-tree-toggle');
+                    if (branchToggle) branchToggle.setAttribute('aria-expanded', 'true');
+                    branch = branch.parentElement ? branch.parentElement.closest('.sidebar-folder-branch') : null;
+                }
+            }
         });
     }
 
@@ -3704,8 +3715,16 @@
 
     function createSidebarFolderLink(folder) {
         var navPath = folder.nav_path || folder.path;
+        var row = document.createElement('div');
+        row.className = 'sidebar-tree-row';
+        row.style.setProperty('--tree-depth', '0');
+
+        var spacer = document.createElement('span');
+        spacer.className = 'sidebar-tree-toggle-spacer';
+        spacer.setAttribute('aria-hidden', 'true');
+
         var link = document.createElement('a');
-        link.className = 'sidebar-link';
+        link.className = 'sidebar-link sidebar-tree-link';
         link.href = folder.url || apiUrl('folder/' + folder.b64);
         link.setAttribute('data-folder-path', navPath);
         link.setAttribute('data-folder-b64', folder.b64);
@@ -3718,42 +3737,24 @@
         text.textContent = folder.name || String(folder.path || '').replace(/^INBOX\./i, '');
         link.appendChild(icon);
         link.appendChild(text);
-        return link;
+
+        row.appendChild(spacer);
+        row.appendChild(link);
+        return row;
     }
 
-    function ensureSidebarFoldersGroup() {
+    function ensureSidebarCustomFoldersContainer() {
         var list = document.getElementById('folder-sidebar-list');
         if (!list) return null;
-        var group = list.querySelector('.sidebar-group[data-group="other"]');
-        if (group) return group;
-
-        var divider = document.createElement('div');
-        divider.className = 'sidebar-divider';
-        divider.setAttribute('aria-hidden', 'true');
-        list.appendChild(divider);
-
-        group = document.createElement('div');
-        group.className = 'sidebar-group is-open is-collapsible';
-        group.dataset.group = 'other';
-        group.innerHTML =
-            '<button type="button" class="sidebar-group-toggle" aria-expanded="true">' +
-            '<span class="sidebar-group-chevron-btn" aria-hidden="true">' +
-            '<svg class="sidebar-group-chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>' +
-            '</span>' +
-            '<span class="sidebar-group-icon folder-icon folder-icon-folder" aria-hidden="true"></span>' +
-            '<span class="sidebar-group-title">Folders</span>' +
-            '</button>' +
-            '<div class="sidebar-group-items"></div>';
-        list.appendChild(group);
-        return group;
+        return list.querySelector('.sidebar-folder-tree')
+            || list.querySelector('.sidebar-primary-folders--tree')
+            || list.querySelector('.sidebar-primary-folders');
     }
 
     function applyCorrespondentFolders(folders) {
         if (!folders || !folders.length) return;
-        var group = ensureSidebarFoldersGroup();
-        if (!group) return;
-        var itemsEl = group.querySelector('.sidebar-group-items');
-        if (!itemsEl) return;
+        var container = ensureSidebarCustomFoldersContainer();
+        if (!container) return;
 
         var seen = {};
         folders.forEach(function (folder) {
@@ -3762,12 +3763,8 @@
             if (!key || seen[key]) return;
             seen[key] = true;
             if (sidebarHasFolderLink(folder.nav_path || folder.path)) return;
-            itemsEl.appendChild(createSidebarFolderLink(folder));
+            container.appendChild(createSidebarFolderLink(folder));
         });
-
-        group.classList.add('is-open');
-        var toggle = group.querySelector('.sidebar-group-toggle');
-        if (toggle) toggle.setAttribute('aria-expanded', 'true');
     }
 
     function clearPostSendFolderPolls() {
@@ -3836,21 +3833,14 @@
         var target = String(info.path).toLowerCase();
         document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
             if ((link.getAttribute('data-folder-path') || '').toLowerCase() === target) {
-                link.remove();
+                var branch = link.closest('.sidebar-folder-branch');
+                if (branch && branch.querySelectorAll('.sidebar-link[data-folder-path]').length <= 1) {
+                    branch.remove();
+                } else {
+                    link.remove();
+                }
             }
         });
-
-        var group = document.querySelector('.sidebar-group[data-group="other"]');
-        if (group) {
-            var items = group.querySelector('.sidebar-group-items');
-            if (items && !items.querySelector('.sidebar-link')) {
-                var divider = group.previousElementSibling;
-                if (divider && divider.classList.contains('sidebar-divider')) {
-                    divider.remove();
-                }
-                group.remove();
-            }
-        }
 
         var card = getListCard();
         var plain = card ? (card.getAttribute('data-folder-plain') || '').toLowerCase() : '';
@@ -6046,6 +6036,179 @@
                 }
             });
         });
+
+        initSidebarFolderBranches();
+    }
+
+    function initSidebarFolderBranches() {
+        var storageKey = 'dj_sidebar_branches';
+
+        function readState() {
+            try {
+                var raw = localStorage.getItem(storageKey);
+                return raw ? JSON.parse(raw) : {};
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function writeState(state) {
+            try {
+                localStorage.setItem(storageKey, JSON.stringify(state));
+            } catch (e) { /* storage blocked */ }
+        }
+
+        function setBranchOpen(branch, open, persist) {
+            if (!branch) return;
+            branch.classList.toggle('is-open', open);
+            var children = branch.querySelector(':scope > .sidebar-folder-branch-children');
+            if (children) children.hidden = !open;
+            var toggle = branch.querySelector(':scope > .sidebar-tree-row .sidebar-tree-toggle');
+            if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (persist) {
+                var id = branch.getAttribute('data-sidebar-branch');
+                if (id) {
+                    var state = readState();
+                    state[id] = open;
+                    writeState(state);
+                }
+            }
+        }
+
+        var state = readState();
+        document.querySelectorAll('.sidebar-folder-branch[data-sidebar-branch]').forEach(function (branch) {
+            var id = branch.getAttribute('data-sidebar-branch');
+            if (id && Object.prototype.hasOwnProperty.call(state, id)) {
+                setBranchOpen(branch, !!state[id], false);
+                return;
+            }
+            if (!id || Object.prototype.hasOwnProperty.call(state, id)) return;
+            if (branch.classList.contains('is-open')) {
+                state[id] = true;
+                writeState(state);
+            }
+        });
+
+        document.querySelectorAll('.sidebar-tree-toggle').forEach(function (btn) {
+            if (btn.dataset.branchBound) return;
+            btn.dataset.branchBound = '1';
+            btn.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                var branch = btn.closest('.sidebar-folder-branch');
+                if (!branch) return;
+                setBranchOpen(branch, !branch.classList.contains('is-open'), true);
+            });
+        });
+    }
+
+    function initAdminFolderTree() {
+        var tree = document.getElementById('admin-folder-tree');
+        var search = document.getElementById('admin-folder-search');
+        if (!tree) return;
+
+        var storageKey = 'dj_admin_folder_branches';
+
+        function readState() {
+            try {
+                var raw = localStorage.getItem(storageKey);
+                return raw ? JSON.parse(raw) : {};
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function writeState(state) {
+            try {
+                localStorage.setItem(storageKey, JSON.stringify(state));
+            } catch (e) { /* storage blocked */ }
+        }
+
+        function setBranchOpen(branch, open, persist) {
+            if (!branch || !branch.classList.contains('has-children')) return;
+            branch.classList.toggle('is-open', open);
+            branch.setAttribute('aria-expanded', open ? 'true' : 'false');
+            var children = branch.querySelector(':scope > .admin-folder-branch-children');
+            if (children) children.classList.toggle('is-open', open);
+            var toggle = branch.querySelector(':scope > .admin-folder-tree-row .admin-folder-branch-toggle');
+            if (toggle) {
+                toggle.classList.toggle('is-open', open);
+                toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            }
+            if (persist) {
+                var id = branch.getAttribute('data-branch-id');
+                if (id) {
+                    var state = readState();
+                    state[id] = open;
+                    writeState(state);
+                }
+            }
+        }
+
+        var branchState = readState();
+        tree.querySelectorAll('.admin-folder-branch.has-children').forEach(function (branch) {
+            var id = branch.getAttribute('data-branch-id');
+            if (id && Object.prototype.hasOwnProperty.call(branchState, id)) {
+                setBranchOpen(branch, !!branchState[id], false);
+            }
+        });
+
+        tree.querySelectorAll('.admin-folder-branch-toggle').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var branch = btn.closest('.admin-folder-branch');
+                if (!branch) return;
+                setBranchOpen(branch, !branch.classList.contains('is-open'), true);
+            });
+        });
+
+        function filterTree(query) {
+            query = (query || '').trim().toLowerCase();
+            var branches = tree.querySelectorAll('.admin-folder-branch');
+            branches.forEach(function (branch) {
+                var hay = branch.getAttribute('data-folder-search') || '';
+                branch.dataset.searchMatch = (query === '' || hay.indexOf(query) !== -1) ? '1' : '0';
+            });
+            branches.forEach(function (branch) {
+                var show = query === '' || branch.dataset.searchMatch === '1';
+                if (!show) {
+                    branch.querySelectorAll('.admin-folder-branch').forEach(function (desc) {
+                        if (desc.dataset.searchMatch === '1') show = true;
+                    });
+                }
+                branch.hidden = !show;
+                if (query !== '' && show) {
+                    setBranchOpen(branch, true, false);
+                    var parent = branch.parentElement ? branch.parentElement.closest('.admin-folder-branch') : null;
+                    while (parent) {
+                        setBranchOpen(parent, true, false);
+                        parent = parent.parentElement ? parent.parentElement.closest('.admin-folder-branch') : null;
+                    }
+                }
+            });
+        }
+
+        if (search) {
+            search.addEventListener('input', function () {
+                filterTree(search.value);
+            });
+        }
+
+        var expandAll = document.getElementById('admin-folder-expand-all');
+        var collapseAll = document.getElementById('admin-folder-collapse-all');
+        if (expandAll) {
+            expandAll.addEventListener('click', function () {
+                tree.querySelectorAll('.admin-folder-branch.has-children').forEach(function (branch) {
+                    setBranchOpen(branch, true, true);
+                });
+            });
+        }
+        if (collapseAll) {
+            collapseAll.addEventListener('click', function () {
+                tree.querySelectorAll('.admin-folder-branch.has-children').forEach(function (branch) {
+                    setBranchOpen(branch, false, true);
+                });
+            });
+        }
     }
 
     function initFileUpload(root) {
@@ -6756,6 +6919,7 @@
         initRulesDragDrop();
         initThemeFromSettings();
         initSidebarGroups();
+        initAdminFolderTree();
         initFileUpload();
         initPerPageSelect();
         initContextMenu();

@@ -1713,7 +1713,7 @@ class MailController
 
         $folders = FolderCache::load(skipUnreadRefresh: true)['folders'];
         if (!$this->folderExists($folders, $targetPath)) {
-            if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
+            if (!$imap->folderExistsOnServer($targetPath) && !$imap->ensureFolderPath($targetPath)) {
                 $this->actionError('Target folder could not be created on the mail server.', $redirect);
             }
             (new FolderCache())->clear();
@@ -1973,7 +1973,7 @@ class MailController
             return;
         }
 
-        if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
+        if (!$imap->folderExistsOnServer($targetPath) && !$imap->ensureFolderPath($targetPath)) {
             app_log('Background move: could not create target folder ' . $targetPath);
             ImapService::closeShared();
 

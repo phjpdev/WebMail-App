@@ -1585,6 +1585,48 @@ class ImapService
         return false;
     }
 
+    /**
+     * Create a folder and every missing ancestor (e.g. INBOX.F1 before INBOX.F1.Sub).
+     */
+    public function ensureFolderPath(string $path): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        $path = trim($path);
+        if ($path === '') {
+            $this->lastError = 'Folder path is empty.';
+
+            return false;
+        }
+
+        if ($this->folderExistsOnServer($path)) {
+            return true;
+        }
+
+        $delimiter = '.';
+        $segments = explode($delimiter, $path);
+        if (count($segments) < 2) {
+            $this->lastError = 'Folder path must be under INBOX.';
+
+            return false;
+        }
+
+        $built = $segments[0];
+        for ($i = 1, $count = count($segments); $i < $count; $i++) {
+            $built = $built . $delimiter . $segments[$i];
+            if ($this->folderExistsOnServer($built)) {
+                continue;
+            }
+            if (!$this->createFolder($built)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public function renameFolder(string $oldPath, string $newPath): bool
     {
         if (!$this->ensureConnected()) {

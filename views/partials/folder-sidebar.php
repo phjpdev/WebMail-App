@@ -14,7 +14,6 @@ foreach (($sidebarFolders ?? $folders ?? []) as $folder) {
     $grouped[sidebar_folder_bucket($folder['path'])][] = $folder;
 }
 
-// One canonical folder per primary nav slot (Sent, Drafts, Archive, Junk, Trash).
 foreach ($primaryOrder as $bucket) {
     if ($bucket === 'inbox' || $grouped[$bucket] === []) {
         continue;
@@ -28,19 +27,26 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
     $composeHref = url('compose') . '?return_folder=' . rawurlencode(encode_folder_path($composeActive));
 }
 
-$renderFolderLink = static function (array $folder, string $bucket, int $depth = 0, ?string $leafLabel = null) use ($activeFolder, $unreadCounts): void {
+$employeeRoots = sidebar_employee_root_path_set();
+
+$renderTreeLink = static function (
+    array $folder,
+    string $bucket,
+    ?string $leafLabel = null
+) use ($activeFolder, $unreadCounts, $employeeRoots): void {
     $displayName = $leafLabel ?? sidebar_folder_label($folder, $bucket);
     $navPath = sidebar_folder_nav_path($folder['path']);
     $isActive = sidebar_folder_matches_active($activeFolder ?? '', $navPath);
     $icon = folder_icon_type($folder['path']);
+    $isEmployee = isset($employeeRoots[strtolower((string) ($folder['path'] ?? ''))]);
     $unread = folder_shows_unread_badge($navPath)
         ? (int) ($unreadCounts[$navPath] ?? $unreadCounts[$folder['path']] ?? 0)
         : 0;
     ?>
-    <a class="sidebar-link<?= $isActive ? ' active' : '' ?><?= $depth > 0 ? ' is-nested' : '' ?>"
+    <a class="sidebar-link sidebar-tree-link<?= $isActive ? ' active' : '' ?><?= $isEmployee ? ' sidebar-link--employee' : '' ?>"
        href="<?= e(folder_url($navPath)) ?>"
        data-folder-path="<?= e($navPath) ?>"
-       data-folder-b64="<?= e(encode_folder_path($navPath)) ?>"<?= $depth > 0 ? ' style="--folder-depth: ' . $depth . ';"' : '' ?>
+       data-folder-b64="<?= e(encode_folder_path($navPath)) ?>"
        data-ajax-folder="1">
         <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
         <span class="sidebar-link-text"><?= e($displayName) ?></span>
@@ -51,21 +57,70 @@ $renderFolderLink = static function (array $folder, string $bucket, int $depth =
     <?php
 };
 
-$otherUnread = 0;
-foreach ($grouped['other'] as $folder) {
-    if (folder_shows_unread_badge($folder['path'])) {
-        $otherUnread += (int) ($unreadCounts[$folder['path']] ?? 0);
+$renderTreeRow = static function (
+    array $folder,
+    string $bucket,
+    int $depth,
+    ?string $leafLabel,
+    bool $hasChildren,
+    bool $branchOpen,
+    ?string $branchKey
+) use ($renderTreeLink): void {
+    if ($hasChildren) {
+        ?>
+        <div class="sidebar-folder-branch<?= $branchOpen ? ' is-open' : '' ?>"
+             data-sidebar-branch="<?= e((string) $branchKey) ?>">
+            <div class="sidebar-tree-row" style="--tree-depth: <?= (int) $depth ?>;">
+                <button type="button"
+                        class="sidebar-tree-toggle"
+                        aria-expanded="<?= $branchOpen ? 'true' : 'false' ?>"
+                        aria-label="Expand or collapse folder">
+                    <svg class="sidebar-tree-chevron" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+                </button>
+                <?php $renderTreeLink($folder, $bucket, $leafLabel); ?>
+            </div>
+            <div class="sidebar-folder-branch-children"<?= $branchOpen ? '' : ' hidden' ?>>
+        <?php
+        return;
     }
-}
-$foldersOpen = false;
-foreach ($grouped['other'] as $folder) {
-    if (sidebar_folder_matches_active($activeFolder ?? '', sidebar_folder_nav_path($folder['path']))) {
-        $foldersOpen = true;
-        break;
+    ?>
+    <div class="sidebar-tree-row" style="--tree-depth: <?= (int) $depth ?>;">
+        <span class="sidebar-tree-toggle-spacer" aria-hidden="true"></span>
+        <?php $renderTreeLink($folder, $bucket, $leafLabel); ?>
+    </div>
+    <?php
+};
+
+$renderSidebarFolderBranch = static function (array $node, int $depth = 0) use (
+    &$renderSidebarFolderBranch,
+    $renderTreeRow,
+    $activeFolder
+): void {
+    $folder = $node['folder'];
+    $children = $node['children'] ?? [];
+    $hasChildren = $children !== [];
+    $navPath = sidebar_folder_nav_path($folder['path']);
+    $displayName = sidebar_folder_tree_label($folder);
+    $branchKey = strtolower($navPath);
+    $branchOpen = $hasChildren && sidebar_folder_branch_should_open($children, $activeFolder ?? '');
+
+    if ($hasChildren) {
+        $renderTreeRow($folder, 'other', $depth, $displayName, true, $branchOpen, $branchKey);
+        foreach ($children as $childNode) {
+            $renderSidebarFolderBranch($childNode, $depth + 1);
+        }
+        echo '</div></div>';
+        return;
     }
-}
-if (!$foldersOpen && $grouped['other'] !== [] && ($sessionUser['role'] ?? '') === 'employee') {
-    $foldersOpen = true;
+
+    $renderTreeRow($folder, 'other', $depth, $displayName, false, false, null);
+};
+
+$otherFolderTree = [];
+if ($grouped['other'] !== []) {
+    $otherFolders = sidebar_dedupe_other_folders($grouped['other']);
+    $delimiter = $otherFolders[0]['delimiter'] ?? '.';
+    $otherFolderTree = build_sidebar_other_folder_tree($otherFolders, 'path', $delimiter);
 }
 
 ?>
@@ -77,45 +132,16 @@ if (!$foldersOpen && $grouped['other'] !== [] && ($sessionUser['role'] ?? '') ==
     </a>
 
     <div class="sidebar-groups" id="folder-sidebar-list">
-        <div class="sidebar-primary-folders">
+        <div class="sidebar-folder-tree sidebar-primary-folders--tree">
             <?php foreach ($primaryOrder as $bucket): ?>
                 <?php foreach ($grouped[$bucket] as $folder): ?>
-                    <?php $renderFolderLink($folder, $bucket); ?>
+                    <?php $renderTreeRow($folder, $bucket, 0, null, false, false, null); ?>
                 <?php endforeach; ?>
             <?php endforeach; ?>
+            <?php foreach ($otherFolderTree as $node): ?>
+                <?php $renderSidebarFolderBranch($node, 0); ?>
+            <?php endforeach; ?>
         </div>
-
-        <?php if ($grouped['other'] !== []): ?>
-            <div class="sidebar-divider" aria-hidden="true"></div>
-            <div class="sidebar-group<?= $foldersOpen ? ' is-open' : '' ?> is-collapsible" data-group="other">
-                <button type="button" class="sidebar-group-toggle" aria-expanded="<?= $foldersOpen ? 'true' : 'false' ?>">
-                    <span class="sidebar-group-chevron-btn" aria-hidden="true">
-                        <svg class="sidebar-group-chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-                    </span>
-                    <span class="sidebar-group-icon folder-icon folder-icon-folder" aria-hidden="true"></span>
-                    <span class="sidebar-group-title">Folders</span>
-                    <?php if ($otherUnread > 0): ?>
-                        <span class="folder-badge folder-badge-sm"><?= $otherUnread > 99 ? '99+' : $otherUnread ?></span>
-                    <?php endif; ?>
-                </button>
-                <div class="sidebar-group-items">
-                    <?php
-                    // Nest custom folders under any parent also shown here, using
-                    // the IMAP hierarchy delimiter (e.g. test1 → test1-sub1).
-                    $otherFolders = sidebar_dedupe_other_folders($grouped['other']);
-                    usort($otherFolders, static fn ($a, $b) => strcasecmp($a['path'], $b['path']));
-                    $presentOther = [];
-                    foreach ($otherFolders as $f) {
-                        $presentOther[strtolower($f['path'])] = true;
-                    }
-                    foreach ($otherFolders as $folder):
-                        [$depth, $leaf] = sidebar_folder_nesting($folder, $presentOther, $folder['delimiter'] ?? '.');
-                        $renderFolderLink($folder, 'other', $depth, $leaf);
-                    endforeach;
-                    ?>
-                </div>
-            </div>
-        <?php endif; ?>
     </div>
 
     <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>

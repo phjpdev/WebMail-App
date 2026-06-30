@@ -5332,6 +5332,337 @@ function sidebar_folder_nesting(array $folder, array $presentPaths, string $deli
     return [$depth, $leaf];
 }
 
+/**
+ * Sanitize a user-facing folder name into a safe IMAP path segment.
+ */
+function folder_imap_segment(string $name): string
+{
+    $segment = trim($name);
+    if ($segment === '') {
+        return '';
+    }
+
+    $segment = preg_replace('/\s+/', '-', $segment) ?? '';
+    $segment = preg_replace('/[^a-zA-Z0-9_-]/', '', $segment) ?? '';
+
+    return $segment;
+}
+
+/**
+ * Parent IMAP path for a nested mailbox, or null for top-level folders under INBOX.
+ */
+function folder_parent_imap_path(string $path, string $delimiter = '.'): ?string
+{
+    if ($delimiter === '' || !str_contains($path, $delimiter)) {
+        return null;
+    }
+
+    $parent = substr($path, 0, (int) strrpos($path, $delimiter));
+    if ($parent === '' || strcasecmp($parent, 'INBOX') === 0) {
+        return null;
+    }
+
+    return $parent;
+}
+
+/**
+ * Build a full IMAP folder path from a display name and optional parent folder.
+ */
+function build_imap_folder_path(string $displayName, ?string $parentImapPath = null, string $delimiter = '.'): string
+{
+    $leaf = folder_imap_segment($displayName);
+    if ($leaf === '') {
+        return '';
+    }
+
+    $parent = trim((string) $parentImapPath);
+    if ($parent === '' || strcasecmp($parent, 'INBOX') === 0) {
+        return 'INBOX' . $delimiter . $leaf;
+    }
+
+    return rtrim($parent, $delimiter) . $delimiter . $leaf;
+}
+
+/**
+ * Build a nested tree from flat folder rows (admin registry or sidebar list).
+ *
+ * @param list<array<string, mixed>> $items
+ * @return list<array{folder: array<string, mixed>, children: list<array{folder: array<string, mixed>, children: list}>}>
+ */
+function build_folder_path_tree(array $items, string $pathKey = 'imap_path', string $delimiter = '.'): array
+{
+    $byPath = [];
+    foreach ($items as $item) {
+        $path = trim((string) ($item[$pathKey] ?? ''));
+        if ($path !== '') {
+            $byPath[strtolower($path)] = $item;
+        }
+    }
+
+    /** @var array<string, list<array<string, mixed>>> $childrenOf */
+    $childrenOf = [];
+    /** @var list<array<string, mixed>> $roots */
+    $roots = [];
+
+    foreach ($items as $item) {
+        $path = trim((string) ($item[$pathKey] ?? ''));
+        if ($path === '') {
+            continue;
+        }
+
+        $parentPath = folder_parent_imap_path($path, $delimiter);
+        $parentKey = $parentPath !== null ? strtolower($parentPath) : null;
+
+        if ($parentKey !== null && isset($byPath[$parentKey])) {
+            $childrenOf[$parentKey][] = $item;
+            continue;
+        }
+
+        $roots[] = $item;
+    }
+
+    $buildNode = static function (array $folder) use (&$buildNode, $childrenOf, $pathKey): array {
+        $key = strtolower((string) ($folder[$pathKey] ?? ''));
+        $kids = $childrenOf[$key] ?? [];
+        usort($kids, static fn (array $a, array $b): int => strcasecmp(
+            (string) ($a[$pathKey] ?? ''),
+            (string) ($b[$pathKey] ?? '')
+        ));
+
+        return [
+            'folder' => $folder,
+            'children' => array_map($buildNode, $kids),
+        ];
+    };
+
+    usort($roots, static fn (array $a, array $b): int => strcasecmp(
+        (string) ($a[$pathKey] ?? ''),
+        (string) ($b[$pathKey] ?? '')
+    ));
+
+    return array_map($buildNode, $roots);
+}
+
+/**
+ * Flat parent-folder choices for admin create form (indented by depth).
+ *
+ * @param list<array<string, mixed>> $folders
+ * @return list<array{id: int, label: string, imap_path: string}>
+ */
+function admin_folder_parent_options(array $folders): array
+{
+    $tree = build_folder_path_tree($folders, 'imap_path');
+    $options = [];
+
+    $walk = static function (array $nodes, int $depth) use (&$walk, &$options): void {
+        foreach ($nodes as $node) {
+            $folder = $node['folder'];
+            $id = (int) ($folder['id'] ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+
+            $prefix = $depth > 0 ? str_repeat('— ', $depth) : '';
+            $options[] = [
+                'id' => $id,
+                'label' => $prefix . (string) ($folder['display_name'] ?? ''),
+                'imap_path' => (string) ($folder['imap_path'] ?? ''),
+            ];
+
+            if ($node['children'] !== []) {
+                $walk($node['children'], $depth + 1);
+            }
+        }
+    };
+
+    $walk($tree, 0);
+
+    return $options;
+}
+
+/**
+ * @param array<string, mixed> $folder
+ */
+function admin_folder_is_deletable(array $folder): bool
+{
+    return (new \App\Services\AdminFolderService())->isDeletable($folder);
+}
+
+/**
+ * @param array<string, mixed> $folder
+ */
+function admin_folder_allows_subfolders(array $folder): bool
+{
+    $type = (string) ($folder['folder_type'] ?? '');
+    if (in_array($type, ['inbox', 'sent', 'other', 'spam', 'trash', 'system'], true)) {
+        return false;
+    }
+
+    return strtoupper(trim((string) ($folder['imap_path'] ?? ''))) !== 'INBOX';
+}
+
+/**
+ * Registered employee mailbox roots (INBOX.Erik) for sidebar tree rules.
+ *
+ * @return array<string, true> lowercased paths
+ */
+function sidebar_employee_root_path_set(): array
+{
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+
+    $cache = [];
+    try {
+        foreach (App\Database::query(
+            "SELECT imap_path FROM folders WHERE active = 1 AND folder_type = 'employee'"
+        )->fetchAll() as $row) {
+            $path = \App\Services\FolderCache::resolvePath((string) ($row['imap_path'] ?? ''));
+            $root = employee_mailbox_root_prefix($path);
+            if ($root !== '') {
+                $cache[strtolower($root)] = true;
+            }
+        }
+    } catch (\Throwable) {
+    }
+
+    return $cache;
+}
+
+/**
+ * Sidebar tree parent: skip employee mailbox roots so client folders never nest under Erik/Jean.
+ */
+function sidebar_folder_tree_parent_path(string $path, array $byPath, array $employeeRoots, string $delimiter = '.'): ?string
+{
+    $parentPath = folder_parent_imap_path($path, $delimiter);
+
+    while ($parentPath !== null) {
+        $parentKey = strtolower($parentPath);
+        if (isset($employeeRoots[$parentKey])) {
+            $parentPath = folder_parent_imap_path($parentPath, $delimiter);
+            continue;
+        }
+        if (isset($byPath[$parentKey])) {
+            return $parentPath;
+        }
+        $parentPath = folder_parent_imap_path($parentPath, $delimiter);
+    }
+
+    return null;
+}
+
+/**
+ * Display label for a folder in the sidebar tree (leaf name when promoted out from under an employee).
+ *
+ * @param array{path: string, name?: string, delimiter?: string} $folder
+ */
+function sidebar_folder_tree_label(array $folder): string
+{
+    $path = (string) ($folder['path'] ?? '');
+    $delimiter = (string) ($folder['delimiter'] ?? '.');
+    $label = sidebar_folder_label($folder, 'other');
+    $parentPath = folder_parent_imap_path($path, $delimiter);
+    $employeeRoots = sidebar_employee_root_path_set();
+
+    if ($parentPath !== null && isset($employeeRoots[strtolower($parentPath)])) {
+        $leaf = substr($path, strlen($parentPath) + strlen($delimiter));
+        if (is_string($leaf) && $leaf !== '') {
+            return $leaf;
+        }
+    }
+
+    return $label;
+}
+
+/**
+ * Build sidebar "Folders" tree — employees stay flat; client folders nest only under other clients.
+ *
+ * @param list<array{path: string, name?: string, delimiter?: string}> $items
+ * @return list<array{folder: array<string, mixed>, children: list}>
+ */
+function build_sidebar_other_folder_tree(array $items, string $pathKey = 'path', string $delimiter = '.'): array
+{
+    $employeeRoots = sidebar_employee_root_path_set();
+    $byPath = [];
+    foreach ($items as $item) {
+        $path = trim((string) ($item[$pathKey] ?? ''));
+        if ($path !== '') {
+            $byPath[strtolower($path)] = $item;
+        }
+    }
+
+    /** @var array<string, list<array<string, mixed>>> $childrenOf */
+    $childrenOf = [];
+    /** @var list<array<string, mixed>> $roots */
+    $roots = [];
+
+    foreach ($items as $item) {
+        $path = trim((string) ($item[$pathKey] ?? ''));
+        if ($path === '') {
+            continue;
+        }
+
+        $parentPath = sidebar_folder_tree_parent_path($path, $byPath, $employeeRoots, $delimiter);
+        if ($parentPath !== null) {
+            $childrenOf[strtolower($parentPath)][] = $item;
+            continue;
+        }
+
+        $roots[] = $item;
+    }
+
+    $buildNode = static function (array $folder) use (&$buildNode, $childrenOf, $pathKey): array {
+        $key = strtolower((string) ($folder[$pathKey] ?? ''));
+        $kids = $childrenOf[$key] ?? [];
+        usort($kids, static fn (array $a, array $b): int => strcasecmp(
+            (string) ($a[$pathKey] ?? ''),
+            (string) ($b[$pathKey] ?? '')
+        ));
+
+        return [
+            'folder' => $folder,
+            'children' => array_map($buildNode, $kids),
+        ];
+    };
+
+    usort($roots, static function (array $a, array $b) use ($employeeRoots, $pathKey): int {
+        $aPath = strtolower((string) ($a[$pathKey] ?? ''));
+        $bPath = strtolower((string) ($b[$pathKey] ?? ''));
+        $aEmployee = isset($employeeRoots[$aPath]);
+        $bEmployee = isset($employeeRoots[$bPath]);
+        if ($aEmployee !== $bEmployee) {
+            return $aEmployee ? -1 : 1;
+        }
+
+        return strcasecmp((string) ($a[$pathKey] ?? ''), (string) ($b[$pathKey] ?? ''));
+    });
+
+    return array_map($buildNode, $roots);
+}
+
+/**
+ * Whether a sidebar folder branch should start expanded (active folder inside).
+ *
+ * @param list<array{folder: array{path: string, name?: string}, children?: list}> $nodes
+ */
+function sidebar_folder_branch_should_open(array $nodes, string $activeFolder): bool
+{
+    foreach ($nodes as $node) {
+        $folder = $node['folder'] ?? [];
+        $path = sidebar_folder_nav_path((string) ($folder['path'] ?? ''));
+        if ($path !== '' && sidebar_folder_matches_active($activeFolder, $path)) {
+            return true;
+        }
+        $children = $node['children'] ?? [];
+        if ($children !== [] && sidebar_folder_branch_should_open($children, $activeFolder)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function is_trash_folder(string $path): bool
 {
     return folder_icon_type($path) === 'trash';

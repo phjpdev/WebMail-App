@@ -4,6 +4,8 @@ $isEdit = !empty($folder);
 $action = $isEdit ? url('admin/folders/' . $folder['id'] . '/update') : url('admin/folders/store');
 $type = $folder['folder_type'] ?? 'client';
 $types = ['client' => 'Client', 'company' => 'Company', 'employee' => 'Employee', 'system' => 'System'];
+$parentFolders = $parentFolders ?? [];
+$selectedParent = (int) ($_GET['parent'] ?? ($_POST['parent_folder_id'] ?? 0));
 ?>
 
 <section class="page-header"><h2><?= $isEdit ? 'Edit folder' : 'Add folder' ?></h2></section>
@@ -12,10 +14,26 @@ $types = ['client' => 'Client', 'company' => 'Company', 'employee' => 'Employee'
 <section class="card card-form">
     <form method="post" action="<?= e($action) ?>" class="compose-form">
         <?= csrf_field() ?>
+        <?php if (!$isEdit): ?>
         <div class="form-group">
-            <label for="display_name">Display name</label>
-            <input type="text" id="display_name" name="display_name" required placeholder="Client ABC"
+            <label for="parent_folder_id">Parent folder</label>
+            <select id="parent_folder_id" name="parent_folder_id">
+                <option value="0">Inbox (top level)</option>
+                <?php foreach ($parentFolders as $parent): ?>
+                    <option value="<?= (int) $parent['id'] ?>"<?= $selectedParent === (int) $parent['id'] ? ' selected' : '' ?>>
+                        <?= e($parent['label']) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <small class="form-hint">Choose a parent to create a subfolder, or leave as Inbox for a new top-level folder.</small>
+        </div>
+        <?php endif; ?>
+        <div class="form-group">
+            <label for="display_name">Folder name</label>
+            <input type="text" id="display_name" name="display_name" required
+                   placeholder="e.g. JT, Client ABC, or Subfolder 2"
                    value="<?= e($folder['display_name'] ?? '') ?>">
+            <small class="form-hint">Enter the name only — no need to type INBOX or use dots. Spaces become hyphens in the mailbox path.</small>
         </div>
         <div class="form-group">
             <label for="folder_type">Folder type</label>
@@ -28,7 +46,7 @@ $types = ['client' => 'Client', 'company' => 'Company', 'employee' => 'Employee'
 
         <?php if ($isEdit): ?>
             <div class="form-group">
-                <label>IMAP path</label>
+                <label>Mailbox path</label>
                 <p><code><?= e($folder['imap_path']) ?></code></p>
             </div>
             <div class="form-group form-check">
@@ -38,10 +56,6 @@ $types = ['client' => 'Client', 'company' => 'Company', 'employee' => 'Employee'
                 </label>
             </div>
         <?php else: ?>
-            <div class="form-group">
-                <label for="imap_path">IMAP path (optional)</label>
-                <input type="text" id="imap_path" name="imap_path" placeholder="INBOX.ClientABC — auto-generated if empty">
-            </div>
             <div class="form-group form-check">
                 <label class="form-check-label">
                     <input type="checkbox" class="form-check-input" name="create_rule" value="1">
