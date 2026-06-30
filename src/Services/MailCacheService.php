@@ -996,7 +996,15 @@ class MailCacheService
                 return self::countUnseenForUser($linkedId, $folderPath);
             }
             if ($linkedId !== null && self::viewerIsAdmin()) {
-                return max(self::countAdminEmployeeInboxBadge($folderPath), $sessionCount);
+                $indexed = self::countAdminEmployeeInboxBadge($folderPath);
+                if (
+                    FolderCache::isPendingBadgePath($folderPath)
+                    || mail_get_post_send_preview($folderPath) !== null
+                ) {
+                    return max($indexed, $sessionCount);
+                }
+
+                return $indexed;
             }
         }
 
@@ -1729,7 +1737,6 @@ class MailCacheService
                 if (
                     FolderCache::isPendingBadgePath($folderPath)
                     || mail_get_post_send_preview($folderPath) !== null
-                    || self::badgeAheadOfIndex($folderPath)
                 ) {
                     $truth = max($truth, $session);
                 }

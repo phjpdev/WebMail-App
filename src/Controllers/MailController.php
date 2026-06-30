@@ -949,7 +949,7 @@ class MailController
             'was_unread' => $context['wasUnread'] && !$prefetch,
             'html' => $html,
             'unread_counts' => $context['unreadCounts'],
-            'folder_unread' => (int) ($context['unreadCounts'][$folderPath] ?? 0),
+            'folder_unread' => mail_folder_unread_count($context['unreadCounts'], $folderPath),
         ];
 
         if ($deferred !== null) {
@@ -1168,8 +1168,6 @@ class MailController
                 if (!mail_should_group_list_by_thread($folderPath)) {
                     MailCacheService::updateIndexSeen($folderPath, $uid, true);
                 }
-                $unreadCounts = FolderCache::bumpUnread($folderPath, -1);
-
                 $deferred = static function () use ($folderPath, $markedUids): void {
                     $imap = new ImapService();
                     if (!$imap->connect()) {
@@ -1179,28 +1177,16 @@ class MailController
                         $imap->markSeen($folderPath, $markedUid);
                     }
                 };
-            } else {
-                if (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
-                    foreach ($markedUids as $markedUid) {
-                        MailCacheService::updateIndexSeen($folderPath, $markedUid, true);
-                    }
-                }
-                $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
-                if (employee_is_correspondent_folder($folderPath) || MailCacheService::usesPerUserRead($folderPath)) {
-                    MailCacheService::reconcileBadgeFromIndex($folderPath);
-                    $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+            } elseif (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
+                foreach ($markedUids as $markedUid) {
+                    MailCacheService::updateIndexSeen($folderPath, $markedUid, true);
                 }
             }
-        } elseif (!$wasUnread) {
-            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
-        } else {
-            $unreadCounts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
         }
 
-        if ($markRead && $wasUnread) {
-            FolderCache::clearPendingBadgePath($folderPath);
-        }
-        $unreadCounts = FolderCache::sidebarUnreadCountsFromSession();
+        $unreadCounts = ($wasUnread && $markRead)
+            ? mail_unread_counts_after_read($folderPath)
+            : FolderCache::sidebarUnreadCountsFromSession();
 
         $aliasService = new AliasService();
         $userId = Auth::user()['id'] ?? null;
@@ -2196,14 +2182,17 @@ class MailController
             $delta = 1;
         }
 
-        if ($delta !== 0) {
+        if ($seen && !$alreadySeen) {
+            $counts = mail_unread_counts_after_read($folderPath);
+        } elseif (!$seen && $alreadySeen) {
+            MailCacheService::reconcileBadgeFromIndex($folderPath);
+            $counts = FolderCache::sidebarUnreadCountsFromSession();
+        } elseif ($delta !== 0) {
             FolderCache::bumpUnread($folderPath, $delta);
+            $counts = FolderCache::sidebarUnreadCountsFromSession();
+        } else {
+            $counts = FolderCache::sidebarUnreadCountsFromSession();
         }
-        if ($seen) {
-            FolderCache::clearPendingBadgePath($folderPath);
-        }
-        MailCacheService::reconcileBadgeFromIndex($folderPath);
-        $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
 
         if (wants_json()) {
             json_response_then([
@@ -2211,6 +2200,7 @@ class MailController
                 'seen' => $seen,
                 'uid' => $uid,
                 'unread_counts' => $counts,
+                'folder_unread' => mail_folder_unread_count($counts, $folderPath),
             ], function () use ($folderPath, $uid, $seen, $markedUids): void {
                 if (!MailCacheService::readUpdatesImapState($folderPath)) {
                     return;
@@ -2306,10 +2296,6 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $delta = $seen
-            ? -MailCacheService::countUnreadAmongUids($folderPath, $uids)
-            : MailCacheService::countSeenAmongUids($folderPath, $uids);
-
         foreach ($uids as $uid) {
             if ($seen) {
                 MailCacheService::markReadForUser($folderPath, $uid);
@@ -2320,14 +2306,15 @@ class MailController
 
         if (MailCacheService::readUpdatesImapState($folderPath)) {
             MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
-            $counts = $this->unreadCountsAfterSeenChange($folderPath, $delta);
         } elseif (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
             MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
-            MailCacheService::reconcileBadgeFromIndex($folderPath);
-            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+        }
+
+        if ($seen) {
+            $counts = mail_unread_counts_after_read($folderPath);
         } else {
             MailCacheService::reconcileBadgeFromIndex($folderPath);
-            $counts = FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [];
+            $counts = FolderCache::sidebarUnreadCountsFromSession();
         }
 
         if (wants_json()) {
@@ -2336,6 +2323,7 @@ class MailController
                 'seen' => $seen,
                 'uids' => $uids,
                 'unread_counts' => $counts,
+                'folder_unread' => mail_folder_unread_count($counts, $folderPath),
             ], function () use ($folderPath, $uids, $seen): void {
                 if (!MailCacheService::readUpdatesImapState($folderPath)) {
                     return;

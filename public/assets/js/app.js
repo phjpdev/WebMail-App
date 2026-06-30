@@ -473,10 +473,16 @@
             uid: String(uid)
         }).then(function (data) {
             setRowSeen(uid, true);
+            bumpFolderUnread(-1);
             if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
                 applyUnreadCounts(data.unread_counts);
-            } else {
-                bumpFolderUnread(-1);
+            }
+            if (data && typeof data.folder_unread === 'number') {
+                var countLabel = document.getElementById('mail-count-label');
+                var totalMsgs = countLabel
+                    ? parseInt(countLabel.getAttribute('data-total') || countLabel.textContent, 10) || 0
+                    : 0;
+                updateMailCount(totalMsgs, data.folder_unread);
             }
         }).catch(function () {});
     }
@@ -496,11 +502,10 @@
                 readCard.setAttribute('data-seen', '1');
                 syncReadSeenButton(readCard);
             }
+            bumpFolderUnread(-1);
         }
         if (data.unread_counts && Object.keys(data.unread_counts).length) {
             applyUnreadCounts(data.unread_counts);
-        } else if (data.was_unread) {
-            bumpFolderUnread(-1);
         }
         if (typeof data.folder_unread === 'number') {
             var countLabel = document.getElementById('mail-count-label');

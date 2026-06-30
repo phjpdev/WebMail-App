@@ -2003,6 +2003,42 @@ function mail_clear_post_send_preview(string $folderPath): void
     }
 }
 
+/**
+ * Reconcile sidebar badges after a message was read (clears optimistic post-send state).
+ *
+ * @return array<string, int>
+ */
+function mail_unread_counts_after_read(string $folderPath): array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath !== '') {
+        \App\Services\FolderCache::clearPendingBadgePath($folderPath);
+        mail_clear_post_send_preview($folderPath);
+        \App\Services\MailCacheService::reconcileBadgeFromIndex($folderPath);
+    }
+
+    return \App\Services\FolderCache::sidebarUnreadCountsFromSession();
+}
+
+/**
+ * @param array<string, int> $counts
+ */
+function mail_folder_unread_count(array $counts, string $folderPath): int
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '' || !folder_shows_unread_badge($folderPath)) {
+        return 0;
+    }
+
+    $candidates = [$folderPath, employee_messages_imap_path($folderPath), sidebar_folder_nav_path($folderPath)];
+    $max = 0;
+    foreach (array_unique(array_filter($candidates)) as $path) {
+        $max = max($max, (int) ($counts[$path] ?? 0));
+    }
+
+    return max(0, $max);
+}
+
 function mail_post_send_preview_pending(string $folderPath): bool
 {
     return mail_get_post_send_preview($folderPath) !== null
