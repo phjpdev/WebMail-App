@@ -21,6 +21,14 @@ public_html/
   views/
 ```
 
+Create empty writable folders on the server (do not upload local `storage/` contents):
+
+```text
+storage/logs/
+storage/post_send/
+storage/thread_replies/
+```
+
 ## Do NOT upload
 
 - Hostinger's placeholder `default.php` — delete it from `public_html/` if it exists

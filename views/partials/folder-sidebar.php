@@ -30,16 +30,17 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
 
 $renderFolderLink = static function (array $folder, string $bucket, int $depth = 0, ?string $leafLabel = null) use ($activeFolder, $unreadCounts): void {
     $displayName = $leafLabel ?? sidebar_folder_label($folder, $bucket);
-    $isActive = strcasecmp($activeFolder ?? '', $folder['path']) === 0;
+    $navPath = sidebar_folder_nav_path($folder['path']);
+    $isActive = sidebar_folder_matches_active($activeFolder ?? '', $navPath);
     $icon = folder_icon_type($folder['path']);
-    $unread = folder_shows_unread_badge($folder['path'])
-        ? (int) ($unreadCounts[$folder['path']] ?? 0)
+    $unread = folder_shows_unread_badge($navPath)
+        ? (int) ($unreadCounts[$navPath] ?? $unreadCounts[$folder['path']] ?? 0)
         : 0;
     ?>
     <a class="sidebar-link<?= $isActive ? ' active' : '' ?><?= $depth > 0 ? ' is-nested' : '' ?>"
-       href="<?= e(folder_url($folder['path'])) ?>"
-       data-folder-path="<?= e($folder['path']) ?>"
-       data-folder-b64="<?= e(encode_folder_path($folder['path'])) ?>"<?= $depth > 0 ? ' style="--folder-depth: ' . $depth . ';"' : '' ?>
+       href="<?= e(folder_url($navPath)) ?>"
+       data-folder-path="<?= e($navPath) ?>"
+       data-folder-b64="<?= e(encode_folder_path($navPath)) ?>"<?= $depth > 0 ? ' style="--folder-depth: ' . $depth . ';"' : '' ?>
        data-ajax-folder="1">
         <span class="folder-icon folder-icon-<?= e($icon) ?>" aria-hidden="true"></span>
         <span class="sidebar-link-text"><?= e($displayName) ?></span>
@@ -58,7 +59,7 @@ foreach ($grouped['other'] as $folder) {
 }
 $foldersOpen = false;
 foreach ($grouped['other'] as $folder) {
-    if (strcasecmp($activeFolder ?? '', $folder['path']) === 0) {
+    if (sidebar_folder_matches_active($activeFolder ?? '', sidebar_folder_nav_path($folder['path']))) {
         $foldersOpen = true;
         break;
     }

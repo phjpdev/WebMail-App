@@ -726,6 +726,51 @@ function folder_display_name(array $folders, string $path): string
 }
 
 /**
+ * Sidebar highlight when the list view uses INBOX.Name.Inbox but the link is INBOX.Name.
+ */
+function sidebar_folder_matches_active(?string $activeFolder, string $linkPath): bool
+{
+    if ($activeFolder === null || $activeFolder === '' || $linkPath === '') {
+        return false;
+    }
+
+    $active = \App\Services\FolderCache::resolvePath($activeFolder);
+    $link = \App\Services\FolderCache::resolvePath($linkPath);
+    if ($active === '' || $link === '') {
+        return false;
+    }
+
+    if (strcasecmp($active, $link) === 0) {
+        return true;
+    }
+
+    $linkMessages = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($link));
+    if ($linkMessages !== '' && strcasecmp($active, $linkMessages) === 0) {
+        return true;
+    }
+
+    $activeMessages = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($active));
+    if ($activeMessages !== '' && strcasecmp($activeMessages, $link) === 0) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Sidebar / navigation path — the appendable mailbox that actually holds messages.
+ */
+function sidebar_folder_nav_path(string $folderPath): string
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return '';
+    }
+
+    return \App\Services\FolderCache::resolvePath(employee_messages_imap_path($folderPath));
+}
+
+/**
  * Personal inbox path for the logged-in employee (e.g. INBOX.Jean).
  */
 function employee_linked_inbox_path(?array $user = null): ?string
@@ -1983,6 +2028,7 @@ function mail_merge_post_send_preview_into_list(string $folderPath, array $list)
         !\App\Services\FolderCache::isPendingBadgePath($folderPath)
         && !\App\Services\MailCacheService::badgeAheadOfIndex($folderPath)
         && \App\Services\MailCacheService::hasFolderData($folderPath)
+        && \App\Services\MailCacheService::countListableMessagesInIndex($folderPath) > 0
     ) {
         mail_clear_post_send_preview($folderPath);
 
