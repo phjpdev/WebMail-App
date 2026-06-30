@@ -2434,6 +2434,28 @@ function mail_clear_post_send_preview(string $folderPath): void
 }
 
 /**
+ * Reconcile correspondent-folder badges that share unread state with the employee inbox.
+ */
+function mail_reconcile_linked_correspondent_badges(string $folderPath): void
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return;
+    }
+
+    if (employee_is_own_inbox_folder($folderPath)) {
+        foreach (employee_correspondent_folder_paths() as $corrPath) {
+            \App\Services\MailCacheService::reconcileBadgeFromIndex($corrPath);
+        }
+    } elseif (employee_is_correspondent_folder($folderPath)) {
+        $ownInbox = employee_linked_inbox_path();
+        if ($ownInbox !== null && $ownInbox !== '') {
+            \App\Services\MailCacheService::reconcileBadgeFromIndex($ownInbox);
+        }
+    }
+}
+
+/**
  * Reconcile sidebar badges after a message was read (clears optimistic post-send state).
  *
  * @return array<string, int>
@@ -2445,6 +2467,7 @@ function mail_unread_counts_after_read(string $folderPath): array
         \App\Services\FolderCache::clearPendingBadgePath($folderPath);
         mail_clear_post_send_preview($folderPath);
         \App\Services\MailCacheService::reconcileBadgeFromIndex($folderPath);
+        mail_reconcile_linked_correspondent_badges($folderPath);
     }
 
     return \App\Services\FolderCache::sidebarUnreadCountsFromSession();

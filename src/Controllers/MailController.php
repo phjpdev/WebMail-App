@@ -2231,6 +2231,7 @@ class MailController
             $counts = mail_unread_counts_after_read($folderPath);
         } elseif (!$seen && $alreadySeen) {
             MailCacheService::reconcileBadgeFromIndex($folderPath);
+            mail_reconcile_linked_correspondent_badges($folderPath);
             $counts = FolderCache::sidebarUnreadCountsFromSession();
         } elseif ($delta !== 0) {
             FolderCache::bumpUnread($folderPath, $delta);
@@ -2359,6 +2360,7 @@ class MailController
             $counts = mail_unread_counts_after_read($folderPath);
         } else {
             MailCacheService::reconcileBadgeFromIndex($folderPath);
+            mail_reconcile_linked_correspondent_badges($folderPath);
             $counts = FolderCache::sidebarUnreadCountsFromSession();
         }
 
