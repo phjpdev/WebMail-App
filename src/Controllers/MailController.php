@@ -308,21 +308,17 @@ class MailController
         $enrichLight = !$explicitRefresh;
         $list['messages'] = MailCacheService::enrichListMessages($folderPath, $list['messages'], $enrichLight);
 
-        // Decide polling state from the loaded folder data, before privacy
-        // trimming, so a folder with no viewer-visible mail doesn't poll forever.
+        // Only block the list UI when there is nothing to show yet; otherwise
+        // render cached rows immediately and sync in the background.
         $sessionFolderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
         $listAwaitingSync = $query === ''
             && $imapConnected
+            && empty($list['messages'])
             && (
-                (empty($list['messages']) && (
-                    ($servedFromCache && ($badgePending || !empty($list['stale'])))
-                    || MailCacheService::badgeAheadOfIndex($folderPath)
-                    || mail_get_post_send_preview($folderPath) !== null
-                    || $sessionFolderUnread > 0
-                ))
+                ($servedFromCache && ($badgePending || !empty($list['stale'])))
                 || MailCacheService::badgeAheadOfIndex($folderPath)
                 || mail_get_post_send_preview($folderPath) !== null
-                || ($badgePending && $servedFromCache && !empty($list['stale']))
+                || $sessionFolderUnread > 0
             );
 
         $sidebarUnread = FolderCache::sidebarUnreadCountsFromSession();

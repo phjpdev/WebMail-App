@@ -1069,6 +1069,10 @@
             }
 
             reinitMailListColumn();
+            if (visibleMailRowCount() > 0) {
+                setMailListLoading(false);
+                ensureListVisible(getListCard());
+            }
             if (data.list_loading) {
                 var syncCard = getListCard();
                 if (syncCard) syncCard.classList.add('is-syncing');
@@ -4063,6 +4067,13 @@
 
                     reorderMailListFromPoll(data.messages);
                     syncListEmptyState();
+
+                    if (visibleMailRowCount() > 0) {
+                        setMailListLoading(false);
+                        ensureListVisible(liveCard);
+                    } else if (data.messages.length > 0) {
+                        hydrateMailListFromPoll(data.messages, false);
+                    }
 
                     syncErrorShown = false;
                 })
