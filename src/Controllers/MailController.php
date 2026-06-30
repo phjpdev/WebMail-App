@@ -457,6 +457,7 @@ class MailController
 
         $bootstrapped = (new SystemBootstrapService())->ensureDefaults();
         if ($bootstrapped) {
+            (new FolderCache())->clear();
             $folderData = FolderCache::load(refresh: true, skipUnreadRefresh: true);
             if (!$folderData['connected']) {
                 http_response_code(503);

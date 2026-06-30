@@ -721,11 +721,11 @@ class FolderCache
     {
         $cache = new self();
 
-        if (Auth::user() !== null) {
-            $bootstrapped = (new SystemBootstrapService())->ensureDefaults();
-            if ($bootstrapped) {
-                $refresh = true;
+        if (Auth::user() !== null && empty($_SESSION['_mail_registry_defaults'])) {
+            if ((new SystemBootstrapService())->ensureRegistryDefaults()) {
+                (new self())->clear();
             }
+            $_SESSION['_mail_registry_defaults'] = true;
         }
 
         if (!$refresh) {
@@ -752,7 +752,9 @@ class FolderCache
 
         $folders = $imap->listFolders();
         $paths = array_column($folders, 'path');
-        $unreadCounts = $imap->getFolderBadgeCounts($paths);
+        $unreadCounts = $skipUnreadRefresh
+            ? array_fill_keys($paths, 0)
+            : $imap->getFolderBadgeCounts($paths);
         $cache->set($folders, $unreadCounts);
 
         $result = [
