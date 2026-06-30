@@ -809,7 +809,28 @@ function employee_linked_inbox_path_for_user_id(int $userId): ?string
         return null;
     }
 
-    return employee_linked_inbox_path(['id' => $userId, 'role' => 'employee']);
+    static $cache = [];
+    if (array_key_exists($userId, $cache)) {
+        return $cache[$userId];
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' AND active = 1 LIMIT 1",
+            [$userId]
+        );
+        if ($row === null || empty($row['imap_path'])) {
+            $cache[$userId] = null;
+
+            return null;
+        }
+
+        $cache[$userId] = employee_messages_imap_path((string) $row['imap_path']);
+    } catch (\Throwable) {
+        $cache[$userId] = null;
+    }
+
+    return $cache[$userId];
 }
 
 /**
@@ -1385,18 +1406,12 @@ function mail_find_peer_employee_inbox_for_subject(int $employeeUserId, string $
  */
 function mail_find_messages_in_folder_for_subject(string $folderPath, string $baseSubject): array
 {
-    static $cache = [];
-
     $baseSubject = mail_normalize_thread_subject($baseSubject);
     if ($baseSubject === '') {
         return [];
     }
 
     $indexPath = \App\Services\FolderCache::resolvePath($folderPath);
-    $cacheKey = strtolower($indexPath) . '|' . $baseSubject;
-    if (isset($cache[$cacheKey])) {
-        return $cache[$cacheKey];
-    }
 
     try {
         $rows = App\Database::query(
@@ -1467,7 +1482,7 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
         ];
     }
 
-    return $cache[$cacheKey] = $messages;
+    return $messages;
 }
 
 /**
@@ -1479,8 +1494,8 @@ function mail_collect_employee_thread_entries(array $context, string $baseSubjec
     static $cache = [];
 
     $employeeUserId = (int) ($context['employee_user_id'] ?? 0);
-    $employeeInbox = (string) ($context['employee_inbox'] ?? '');
-    $corrFolder = (string) ($context['corr_folder'] ?? '');
+    $employeeInbox = employee_messages_imap_path((string) ($context['employee_inbox'] ?? ''));
+    $corrFolder = \App\Services\FolderCache::resolvePath((string) ($context['corr_folder'] ?? ''));
     if ($employeeUserId <= 0 || $employeeInbox === '' || $corrFolder === '') {
         return [];
     }
@@ -2523,7 +2538,7 @@ function mail_resolve_correspondent_thread_context(string $folderPath, ?array $m
 
         return [
             'corr_folder' => $folderPath,
-            'employee_inbox' => $ownInbox,
+            'employee_inbox' => employee_messages_imap_path($ownInbox),
             'employee_user_id' => $userId,
             'corr_email' => strtolower(trim($corrEmail)),
         ];
@@ -2541,7 +2556,7 @@ function mail_resolve_correspondent_thread_context(string $folderPath, ?array $m
             if ($corrEmail !== null && $corrEmail !== '') {
                 return [
                     'corr_folder' => $corrFolder,
-                    'employee_inbox' => $folderPath,
+                    'employee_inbox' => employee_messages_imap_path($folderPath),
                     'employee_user_id' => $linkedId,
                     'corr_email' => strtolower(trim($corrEmail)),
                 ];
@@ -2552,7 +2567,7 @@ function mail_resolve_correspondent_thread_context(string $folderPath, ?array $m
         if ($peerInbox !== null && $peerInbox !== '') {
             return [
                 'corr_folder' => $peerInbox,
-                'employee_inbox' => $folderPath,
+                'employee_inbox' => employee_messages_imap_path($folderPath),
                 'employee_user_id' => $linkedId,
                 'corr_email' => '',
                 'peer_thread' => true,
@@ -2574,14 +2589,14 @@ function mail_resolve_correspondent_thread_context(string $folderPath, ?array $m
         return null;
     }
 
-    $employeeInbox = employee_linked_inbox_path(['id' => $employeeUserId, 'role' => 'employee']);
+    $employeeInbox = employee_linked_inbox_path_for_user_id($employeeUserId);
     $corrEmail = alias_email_for_folder($folderPath);
     if ($employeeInbox === null || $employeeInbox === '' || $corrEmail === null || $corrEmail === '') {
         return null;
     }
 
     return [
-        'corr_folder' => $folderPath,
+        'corr_folder' => \App\Services\FolderCache::resolvePath($folderPath),
         'employee_inbox' => $employeeInbox,
         'employee_user_id' => $employeeUserId,
         'corr_email' => strtolower(trim($corrEmail)),
@@ -7027,6 +7042,16 @@ function mail_enrich_list_with_thread_preview(string $folderPath, array &$msg): 
     }
 
     if (employee_is_correspondent_folder($folderPath)) {
+        mail_enrich_correspondent_folder_list_row($folderPath, $msg);
+
+        return;
+    }
+
+    $user = App\Auth::user();
+    if ($user !== null
+        && ($user['role'] ?? '') === 'admin'
+        && \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
+        && mail_resolve_correspondent_thread_context($folderPath, $msg) !== null) {
         mail_enrich_correspondent_folder_list_row($folderPath, $msg);
 
         return;

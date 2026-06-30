@@ -1508,7 +1508,9 @@ class MailCacheService
         }
         unset($msg);
 
-        if (mail_linked_user_id_for_inbox($folderPath) !== null || employee_is_correspondent_folder($folderPath)) {
+        if (mail_linked_user_id_for_inbox($folderPath) !== null
+            || employee_is_correspondent_folder($folderPath)
+            || \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
             $messages = mail_resort_list_by_message_date($messages);
         }
 
