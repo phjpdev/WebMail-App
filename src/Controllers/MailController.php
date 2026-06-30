@@ -903,7 +903,7 @@ class MailController
         $folderPath = mail_folder_path($params['folderB64'] ?? '');
         $uid = (int) ($params['uid'] ?? 0);
 
-        if ($folderPath === '' || $uid <= 0) {
+        if ($folderPath === '' || $uid === 0) {
             http_response_code(404);
             echo json_encode(['ok' => false, 'error' => 'Message not found']);
             return;
@@ -911,6 +911,29 @@ class MailController
 
         $prefetch = ($_GET['prefetch'] ?? '') === '1';
         $deferred = null;
+
+        if ($uid < 0) {
+            $preview = mail_get_post_send_preview_by_uid($folderPath, $uid);
+            if ($preview === null) {
+                http_response_code(404);
+                echo json_encode(['ok' => false, 'error' => 'Message not found']);
+                return;
+            }
+
+            $context = mail_build_optimistic_pane_context($folderPath, $preview);
+            $html = view_string('mail/pane-read', $context);
+            json_response([
+                'ok' => true,
+                'uid' => $uid,
+                'subject' => $context['message']['subject'] ?: '(no subject)',
+                'seen' => false,
+                'was_unread' => false,
+                'html' => $html,
+                'optimistic' => true,
+                'unread_counts' => $context['unreadCounts'],
+                'folder_unread' => mail_folder_unread_count($context['unreadCounts'], $folderPath),
+            ]);
+        }
 
         if (is_draft_folder($folderPath)) {
             $draftContext = compose_draft_form_context($folderPath, $uid);

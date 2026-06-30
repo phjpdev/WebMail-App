@@ -410,6 +410,17 @@ class ComposeController
 
         $this->applyPostSendSessionHints($job);
 
+        $threadReply = is_array($job['thread_reply'] ?? null) ? $job['thread_reply'] : null;
+        if ($threadReply !== null) {
+            with_session_write(function () use ($threadReply): void {
+                mail_store_thread_reply(
+                    (string) ($threadReply['folder_path'] ?? ''),
+                    (int) ($threadReply['uid'] ?? 0),
+                    is_array($threadReply['reply'] ?? null) ? $threadReply['reply'] : [],
+                );
+            });
+        }
+
         $mimePath = (string) ($job['mime_path'] ?? '');
         $sentMime = ($mimePath !== '' && is_file($mimePath)) ? (string) file_get_contents($mimePath) : '';
         if ($mimePath !== '') {

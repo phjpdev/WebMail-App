@@ -1754,7 +1754,7 @@ function mail_merge_pending_into_thread_entries(
     );
 
     foreach ($pending as $reply) {
-        $body = trim((string) ($reply['body'] ?? ''));
+        $body = mail_thread_reply_effective_body($reply);
         if ($body === '') {
             continue;
         }
@@ -1971,6 +1971,131 @@ function mail_get_post_send_preview(string $folderPath): ?array
     }
 
     return null;
+}
+
+/**
+ * Post-send list preview row matched by its temporary negative UID.
+ *
+ * @return array<string, mixed>|null
+ */
+function mail_get_post_send_preview_by_uid(string $folderPath, int $uid): ?array
+{
+    if ($uid >= 0) {
+        return null;
+    }
+
+    $preview = mail_get_post_send_preview($folderPath);
+    if ($preview === null) {
+        return null;
+    }
+
+    return (int) ($preview['uid'] ?? 0) === $uid ? $preview : null;
+}
+
+/**
+ * Reading-pane context for a post-send preview before IMAP assigns a real UID.
+ *
+ * @param array<string, mixed> $preview
+ * @return array{
+ *     folderPath: string,
+ *     folderB64: string,
+ *     folders: list<array{path: string, name: string, delimiter?: string}>,
+ *     unreadCounts: array<string, int>,
+ *     message: array<string, mixed>,
+ *     sanitizedHtml: string,
+ *     conversationThread: list<array<string, mixed>>,
+ *     replyFrom: string|null,
+ *     moveTargets: list<array{path: string, name: string}>,
+ *     pollInterval: int,
+ *     wasUnread: bool
+ * }
+ */
+function mail_build_optimistic_pane_context(string $folderPath, array $preview): array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $folderData = \App\Services\FolderCache::load(skipUnreadRefresh: true);
+    $folders = $folderData['folders'];
+    $unreadCounts = $folderData['unread_counts'] ?? [];
+
+    $uid = (int) ($preview['uid'] ?? 0);
+    $snippet = trim((string) ($preview['snippet'] ?? ''));
+    $subject = trim((string) ($preview['subject'] ?? ''));
+    if ($subject === '') {
+        $subject = '(no subject)';
+    }
+
+    $sanitizedHtml = $snippet !== ''
+        ? '<p>' . e($snippet) . '</p>'
+        : '<p class="mail-preview-pending">Message is syncing. Content will appear shortly.</p>';
+
+    $message = [
+        'uid' => $uid,
+        'from' => (string) ($preview['from'] ?? ''),
+        'to' => (string) ($preview['to'] ?? ''),
+        'subject' => $subject,
+        'date' => (string) ($preview['date'] ?? ''),
+        'seen' => false,
+        'flagged' => false,
+        'plain' => $snippet,
+        'html' => $sanitizedHtml,
+        'optimistic' => true,
+        'attachments' => [],
+    ];
+
+    $conversationThread = [[
+        'from' => $message['from'],
+        'to' => $message['to'],
+        'cc' => '',
+        'date' => $message['date'],
+        'body' => $snippet,
+        'body_html' => $sanitizedHtml,
+        'quoted_plain' => '',
+        'quoted_html' => '',
+        'is_current' => true,
+        'is_pending_reply' => true,
+        'folder_path' => $folderPath,
+        'imap_uid' => $uid,
+        'attachments' => [],
+        'snippet' => mail_conversation_snippet($snippet),
+    ]];
+
+    $prefs = user_preferences();
+
+    return [
+        'folderPath' => $folderPath,
+        'folderB64' => encode_folder_path($folderPath),
+        'folders' => $folders,
+        'unreadCounts' => $unreadCounts,
+        'message' => $message,
+        'sanitizedHtml' => $sanitizedHtml,
+        'conversationThread' => $conversationThread,
+        'replyFrom' => null,
+        'moveTargets' => mail_move_target_folders($folders, $folderPath),
+        'pollInterval' => (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']),
+        'wasUnread' => true,
+    ];
+}
+
+/**
+ * Plain body for a pending thread reply, falling back to stripped HTML.
+ *
+ * @param array<string, mixed> $reply
+ */
+function mail_thread_reply_effective_body(array $reply): string
+{
+    $body = trim((string) ($reply['body'] ?? ''));
+    if ($body !== '') {
+        return $body;
+    }
+
+    $html = trim((string) ($reply['body_html'] ?? ''));
+    if ($html === '') {
+        return '';
+    }
+
+    $plain = trim(mail_plain_from_html($html));
+
+    return $plain !== '' ? $plain : $html;
 }
 
 function mail_clear_post_send_preview(string $folderPath): void
@@ -5541,7 +5666,7 @@ function mail_filter_redundant_pending_replies(array $segments, array $pending):
         : '';
 
     return array_values(array_filter($pending, static function (array $reply) use ($fingerprints, $contentKeys, $newestBody): bool {
-        $body = mail_normalize_thread_body((string) ($reply['body'] ?? ''));
+        $body = mail_normalize_thread_body(mail_thread_reply_effective_body($reply));
         if ($body === '') {
             return false;
         }
@@ -5892,6 +6017,11 @@ function mail_find_correspondent_outbound_for_subject(
     }
 
     $indexPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $sharedMailbox = \App\Services\MailCacheService::isSharedEmployeeMailbox($indexPath);
+    $sharedAlias = $sharedMailbox ? alias_email_for_folder($indexPath) : null;
+    if ($sharedAlias !== null && $sharedAlias !== '') {
+        $sharedAlias = strtolower(trim($sharedAlias));
+    }
 
     try {
         $rows = App\Database::query(
@@ -5917,7 +6047,14 @@ function mail_find_correspondent_outbound_for_subject(
         }
 
         $from = (string) ($row['from_addr'] ?? '');
-        if (!mail_is_sent_by_user($from, $employeeUserId)) {
+        $isOutbound = mail_is_sent_by_user($from, $employeeUserId);
+        if (!$isOutbound && $sharedAlias !== null && $sharedAlias !== '') {
+            $fromToken = strtolower(normalize_email_token($from));
+            if ($fromToken === $sharedAlias || str_contains(strtolower($from), $sharedAlias)) {
+                $isOutbound = true;
+            }
+        }
+        if (!$isOutbound) {
             continue;
         }
 
@@ -6431,7 +6568,7 @@ function mail_build_conversation_thread(
         }
 
         foreach (array_reverse($extraReplies) as $reply) {
-            $body = trim((string) ($reply['body'] ?? ''));
+            $body = mail_thread_reply_effective_body($reply);
             $bodyHtml = trim((string) ($reply['body_html'] ?? ''));
             array_unshift($segments, [
                 'from' => (string) ($reply['from'] ?? ''),
