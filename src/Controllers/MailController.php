@@ -1309,7 +1309,7 @@ class MailController
             $this->actionError('Invalid move request.', 'folder/' . encode_folder_path('INBOX'));
         }
         assert_folder_access($folderPath);
-        assert_folder_access($targetPath);
+        assert_folder_access(mail_resolve_move_target_path($targetPath));
 
         $this->performMove($folderPath, [$uid], $targetPath, 'folder/' . encode_folder_path($folderPath));
     }
@@ -1354,7 +1354,7 @@ class MailController
             redirect('folder/' . encode_folder_path($folderPath ?: 'INBOX'));
         }
         assert_folder_access($folderPath);
-        assert_folder_access($targetPath);
+        assert_folder_access(mail_resolve_move_target_path($targetPath));
 
         $this->performMove($folderPath, $uids, $targetPath, 'folder/' . encode_folder_path($folderPath));
     }
@@ -1493,6 +1493,7 @@ class MailController
         if (wants_json()) {
             $relocated = MailCacheService::relocateCachedMessages($indexFolderPath, $targetIndexPath, $uids);
             mail_mark_uids_removed($resolvedFolderPath, $uids);
+            mail_clear_removed_uids($targetIndexPath, $uids);
             if ($siblingMode !== 'none') {
                 $this->removeSiblingCopiesFromCache($resolvedFolderPath, $uids, $targetPath);
             }
@@ -1545,7 +1546,7 @@ class MailController
                 FilterService::preserveManualInboxPlacement($imap, $targetPath, $movedUids);
             }
             try {
-                MailCacheService::syncFolderHeaders($imap, $targetPath, 30);
+                MailCacheService::resyncFolderAfterMove($imap, $targetPath, $movedUids, 30);
                 MailCacheService::reconcileBadgeFromIndex($targetPath);
             } catch (\Throwable $e) {
                 app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
@@ -1781,6 +1782,13 @@ class MailController
             return;
         }
 
+        $targetPath = ensure_employee_messages_folder_exists(FolderCache::resolvePath($targetPath));
+        if ($targetPath === '') {
+            ImapService::closeShared();
+
+            return;
+        }
+
         if (!$imap->folderExistsOnServer($targetPath) && !$imap->createFolder($targetPath)) {
             app_log('Background move: could not create target folder ' . $targetPath);
             ImapService::closeShared();
@@ -1804,7 +1812,7 @@ class MailController
                     break;
                 }
 
-                $moveResult = $this->runMovesOnImap($imap, $folderPath, $chunk, $targetPath, false);
+                $moveResult = $this->runMovesOnImap($imap, $folderPath, $chunk, $targetPath, $siblingMode);
                 ImapService::closeShared();
 
                 $imapFromPath = FolderCache::resolvePath($folderPath);
@@ -1875,13 +1883,7 @@ class MailController
         if (!is_trash_folder($targetPath)) {
             try {
                 $syncPath = $targetIndexPath !== '' ? $targetIndexPath : $targetPath;
-                MailCacheService::syncFolderHeaders($imap, $syncPath, 30);
-                if ($allMovedUids !== []) {
-                    MailCacheService::updateIndexSeenBulk($syncPath, $allMovedUids, true);
-                    foreach ($allMovedUids as $uid) {
-                        $imap->markSeen($syncPath, (int) $uid);
-                    }
-                }
+                MailCacheService::resyncFolderAfterMove($imap, $syncPath, $allMovedUids, 30);
                 MailCacheService::reconcileBadgeFromIndex($syncPath);
             } catch (\Throwable $e) {
                 app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());

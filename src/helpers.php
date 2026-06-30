@@ -681,8 +681,9 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
             continue;
         }
         $seenPaths[$key] = true;
+        $movePath = mail_resolve_move_target_path($path);
         $out[] = [
-            'path' => $path,
+            'path' => $movePath,
             'name' => (string) ($folder['name'] ?? $path),
         ];
     }
@@ -3138,6 +3139,9 @@ function employee_messages_imap_path(string $folderPath): string
             [$resolved, $messagesPath]
         );
         if ($row !== null) {
+            return \App\Services\FolderCache::resolvePath($messagesPath);
+        }
+        if (employee_is_mailbox_container($resolved)) {
             return \App\Services\FolderCache::resolvePath($messagesPath);
         }
     } catch (\Throwable) {

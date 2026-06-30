@@ -1068,6 +1068,55 @@ class MailCacheService
     }
 
     /**
+     * Rebuild destination cache after an IMAP move. Clears stale UID tombstones
+     * (IMAP reuses UIDs) and drops optimistically relocated rows whose UIDs no
+     * longer exist in the target mailbox.
+     *
+     * @param list<int> $staleUids Source-folder UIDs that may have been relocated optimistically
+     */
+    public static function resyncFolderAfterMove(
+        ImapService $imap,
+        string $folderPath,
+        array $staleUids = [],
+        ?int $limit = null,
+    ): int {
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '') {
+            return 0;
+        }
+
+        $limit = $limit ?? (int) (config('app')['mail_cache_header_limit'] ?? 200);
+        $list = $imap->listMessages($folderPath, 1, $limit);
+        $serverUids = [];
+
+        foreach ($list['messages'] as $msg) {
+            $uid = (int) ($msg['uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+            $serverUids[] = $uid;
+            mail_clear_removed_uids($folderPath, [$uid]);
+            self::upsertIndexRow($folderPath, $msg);
+        }
+
+        $drop = [];
+        foreach ($staleUids as $uid) {
+            $uid = (int) $uid;
+            if ($uid > 0 && !in_array($uid, $serverUids, true)) {
+                $drop[] = $uid;
+            }
+        }
+        if ($drop !== []) {
+            self::removeMessages($folderPath, $drop);
+        }
+
+        $indexed = self::countListableMessagesInIndex($folderPath);
+        self::touchSyncState($folderPath, max((int) ($list['total'] ?? 0), $indexed), $indexed);
+
+        return count($list['messages']);
+    }
+
+    /**
      * @param list<array<string, mixed>> $messages
      */
     public static function upsertIndexMessages(string $folderPath, array $messages, int $imapTotal): void
