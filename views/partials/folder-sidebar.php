@@ -102,7 +102,7 @@ if (!$foldersOpen && $grouped['other'] !== [] && ($sessionUser['role'] ?? '') ==
                     <?php
                     // Nest custom folders under any parent also shown here, using
                     // the IMAP hierarchy delimiter (e.g. test1 → test1-sub1).
-                    $otherFolders = $grouped['other'];
+                    $otherFolders = sidebar_dedupe_other_folders($grouped['other']);
                     usort($otherFolders, static fn ($a, $b) => strcasecmp($a['path'], $b['path']));
                     $presentOther = [];
                     foreach ($otherFolders as $f) {

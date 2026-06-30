@@ -506,6 +506,10 @@ class ComposeController
                     FolderCache::setUnreadCount($resolved, 0);
                     continue;
                 }
+                if (admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+                    FolderCache::setUnreadCount($resolved, 0);
+                    continue;
+                }
                 $pendingBadges[] = $resolved;
             }
             if ($pendingBadges !== []) {
@@ -1286,6 +1290,7 @@ class ComposeController
                 }
             }
             reconcile_correspondent_outbound_echoes($imap, $destPaths, $fromEmail, $sentMessageId);
+            reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
         }
 
         $filterResult = FilterService::runBackground(true, 10);
@@ -1334,6 +1339,8 @@ class ComposeController
                 }
             }
 
+            reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
+
             $senderFolder = folder_for_alias_email($fromEmail);
             reconcile_alias_self_sent_echoes(
                 $imap,
@@ -1363,6 +1370,7 @@ class ComposeController
                     $resolved !== ''
                     && folder_shows_unread_badge($resolved)
                     && !sender_suppresses_dest_folder_badge($resolved, $user)
+                    && !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)
                 ) {
                     $badgePaths[] = $resolved;
                 }
@@ -1388,6 +1396,15 @@ class ComposeController
             if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
                 MailCacheService::reconcileBadgeFromIndex($inbox);
                 FolderCache::refreshPaths([$inbox]);
+            }
+
+            foreach ($destPaths as $path) {
+                $resolved = FolderCache::resolvePath(employee_messages_imap_path((string) $path));
+                if ($resolved === '' || !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+                    continue;
+                }
+                FolderCache::setUnreadCount($resolved, 0);
+                MailCacheService::reconcileBadgeFromIndex($resolved);
             }
         });
 

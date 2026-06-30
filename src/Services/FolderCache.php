@@ -168,7 +168,7 @@ class FolderCache
                 continue;
             }
 
-            if (MailCacheService::usesPerUserRead($path)) {
+            if (folder_badge_uses_index_truth($path) || MailCacheService::usesPerUserRead($path)) {
                 $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = MailCacheService::sidebarBadgeCount(
                     $path,
                     $sessionUnread
@@ -551,9 +551,11 @@ class FolderCache
                 $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
 
-            $count = $sessionCount > 0
-                ? $sessionCount
-                : \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount);
+            $count = folder_badge_uses_index_truth($path)
+                ? \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount)
+                : ($sessionCount > 0
+                    ? $sessionCount
+                    : \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount));
 
             $result[$path] = $count;
             if (strcasecmp($messagesPath, $path) !== 0) {
@@ -581,11 +583,15 @@ class FolderCache
                 continue;
             }
 
-            $count = self::sessionUnreadForSidebarPath($path, $session);
+            $sessionCount = self::sessionUnreadForSidebarPath($path, $session);
             $messagesPath = employee_messages_imap_path($path);
             if (strcasecmp($messagesPath, $path) !== 0) {
-                $count = max($count, self::sessionUnreadForSidebarPath($messagesPath, $session));
+                $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
+
+            $count = folder_badge_uses_index_truth($path)
+                ? MailCacheService::sidebarBadgeCount($path, $sessionCount)
+                : $sessionCount;
 
             $result[$path] = $count;
             if (strcasecmp($messagesPath, $path) !== 0) {
@@ -875,7 +881,7 @@ class FolderCache
         foreach ($data['folders'] as $folder) {
             if ($this->isEmployeeFolderAllowed($folder['path'], $prefix)) {
                 $filtered[] = $folder;
-                $counts[$folder['path']] = self::sessionUnreadForSidebarPath(
+                $counts[$folder['path']] = self::sidebarUnreadForFolderPath(
                     $folder['path'],
                     $data['unread_counts'] ?? []
                 );
@@ -884,20 +890,20 @@ class FolderCache
 
         $existing = [];
         foreach ($filtered as $folder) {
-            $existing[strtoupper((string) $folder['path'])] = true;
+            $existing[sidebar_mailbox_root_key((string) ($folder['path'] ?? ''))] = true;
         }
 
         foreach ($data['folders'] as $folder) {
             $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || isset($existing[strtoupper($path)])) {
+            if ($path === '' || isset($existing[sidebar_mailbox_root_key($path)])) {
                 continue;
             }
             if (!employee_can_access_correspondent_folder($path)) {
                 continue;
             }
             $filtered[] = $folder;
-            $counts[$path] = self::sessionUnreadForSidebarPath($path, $data['unread_counts'] ?? []);
-            $existing[strtoupper($path)] = true;
+            $counts[$path] = self::sidebarUnreadForFolderPath($path, $data['unread_counts'] ?? []);
+            $existing[sidebar_mailbox_root_key($path)] = true;
         }
 
         foreach (employee_correspondent_folder_paths() as $corrPath) {
@@ -905,7 +911,7 @@ class FolderCache
                 continue;
             }
             $corrRoot = employee_mailbox_root_prefix(self::resolvePath($corrPath));
-            if ($corrRoot === '' || isset($existing[strtoupper($corrRoot)])) {
+            if ($corrRoot === '' || isset($existing[sidebar_mailbox_root_key($corrRoot)])) {
                 continue;
             }
             $meta = folder_registry_meta($corrPath) ?? folder_registry_meta($corrRoot);
@@ -918,14 +924,82 @@ class FolderCache
                 'name' => $meta['name'],
                 'delimiter' => '.',
             ];
-            $counts[$resolved] = self::sessionUnreadForSidebarPath($resolved, $data['unread_counts'] ?? []);
-            $existing[strtoupper($resolved)] = true;
+            $counts[$resolved] = self::sidebarUnreadForFolderPath($resolved, $data['unread_counts'] ?? []);
+            $existing[sidebar_mailbox_root_key($resolved)] = true;
         }
 
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
-        return $this->filterEmployeeSidebarFolders($data, $prefix);
+        $data = $this->filterEmployeeSidebarFolders($data, $prefix);
+
+        return $this->dedupeSidebarFoldersByMailboxRoot($data);
+    }
+
+    /**
+     * Sidebar badge for one folder path (session + index truth when applicable).
+     *
+     * @param array<string, int> $session
+     */
+    private static function sidebarUnreadForFolderPath(string $path, array $session): int
+    {
+        $sessionCount = self::sessionUnreadForSidebarPath($path, $session);
+        $messagesPath = employee_messages_imap_path($path);
+        if (strcasecmp($messagesPath, $path) !== 0) {
+            $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
+        }
+
+        if (!folder_badge_uses_index_truth($path)) {
+            return $sessionCount;
+        }
+
+        return MailCacheService::sidebarBadgeCount($path, $sessionCount);
+    }
+
+    /**
+     * @param array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string} $data
+     * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
+     */
+    private function dedupeSidebarFoldersByMailboxRoot(array $data): array
+    {
+        $filtered = [];
+        $counts = $data['unread_counts'] ?? [];
+        $newCounts = [];
+        $seen = [];
+
+        foreach ($data['folders'] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '') {
+                continue;
+            }
+
+            $key = sidebar_mailbox_root_key($path);
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $root = employee_mailbox_root_prefix(self::resolvePath($path));
+            $displayPath = $root !== '' ? self::resolvePath($root) : $path;
+            $filtered[] = [
+                'path' => $displayPath,
+                'name' => (string) ($folder['name'] ?? preg_replace('/^INBOX\./i', '', $displayPath)),
+                'delimiter' => (string) ($folder['delimiter'] ?? '.'),
+            ];
+            $newCounts[$displayPath] = max(
+                (int) ($counts[$path] ?? 0),
+                (int) ($counts[$displayPath] ?? 0),
+            );
+            $messagesPath = employee_messages_imap_path($displayPath);
+            if (strcasecmp($messagesPath, $displayPath) !== 0) {
+                $newCounts[$messagesPath] = $newCounts[$displayPath];
+            }
+        }
+
+        $data['folders'] = $filtered;
+        $data['unread_counts'] = $newCounts;
+
+        return $data;
     }
 
     /**

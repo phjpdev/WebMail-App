@@ -735,37 +735,41 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $afterSend = ($_GET['after_send'] ?? '') === '1';
 
-        // Fast path: session badge counts only (post-send-deferred handles IMAP/filter work).
-        if ($light || $afterSend) {
-            echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCountsFromSession()]);
-
-            return;
+        if (($_GET['filter'] ?? '') === '1' || !$light) {
+            FilterService::runBackground($afterSend);
         }
 
-        if (($_GET['filter'] ?? '') === '1') {
-            FilterService::runBackground(false);
-        }
+        $this->reconcileSidebarBadgesFromIndex();
 
+        echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
+    }
+
+    private function reconcileSidebarBadgesFromIndex(): void
+    {
         $folderData = FolderCache::load(skipUnreadRefresh: true);
-        $counts = $folderData['unread_counts'] ?? [];
+        $refreshPaths = [];
 
         foreach ($folderData['folders'] ?? [] as $folder) {
             $path = (string) ($folder['path'] ?? '');
-            if ($path === '') {
+            if ($path === '' || !folder_shows_unread_badge($path)) {
                 continue;
             }
-            $badge = (int) ($counts[$path] ?? 0);
-            if (
-                $badge <= 0
-                && !MailCacheService::badgeAheadOfIndex($path)
-                && !MailCacheService::badgeBehindIndex($path)
-            ) {
+            if (folder_badge_uses_index_truth($path) && !MailCacheService::hasFolderData($path)) {
+                $refreshPaths[] = $path;
+            }
+        }
+
+        if ($refreshPaths !== []) {
+            FolderCache::refreshPaths(array_values(array_unique($refreshPaths)));
+        }
+
+        foreach ($folderData['folders'] ?? [] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '' || !folder_badge_uses_index_truth($path)) {
                 continue;
             }
             MailCacheService::reconcileBadgeFromIndex($path);
         }
-
-        echo json_encode(['unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? []]);
     }
 
     /**

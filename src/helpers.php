@@ -904,6 +904,11 @@ function mail_note_employee_correspondent(string $folderPath): void
         return;
     }
 
+    $root = employee_mailbox_root_prefix($folderPath);
+    if ($root !== '') {
+        $folderPath = \App\Services\FolderCache::resolvePath($root);
+    }
+
     if (!isset($_SESSION['_employee_correspondents']) || !is_array($_SESSION['_employee_correspondents'])) {
         $_SESSION['_employee_correspondents'] = [];
     }
@@ -1135,9 +1140,11 @@ function employee_correspondent_folder_paths(?int $userId = null): array
         if ($path === '' || strcasecmp($path, $ownPrefix) === 0) {
             continue;
         }
-        $key = strtoupper($path);
+        $root = employee_mailbox_root_prefix($path);
+        $canonical = $root !== '' ? \App\Services\FolderCache::resolvePath($root) : $path;
+        $key = sidebar_mailbox_root_key($canonical);
         if (!isset($unique[$key])) {
-            $unique[$key] = $path;
+            $unique[$key] = $canonical;
         }
     }
 
@@ -2104,6 +2111,19 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
 {
     mail_apply_destination_folder_badges($fromEmail, $destPaths);
 
+    $reconcilePaths = array_values(array_unique(array_filter($destPaths)));
+    $senderFolder = folder_for_alias_email($fromEmail);
+    if ($senderFolder !== null && $senderFolder !== '') {
+        $reconcilePaths[] = $senderFolder;
+    }
+    foreach ($reconcilePaths as $path) {
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
+        if ($resolved === '' || !folder_badge_uses_index_truth($resolved)) {
+            continue;
+        }
+        \App\Services\MailCacheService::reconcileBadgeFromIndex($resolved);
+    }
+
     return \App\Services\FolderCache::sidebarUnreadCounts();
 }
 
@@ -2136,7 +2156,11 @@ function mail_apply_destination_folder_badges(string $fromEmail, array $destPath
         if ($resolved === '' || sender_suppresses_dest_folder_badge($resolved, $user)) {
             continue;
         }
-        $currentUnread = \App\Services\MailCacheService::countAdminEmployeeInboxBadge($resolved);
+        if (admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+            \App\Services\FolderCache::setUnreadCount($resolved, 0);
+            continue;
+        }
+        $currentUnread = \App\Services\MailCacheService::sidebarBadgeCount($resolved);
         \App\Services\FolderCache::setUnreadCount($resolved, $currentUnread + 1);
         $pending[] = $resolved;
     }
@@ -2218,6 +2242,9 @@ function mail_store_post_send_previews(
     foreach ($previewPaths as $path) {
         $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
         if ($resolved === '') {
+            continue;
+        }
+        if (admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
             continue;
         }
         $optimisticUid = $msgId !== ''
@@ -4118,20 +4145,30 @@ function mail_note_correspondent_from_list_message(array $msg): void
 function mail_correspondent_folders_sidebar_payload(?int $userId = null): array
 {
     $out = [];
+    $seen = [];
     foreach (employee_correspondent_folder_paths($userId) as $path) {
-        $meta = folder_registry_meta($path);
+        $root = employee_mailbox_root_prefix(\App\Services\FolderCache::resolvePath($path));
+        $key = sidebar_mailbox_root_key($root !== '' ? $root : $path);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+
+        $meta = folder_registry_meta($path) ?? folder_registry_meta($root);
         if ($meta === null) {
             continue;
         }
 
-        $resolved = \App\Services\FolderCache::resolvePath($meta['path']);
+        $resolved = \App\Services\FolderCache::resolvePath($root !== '' ? $root : (string) ($meta['path'] ?? $path));
+        $navPath = sidebar_folder_nav_path($resolved);
         $folder = ['path' => $resolved, 'name' => $meta['name']];
         $out[] = [
             'path' => $resolved,
+            'nav_path' => $navPath !== '' ? $navPath : $resolved,
             'name' => sidebar_folder_label($folder, 'other'),
-            'b64' => encode_folder_path($resolved),
+            'b64' => encode_folder_path($navPath !== '' ? $navPath : $resolved),
             'icon' => folder_icon_type($resolved),
-            'url' => folder_url($resolved),
+            'url' => folder_url($navPath !== '' ? $navPath : $resolved),
         ];
     }
 
@@ -5410,6 +5447,214 @@ function mail_list_row_display(array $msg, string $folderPath): array
     ];
 }
 
+/**
+ * Canonical sidebar key for one employee/shared mailbox (dedupes INBOX.X vs INBOX.X.Inbox).
+ */
+function sidebar_mailbox_root_key(string $path): string
+{
+    $path = \App\Services\FolderCache::resolvePath($path);
+    $root = employee_mailbox_root_prefix($path);
+
+    return strtoupper($root !== '' ? $root : $path);
+}
+
+/**
+ * Sidebar badges for these folders must follow mail_index rules, not raw IMAP \\Seen.
+ */
+function folder_badge_uses_index_truth(string $folderPath): bool
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return false;
+    }
+
+    if (employee_correspondent_privacy_emails($folderPath) !== null) {
+        return true;
+    }
+
+    if (\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
+        return true;
+    }
+
+    if (\App\Services\MailCacheService::usesPerUserRead($folderPath)) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Inbound from a shared/correspondent alias in a linked employee inbox — hide from
+ * admin sidebar badges (the conversation lives in the shared mailbox folder).
+ *
+ * @param array<string, mixed> $msg
+ */
+function admin_should_hide_employee_inbox_correspondent_message(array $msg): bool
+{
+    if (!\App\Services\MailCacheService::viewerIsAdmin()) {
+        return false;
+    }
+
+    $parsed = mail_parse_address((string) ($msg['from'] ?? ''));
+    $fromEmail = strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($msg['from'] ?? '')));
+    if ($fromEmail === '') {
+        return false;
+    }
+
+    $corrFolder = folder_for_alias_email($fromEmail);
+    if ($corrFolder === null || $corrFolder === '') {
+        return false;
+    }
+
+    return \App\Services\MailCacheService::isSharedEmployeeMailbox($corrFolder)
+        || folder_registry_meta($corrFolder) !== null;
+}
+
+/**
+ * Post-send list preview must not inflate admin badges on employee inboxes when
+ * the message belongs in the shared mailbox folder (e.g. Support → Erik).
+ */
+function admin_employee_inbox_preview_inflates_badge(string $folderPath): bool
+{
+    if (!\App\Services\MailCacheService::viewerIsAdmin()) {
+        return true;
+    }
+
+    $preview = mail_get_post_send_preview($folderPath);
+    if ($preview === null) {
+        return true;
+    }
+
+    return !admin_should_hide_employee_inbox_correspondent_message($preview);
+}
+
+/**
+ * SQL OR-clauses for correspondent-folder badge queries (participant emails +
+ * shared-mailbox alias replies visible to employees).
+ *
+ * @param list<string> $emails lowercase participant addresses
+ * @return array{0: list<string>, 1: list<mixed>}
+ */
+function correspondent_folder_badge_sql_clauses(string $folderPath, array $emails): array
+{
+    $clauses = [];
+    $params = [];
+
+    foreach ($emails as $email) {
+        $like = '%' . strtolower($email) . '%';
+        $clauses[] = '(LOWER(from_addr) LIKE ? OR LOWER(COALESCE(to_addrs, \'\')) LIKE ? OR LOWER(COALESCE(cc_addrs, \'\')) LIKE ?)';
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+    }
+
+    if (\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
+        $aliasEmail = alias_email_for_folder($folderPath);
+        if ($aliasEmail === null || trim($aliasEmail) === '') {
+            $root = employee_mailbox_root_prefix($folderPath);
+            if ($root !== '') {
+                $aliasEmail = alias_email_for_folder($root);
+            }
+        }
+        if ($aliasEmail !== null && trim($aliasEmail) !== '') {
+            $clauses[] = 'LOWER(from_addr) LIKE ?';
+            $params[] = '%' . strtolower(trim($aliasEmail)) . '%';
+        }
+    }
+
+    return [$clauses, $params];
+}
+
+/**
+ * @param list<array{path: string, name: string, delimiter?: string}> $folders
+ * @return list<array{path: string, name: string, delimiter?: string}>
+ */
+function sidebar_dedupe_other_folders(array $folders): array
+{
+    if (count($folders) <= 1) {
+        return $folders;
+    }
+
+    $seen = [];
+    $out = [];
+
+    foreach ($folders as $folder) {
+        $path = (string) ($folder['path'] ?? '');
+        if ($path === '') {
+            continue;
+        }
+
+        $key = sidebar_mailbox_root_key($path);
+        if (isset($seen[$key])) {
+            continue;
+        }
+
+        $seen[$key] = true;
+        $root = employee_mailbox_root_prefix(\App\Services\FolderCache::resolvePath($path));
+        $displayPath = $root !== ''
+            ? \App\Services\FolderCache::resolvePath($root)
+            : $path;
+        $folder['path'] = $displayPath;
+        $out[] = $folder;
+    }
+
+    return $out;
+}
+
+/**
+ * True when admin composed from a shared mailbox (e.g. Support) into an employee inbox.
+ */
+function admin_sent_to_employee_inbox_from_shared_mailbox(string $destFolderPath, string $fromEmail): bool
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'admin') {
+        return false;
+    }
+
+    if (mail_linked_user_id_for_inbox($destFolderPath) === null) {
+        return false;
+    }
+
+    $senderFolder = folder_for_alias_email($fromEmail);
+    if ($senderFolder === null || $senderFolder === '') {
+        return false;
+    }
+
+    return \App\Services\MailCacheService::isSharedEmployeeMailbox($senderFolder);
+}
+
+/**
+ * Inbound to a shared employee folder from an employee address (e.g. Erik → Support).
+ *
+ * @param array<string, mixed> $msg
+ */
+function mail_is_employee_inbound_to_shared_mailbox(string $folderPath, array $msg): bool
+{
+    if (!\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
+        return false;
+    }
+
+    if (mail_is_shared_mailbox_alias_sent_echo($folderPath, $msg)) {
+        return false;
+    }
+
+    $userId = mail_user_id_from_email((string) ($msg['from'] ?? ''));
+    if ($userId === null || $userId <= 0) {
+        return false;
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            'SELECT role FROM users WHERE id = ? AND active = 1 LIMIT 1',
+            [$userId]
+        );
+    } catch (\Throwable) {
+        return false;
+    }
+
+    return $row !== null && ($row['role'] ?? '') === 'employee';
+}
+
 /** Trash is a holding area — never show an unread badge in the sidebar or header. */
 function folder_shows_unread_badge(string $path): bool
 {
@@ -5726,6 +5971,44 @@ function reconcile_correspondent_outbound_echoes(
 
     if ($ownInbox !== null && $ownInbox !== '') {
         App\Services\MailCacheService::reconcileBadgeFromIndex($ownInbox);
+    }
+}
+
+/**
+ * Admin sent from a shared mailbox into an employee inbox: read for admin, still
+ * unread for the employee until they open it.
+ *
+ * @param list<string> $destPaths
+ */
+function reconcile_admin_outbound_to_employee_inboxes(
+    array $destPaths,
+    string $fromEmail,
+    ?string $sentMessageId = null,
+): void {
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'admin') {
+        return;
+    }
+
+    $adminId = (int) ($user['id'] ?? 0);
+    if ($adminId <= 0) {
+        return;
+    }
+
+    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
+        if ($resolved === '' || !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+            continue;
+        }
+
+        App\Services\MailCacheService::reconcileAdminOutboundToEmployeeInbox(
+            $resolved,
+            $adminId,
+            $fromEmail,
+            $sentMessageId,
+        );
+        App\Services\MailCacheService::reconcileBadgeFromIndex($resolved);
+        App\Services\FolderCache::setUnreadCount($resolved, 0);
     }
 }
 

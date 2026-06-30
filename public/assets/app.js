@@ -3541,12 +3541,21 @@
         });
     }
 
+    function sidebarMailboxRootKey(path) {
+        path = (path || '').toLowerCase();
+        var nested = path.match(/^inbox\.([^.]+)\.inbox$/i);
+        if (nested) {
+            return ('inbox.' + nested[1]).toLowerCase();
+        }
+        return path;
+    }
+
     function sidebarHasFolderLink(path) {
-        var target = (path || '').toLowerCase();
+        var target = sidebarMailboxRootKey(path);
         if (!target) return false;
         var found = false;
         document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
-            if ((link.getAttribute('data-folder-path') || '').toLowerCase() === target) {
+            if (sidebarMailboxRootKey(link.getAttribute('data-folder-path') || '') === target) {
                 found = true;
             }
         });
