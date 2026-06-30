@@ -180,7 +180,11 @@ class AdminFolderService
             return false;
         }
 
-        return in_array($type, ['employee', 'client', 'company'], true);
+        if (admin_folder_primary_bucket($folder) !== null) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
