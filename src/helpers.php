@@ -226,10 +226,17 @@ function csrf_field(): string
 
 function csrf_verify(): bool
 {
-    $token = $_POST['_csrf'] ?? '';
+    $token = $_POST['_csrf'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
     $session = $_SESSION['_csrf_token'] ?? '';
 
     return $token !== '' && $session !== '' && hash_equals($session, $token);
+}
+
+function send_csrf_header(): void
+{
+    if (!headers_sent()) {
+        header('X-CSRF-Token: ' . csrf_token());
+    }
 }
 
 function verify_csrf_or_fail(): void
@@ -615,7 +622,9 @@ function decode_folder_path(string $encoded): string
 /** Decode a URL folder token and map it to the exact IMAP mailbox path. */
 function mail_folder_path(string $encoded): string
 {
-    return \App\Services\FolderCache::resolvePath(decode_folder_path($encoded));
+    $path = decode_folder_path($encoded);
+
+    return \App\Services\FolderCache::resolvePath(employee_messages_imap_path($path));
 }
 
 function folder_url(string $folderPath, string $suffix = ''): string
@@ -1696,11 +1705,12 @@ function mail_apply_destination_folder_badges(string $fromEmail, array $destPath
 
     $pending = [];
     foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath((string) $path);
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
         if ($resolved === '' || sender_suppresses_dest_folder_badge($resolved, $user)) {
             continue;
         }
-        \App\Services\FolderCache::bumpUnread($resolved, 1);
+        $currentUnread = \App\Services\MailCacheService::countAdminEmployeeInboxBadge($resolved);
+        \App\Services\FolderCache::setUnreadCount($resolved, $currentUnread + 1);
         $pending[] = $resolved;
     }
 
@@ -1719,7 +1729,7 @@ function mail_post_send_dest_folder_tokens(array $destPaths): array
 {
     $tokens = [];
     foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath((string) $path);
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
         if ($resolved === '') {
             continue;
         }
@@ -1727,6 +1737,181 @@ function mail_post_send_dest_folder_tokens(array $destPaths): array
     }
 
     return $tokens;
+}
+
+/**
+ * Store a short-lived list preview so destination folders can render instantly
+ * after send while IMAP/index sync catches up.
+ *
+ * @param list<string> $destPaths
+ */
+function mail_store_post_send_previews(
+    string $fromEmail,
+    array $destPaths,
+    string $subject,
+    string $toHeader,
+    ?string $sentMessageId = null,
+    string $snippet = '',
+): void {
+    if ($destPaths === []) {
+        return;
+    }
+
+    $aliasService = new App\Services\AliasService();
+    $fromDisplay = $aliasService->getDisplayName($fromEmail);
+    $from = $fromDisplay !== '' && strcasecmp($fromDisplay, $fromEmail) !== 0
+        ? $fromDisplay . ' <' . $fromEmail . '>'
+        : $fromEmail;
+    $msgId = $sentMessageId ?? '';
+    $optimisticUid = $msgId !== ''
+        ? -(int) sprintf('%u', crc32($msgId))
+        : -time();
+
+    $folders = [];
+    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
+        if ($resolved === '') {
+            continue;
+        }
+        $folders[$resolved] = [
+            'uid' => $optimisticUid,
+            'from' => $from,
+            'to' => $toHeader,
+            'subject' => $subject !== '' ? $subject : '(no subject)',
+            'date' => date('r'),
+            'sort_date' => date('r'),
+            'seen' => false,
+            'flagged' => false,
+            'has_attachment' => false,
+            'size' => 0,
+            'snippet' => $snippet,
+            'optimistic' => true,
+            'message_id' => $msgId,
+        ];
+    }
+
+    if ($folders === []) {
+        return;
+    }
+
+    ensure_session_writable();
+    $_SESSION['_post_send_previews'] = [
+        'until' => time() + 120,
+        'folders' => $folders,
+    ];
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function mail_get_post_send_preview(string $folderPath): ?array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return null;
+    }
+
+    $pending = $_SESSION['_post_send_previews'] ?? null;
+    if (!is_array($pending) || time() > (int) ($pending['until'] ?? 0)) {
+        unset($_SESSION['_post_send_previews']);
+
+        return null;
+    }
+
+    foreach ((array) ($pending['folders'] ?? []) as $path => $preview) {
+        if (strcasecmp((string) $path, $folderPath) === 0 && is_array($preview)) {
+            return $preview;
+        }
+    }
+
+    return null;
+}
+
+function mail_clear_post_send_preview(string $folderPath): void
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '' || !isset($_SESSION['_post_send_previews'])) {
+        return;
+    }
+
+    ensure_session_writable();
+    $pending = $_SESSION['_post_send_previews'];
+    if (!is_array($pending)) {
+        unset($_SESSION['_post_send_previews']);
+
+        return;
+    }
+
+    $folders = (array) ($pending['folders'] ?? []);
+    foreach (array_keys($folders) as $path) {
+        if (strcasecmp((string) $path, $folderPath) === 0) {
+            unset($folders[$path]);
+            break;
+        }
+    }
+
+    if ($folders === []) {
+        unset($_SESSION['_post_send_previews']);
+    } else {
+        $_SESSION['_post_send_previews']['folders'] = $folders;
+    }
+}
+
+function mail_post_send_preview_pending(string $folderPath): bool
+{
+    return mail_get_post_send_preview($folderPath) !== null
+        || \App\Services\FolderCache::isPendingBadgePath($folderPath)
+        || \App\Services\MailCacheService::badgeAheadOfIndex($folderPath);
+}
+
+/**
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function mail_merge_post_send_preview_into_list(string $folderPath, array $list): array
+{
+    $preview = mail_get_post_send_preview($folderPath);
+    if ($preview === null || !isset($list['messages']) || !is_array($list['messages'])) {
+        return $list;
+    }
+
+    $previewId = normalize_message_id((string) ($preview['message_id'] ?? ''));
+    $previewFp = mail_list_message_fingerprint($preview);
+    foreach ($list['messages'] as $msg) {
+        if (!is_array($msg) || !empty($msg['optimistic'])) {
+            continue;
+        }
+        if ($previewId !== '' && normalize_message_id((string) ($msg['message_id'] ?? '')) === $previewId) {
+            mail_clear_post_send_preview($folderPath);
+
+            return $list;
+        }
+        if (mail_list_message_fingerprint($msg) === $previewFp) {
+            mail_clear_post_send_preview($folderPath);
+
+            return $list;
+        }
+    }
+
+    if (
+        !\App\Services\FolderCache::isPendingBadgePath($folderPath)
+        && !\App\Services\MailCacheService::badgeAheadOfIndex($folderPath)
+        && \App\Services\MailCacheService::hasFolderData($folderPath)
+    ) {
+        mail_clear_post_send_preview($folderPath);
+
+        return $list;
+    }
+
+    $messages = array_merge([$preview], $list['messages']);
+    $list['messages'] = mail_resort_list_by_message_date($messages);
+    $list['total'] = max((int) ($list['total'] ?? 0), count($list['messages']));
+    if (isset($list['per_page'])) {
+        $perPage = max(1, (int) $list['per_page']);
+        $list['total_pages'] = (int) max(1, (int) ceil((int) $list['total'] / $perPage));
+    }
+
+    return $list;
 }
 
 /**
@@ -1740,8 +1925,8 @@ function mail_resort_list_by_message_date(array $messages): array
     }
 
     usort($messages, static function (array $a, array $b): int {
-        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
-        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+        $aTs = strtotime((string) ($a['sort_date'] ?? $a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['sort_date'] ?? $b['date'] ?? '')) ?: 0;
         if ($aTs === $bTs) {
             return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
         }
@@ -2620,6 +2805,11 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
         $msg['uid'] = $bestUid;
         $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid);
     }
+
+    $displayUid = (int) ($msg['uid'] ?? 0);
+    if ($displayUid > 0 && mail_linked_user_id_for_inbox($folderPath) !== null) {
+        $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $displayUid);
+    }
 }
 
 /**
@@ -2736,6 +2926,244 @@ function default_mail_folder(): string
 
     // Employee without a linked folder cannot access INBOX — land on Sent instead.
     return resolve_system_folder(['sent'], 'INBOX.Sent');
+}
+
+/**
+ * Employee or client folder that receives filter-routed mail (not global Sent/Drafts).
+ */
+function is_routed_destination_folder(string $path): bool
+{
+    if ($path === '') {
+        return false;
+    }
+
+    try {
+        $resolved = \App\Services\FolderCache::resolvePath($path);
+        $row = App\Database::fetchOne(
+            "SELECT id FROM folders
+             WHERE active = 1 AND folder_type IN ('employee', 'client')
+             AND (imap_path = ? OR imap_path = ?)
+             LIMIT 1",
+            [$path, $resolved]
+        );
+
+        return $row !== null;
+    } catch (\Throwable) {
+        return false;
+    }
+}
+
+/**
+ * @param list<string> $destPaths
+ */
+function deliver_outbound_copies_to_folders(string $mime, array $destPaths, string $fromEmail): void
+{
+    if ($mime === '' || $destPaths === []) {
+        return;
+    }
+
+    $fromFolder = folder_for_alias_email($fromEmail);
+    $resolvedFrom = $fromFolder !== null
+        ? \App\Services\FolderCache::resolvePath($fromFolder)
+        : '';
+
+    $imap = new App\Services\ImapService();
+    if (!$imap->connect()) {
+        return;
+    }
+
+    foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
+        $destPath = employee_messages_imap_path((string) $destPath);
+        $destPath = \App\Services\FolderCache::resolvePath($destPath);
+        if ($destPath === '') {
+            continue;
+        }
+        if ($resolvedFrom !== '' && strcasecmp($destPath, $resolvedFrom) === 0) {
+            continue;
+        }
+
+        if (!$imap->appendMessage($destPath, $mime)) {
+            app_log('Outbound deliver to ' . $destPath . ' failed: ' . $imap->getLastError());
+            continue;
+        }
+
+        try {
+            \App\Services\MailCacheService::syncFolderHeaders($imap, $destPath, 15);
+        } catch (\Throwable $e) {
+            app_log('Outbound index sync for ' . $destPath . ' failed: ' . $e->getMessage());
+        }
+    }
+}
+
+/**
+ * After outbound send: run filter and clear inbox echoes when mail targets custom folders.
+ *
+ * @param list<string> $destPaths
+ */
+function reconcile_outbound_routing(array $destPaths, string $fromEmail, ?string $sentMessageId = null): void
+{
+    App\Services\FilterService::runBackground(true, 10);
+
+    $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+    if (!outbound_send_skips_inbox_badge($destPaths, $inbox)) {
+        return;
+    }
+
+    $imap = new App\Services\ImapService();
+    if (!$imap->connect()) {
+        return;
+    }
+
+    $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+
+    foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
+        $destPath = employee_messages_imap_path((string) $destPath);
+        $destPath = \App\Services\FolderCache::resolvePath($destPath);
+        if ($destPath !== '') {
+            $imap->removeDuplicateDeliveries($destPath, 8);
+            try {
+                App\Services\MailCacheService::syncFolderHeaders($imap, $destPath, 30);
+                App\Services\MailCacheService::reconcileBadgeFromIndex($destPath);
+            } catch (\Throwable $e) {
+                app_log('Post-outbound sync failed for ' . $destPath . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+    App\Services\FolderCache::invalidateUnread();
+}
+
+/**
+ * Employee mailbox root prefix (INBOX.Jean) even when messages live in INBOX.Jean.Inbox.
+ */
+function employee_mailbox_root_prefix(string $path): string
+{
+    $path = \App\Services\FolderCache::resolvePath($path);
+    if (preg_match('/^INBOX\.([^.]+)\.Inbox$/i', $path, $matches)) {
+        return 'INBOX.' . $matches[1];
+    }
+
+    return $path;
+}
+
+/**
+ * Selectable folder that stores employee mail on hosts where INBOX.Name becomes a
+ * non-appendable container once Sent/Drafts/etc. subfolders exist underneath.
+ *
+ * Hot path: DB/registry only — never opens IMAP or clears the folder cache.
+ */
+function employee_messages_imap_path(string $folderPath): string
+{
+    $resolved = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($resolved === '') {
+        return $folderPath;
+    }
+
+    if (preg_match('/^INBOX\.[^.]+\.Inbox$/i', $resolved)) {
+        return $resolved;
+    }
+
+    $root = employee_mailbox_root_prefix($resolved);
+    $messagesPath = $root . '.Inbox';
+
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT imap_path FROM folders
+             WHERE active = 1 AND folder_type = 'employee'
+             AND LOWER(imap_path) IN (LOWER(?), LOWER(?))
+             LIMIT 1",
+            [$resolved, $messagesPath]
+        );
+        if ($row !== null) {
+            return \App\Services\FolderCache::resolvePath($messagesPath);
+        }
+    } catch (\Throwable) {
+        return $resolved;
+    }
+
+    return $resolved;
+}
+
+/**
+ * Employee root container (INBOX.Name) when mail is stored in INBOX.Name.Inbox.
+ * imap_status on the container can hang on some hosts — never query it.
+ */
+function employee_is_mailbox_container(string $path): bool
+{
+    $path = \App\Services\FolderCache::resolvePath($path);
+    if (!preg_match('/^INBOX\.([^.]+)$/i', $path)) {
+        return false;
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT 1 FROM folders
+             WHERE active = 1 AND folder_type = 'employee' AND LOWER(imap_path) = LOWER(?)
+             LIMIT 1",
+            [$path . '.Inbox']
+        );
+
+        return $row !== null;
+    } catch (\Throwable) {
+        return false;
+    }
+}
+
+/**
+ * Create an employee messages folder on IMAP when missing.
+ */
+function ensure_employee_messages_folder_exists(string $messagesPath): string
+{
+    $messagesPath = \App\Services\FolderCache::resolvePath($messagesPath);
+    if ($messagesPath === '') {
+        return '';
+    }
+
+    $imap = new App\Services\ImapService();
+    if (!$imap->connect()) {
+        return $messagesPath;
+    }
+
+    $created = false;
+    if (!$imap->folderExistsOnServer($messagesPath)) {
+        $created = $imap->createFolder($messagesPath);
+        if (!$created) {
+            app_log('Could not create employee messages folder ' . $messagesPath . ': ' . $imap->getLastError());
+        }
+    }
+
+    if ($imap->folderExistsOnServer($messagesPath)) {
+        if ($created) {
+            (new App\Services\FolderCache())->clear();
+        }
+
+        return \App\Services\FolderCache::resolvePath($messagesPath);
+    }
+
+    return $messagesPath;
+}
+
+/**
+ * Point the employee folder registry row at the selectable messages mailbox.
+ */
+function migrate_employee_folder_to_messages_inbox(string $rootPath, int $folderId): void
+{
+    $rootPath = employee_mailbox_root_prefix($rootPath);
+    $messagesPath = ensure_employee_messages_folder_exists($rootPath . '.Inbox');
+
+    if ($messagesPath === '' || strcasecmp($messagesPath, $rootPath) === 0) {
+        return;
+    }
+
+    try {
+        App\Database::query(
+            'UPDATE folders SET imap_path = ? WHERE id = ? AND folder_type = ?',
+            [$messagesPath, $folderId, 'employee']
+        );
+        (new App\Services\FolderCache())->clear();
+    } catch (\Throwable $e) {
+        app_log('migrate_employee_folder_to_messages_inbox failed: ' . $e->getMessage());
+    }
 }
 
 /**
@@ -5462,6 +5890,11 @@ function mail_mark_local_thread_read(string $folderPath, int $uid, array $messag
         }
         \App\Services\MailCacheService::markReadForUser($folderPath, $rowUid);
         if (\App\Services\MailCacheService::readUpdatesImapState($folderPath)) {
+            \App\Services\MailCacheService::updateIndexSeen($folderPath, $rowUid, true);
+        } elseif (
+            \App\Services\MailCacheService::usesPerUserRead($folderPath)
+            && \App\Services\MailCacheService::viewerIsAdmin()
+        ) {
             \App\Services\MailCacheService::updateIndexSeen($folderPath, $rowUid, true);
         }
         $marked[] = $rowUid;

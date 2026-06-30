@@ -426,7 +426,7 @@ class ImapService
     public function moveMessage(string $fromPath, int $uid, string $toPath): bool
     {
         $fromPath = FolderCache::resolvePath($fromPath);
-        $toPath = FolderCache::resolvePath($toPath);
+        $toPath = employee_messages_imap_path(FolderCache::resolvePath($toPath));
 
         if (!$this->openFolder($fromPath)) {
             return false;
@@ -711,14 +711,34 @@ class ImapService
 
         $mailboxString = $this->getMailboxString();
         $counts = [];
+        $statusTargets = [];
 
         foreach ($paths as $path) {
+            if (employee_is_mailbox_container($path)) {
+                $counts[$path] = 0;
+                continue;
+            }
+
+            $statusPath = FolderCache::resolvePath(employee_messages_imap_path($path));
+            if ($statusPath === '') {
+                $counts[$path] = 0;
+                continue;
+            }
+
+            $statusTargets[$statusPath][$path] = true;
+        }
+
+        foreach ($statusTargets as $statusPath => $originalPaths) {
             $status = @imap_status(
                 $this->connection,
-                $mailboxString . $this->encodeFolderPath($path),
+                $mailboxString . $this->encodeFolderPath($statusPath),
                 SA_UNSEEN
             );
-            $counts[$path] = $status !== false ? (int) ($status->unseen ?? 0) : 0;
+            $unseen = $status !== false ? (int) ($status->unseen ?? 0) : 0;
+
+            foreach (array_keys($originalPaths) as $originalPath) {
+                $counts[$originalPath] = $unseen;
+            }
         }
 
         return $counts;
@@ -975,6 +995,7 @@ class ImapService
             return false;
         }
 
+        $folderPath = employee_messages_imap_path(FolderCache::resolvePath($folderPath));
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($folderPath);
         $rawMessage = $this->normalizeRawMessage($rawMessage);
 

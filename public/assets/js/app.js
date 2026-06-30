@@ -8,6 +8,42 @@
     var csrf = body.getAttribute('data-csrf') || '';
     var appBase = (body.getAttribute('data-base-url') || '').replace(/\/$/, '');
 
+    function setCsrfToken(token) {
+        if (!token) return;
+        csrf = token;
+        if (body) body.setAttribute('data-csrf', token);
+        patchCsrfFields(document);
+    }
+
+    function patchCsrfFields(root) {
+        var token = csrf || (body ? body.getAttribute('data-csrf') : '') || '';
+        if (!token) return;
+        var scope = root && root.querySelectorAll ? root : document;
+        scope.querySelectorAll('input[name="_csrf"]').forEach(function (el) {
+            el.value = token;
+        });
+    }
+
+    function captureCsrfFromResponse(res) {
+        if (!res || !res.headers) return;
+        var token = res.headers.get('X-CSRF-Token');
+        if (token) setCsrfToken(token);
+    }
+
+    function refreshCsrfToken() {
+        return fetch(apiUrl('session/csrf'), {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) {
+            captureCsrfFromResponse(res);
+            if (!res.ok) return csrf;
+            return res.json().catch(function () { return null; }).then(function (data) {
+                if (data && data.csrf) setCsrfToken(data.csrf);
+                return csrf;
+            });
+        }).catch(function () { return csrf; });
+    }
+
     function appBasePathname() {
         if (!appBase) return '';
         try {
@@ -69,7 +105,7 @@
     var composePanelSeq = 0;
     var composePanelRestoreUid = null;
     var composePrefetchCache = {};
-    var COMPOSE_CACHE_VERSION = 2;
+    var COMPOSE_CACHE_VERSION = 3;
     var composePrefetchInFlight = {};
     var composePrefetchTimer = null;
     var bodyWarmKeys = {};
@@ -93,6 +129,7 @@
     var paneMessageSyncInFlight = false;
     var afterSendBadgePollInFlight = false;
     var postSendFolderPollTimers = [];
+    var postSendRefreshFolders = [];
     var attachmentHintsTimer = null;
     var listSnippetsTimer = null;
     var panePrefetchInFlight = {};
@@ -742,19 +779,8 @@
                     dateEl.textContent = formatMailListDate(dateIso);
                     dateEl.setAttribute('datetime', dateIso);
                 }
-                el.setAttribute('data-date', dateIso);
             }
         });
-        if (dateIso) {
-            var list = document.querySelector('.mail-list tbody, .mail-card-list');
-            if (list) {
-                rowsForUid(uid).forEach(function (el) {
-                    if (el.parentNode === list) {
-                        list.insertBefore(el, list.firstChild);
-                    }
-                });
-            }
-        }
     }
 
     function formatMailListDate(iso) {
@@ -1012,10 +1038,16 @@
             if (data.list_loading) {
                 var syncCard = getListCard();
                 if (syncCard) syncCard.classList.add('is-syncing');
-                window.setTimeout(function () { scheduleMailPoll(true, false); }, 0);
+                window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
                 startPostSendFolderPolls([folderB64]);
             } else {
-                window.setTimeout(function () { scheduleMailPoll(true, false); }, 250);
+                var loadedCard = getListCard();
+                var needsForceSync = loadedCard
+                    && (loadedCard.getAttribute('data-cache-stale') === '1'
+                        || postSendRefreshFolders.indexOf(folderB64) >= 0);
+                window.setTimeout(function () {
+                    scheduleMailPoll(needsForceSync, needsForceSync);
+                }, needsForceSync ? 0 : 250);
             }
             announceLive('Folder loaded: ' + (data.title || 'Mail'));
         }).catch(function (err) {
@@ -1148,6 +1180,7 @@
             headers: { Accept: 'text/html' }
         })
             .then(function (res) {
+                captureCsrfFromResponse(res);
                 if (!res.ok) throw new Error('prefetch failed');
                 return res.text();
             })
@@ -1201,6 +1234,7 @@
     function applyComposePanelHtml(body, html) {
         if (!body || !html) return;
         body.innerHTML = html;
+        patchCsrfFields(body);
         initComposeForm(body);
         bindComposeLinks(body);
         var editor = body.querySelector('#body-editor');
@@ -1417,6 +1451,7 @@
         var inFlight = composePrefetchInFlight[cacheKey];
         var loadPromise = inFlight || fetch(apiUrl(path), { credentials: 'same-origin', headers: { Accept: 'text/html' } })
             .then(function (res) {
+                captureCsrfFromResponse(res);
                 if (!res.ok) throw new Error('Could not load compose form.');
                 return res.text();
             })
@@ -1516,6 +1551,7 @@
 
         fetch(apiUrl(path), { credentials: 'same-origin', headers: { Accept: 'text/html' } })
             .then(function (res) {
+                captureCsrfFromResponse(res);
                 if (!res.ok) throw new Error('Could not load compose form.');
                 return res.text();
             })
@@ -2009,28 +2045,48 @@
                 }
 
                 var fd = new FormData(form);
+                patchCsrfFields(form);
+                if (csrf) fd.set('_csrf', csrf);
                 var abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
                 var sendTimeoutMs = isDraft ? 90000 : 30000;
                 var sendTimeoutId = abortController
                     ? window.setTimeout(function () { abortController.abort(); }, sendTimeoutMs)
                     : null;
-                fetch(apiUrl(actionPath), {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: {
-                        'X-Requested-With': 'XMLHttpRequest',
-                        Accept: 'application/json'
-                    },
-                    body: fd,
-                    signal: abortController ? abortController.signal : undefined
-                }).then(function (res) {
-                    return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
-                        if (!res.ok || (data && data.ok === false)) {
-                            throw new Error((data && data.error) || 'Action failed.');
-                        }
-                        return data;
+
+                function submitComposeForm(retryOnCsrf) {
+                    return fetch(apiUrl(actionPath), {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest',
+                            Accept: 'application/json',
+                            'X-CSRF-Token': csrf || ''
+                        },
+                        body: fd,
+                        signal: abortController ? abortController.signal : undefined
+                    }).then(function (res) {
+                        return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
+                            if (
+                                res.status === 403
+                                && retryOnCsrf
+                                && data
+                                && String(data.error || '').toLowerCase().indexOf('security token') >= 0
+                            ) {
+                                return refreshCsrfToken().then(function () {
+                                    patchCsrfFields(form);
+                                    if (csrf) fd.set('_csrf', csrf);
+                                    return submitComposeForm(false);
+                                });
+                            }
+                            if (!res.ok || (data && data.ok === false)) {
+                                throw new Error((data && data.error) || 'Action failed.');
+                            }
+                            return data;
+                        });
                     });
-                }).then(function (data) {
+                }
+
+                submitComposeForm(true).then(function (data) {
                     showToast('success', (data && data.message) || (isDraft ? 'Draft saved.' : 'Email sent.'));
                     if (!isDraft && data && data.post_send_token) {
                         fetch(apiUrl('compose/post-send-deferred?token=' + encodeURIComponent(data.post_send_token)), {
@@ -2445,6 +2501,25 @@
         empty.hidden = hasRows;
         if (scroller) scroller.hidden = !hasRows;
         if (mobile) mobile.hidden = !hasRows;
+    }
+
+    function reorderMailListFromPoll(messages) {
+        if (!messages || !messages.length) return;
+
+        function reorderContainer(container, rowSelector) {
+            if (!container) return;
+            var rowMap = {};
+            container.querySelectorAll(rowSelector).forEach(function (row) {
+                rowMap[row.getAttribute('data-uid')] = row;
+            });
+            messages.forEach(function (msg) {
+                var row = rowMap[String(msg.uid)];
+                if (row) container.appendChild(row);
+            });
+        }
+
+        reorderContainer(document.getElementById('mail-list-body'), '.mail-row[data-uid]');
+        reorderContainer(document.getElementById('mail-list-mobile'), '.mail-card[data-uid]');
     }
 
     function removeRowByUid(uid) {
@@ -3263,17 +3338,21 @@
 
     function buildDesktopRow(msg, isNew) {
         var row = document.createElement('div');
-        row.className = 'mail-row mail-row--outlook' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (msg.is_draft ? ' mail-row--draft' : '') + (isNew ? ' mail-row-new' : '');
+        row.className = 'mail-row mail-row--outlook' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (msg.is_draft ? ' mail-row--draft' : '') + (msg.optimistic ? ' mail-row--optimistic' : '') + (isNew ? ' mail-row-new' : '');
         row.setAttribute('role', 'option');
         row.setAttribute('tabindex', '-1');
         row.setAttribute('aria-selected', 'false');
         row.setAttribute('data-uid', String(msg.uid));
         row.setAttribute('data-seen', msg.seen ? '1' : '0');
         row.setAttribute('data-flagged', msg.flagged ? '1' : '0');
-        row.setAttribute('data-href', msg.url);
-        if (msg.reply_url) row.setAttribute('data-reply-url', msg.reply_url);
-        if (msg.reply_all_url) row.setAttribute('data-reply-all-url', msg.reply_all_url);
-        if (msg.forward_url) row.setAttribute('data-forward-url', msg.forward_url);
+        if (msg.optimistic) {
+            row.setAttribute('data-optimistic', '1');
+        } else {
+            row.setAttribute('data-href', msg.url);
+            if (msg.reply_url) row.setAttribute('data-reply-url', msg.reply_url);
+            if (msg.reply_all_url) row.setAttribute('data-reply-all-url', msg.reply_all_url);
+            if (msg.forward_url) row.setAttribute('data-forward-url', msg.forward_url);
+        }
 
         var fromText = msg.from || 'Unknown';
         var snippet = msg.snippet || '';
@@ -3314,17 +3393,21 @@
 
     function buildMobileCard(msg, isNew) {
         var a = document.createElement('div');
-        a.className = 'mail-card' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (msg.is_draft ? ' mail-card--draft' : '') + (isNew ? ' mail-row-new' : '');
+        a.className = 'mail-card' + (msg.seen ? '' : ' mail-unread') + (msg.flagged ? ' mail-flagged' : '') + (msg.is_draft ? ' mail-card--draft' : '') + (msg.optimistic ? ' mail-row--optimistic' : '') + (isNew ? ' mail-row-new' : '');
         a.setAttribute('role', 'option');
         a.setAttribute('tabindex', '0');
         a.setAttribute('aria-selected', 'false');
         a.setAttribute('data-uid', String(msg.uid));
         a.setAttribute('data-seen', msg.seen ? '1' : '0');
         a.setAttribute('data-flagged', msg.flagged ? '1' : '0');
-        a.setAttribute('data-href', msg.url);
-        if (msg.reply_url) a.setAttribute('data-reply-url', msg.reply_url);
-        if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
-        if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
+        if (msg.optimistic) {
+            a.setAttribute('data-optimistic', '1');
+        } else {
+            a.setAttribute('data-href', msg.url);
+            if (msg.reply_url) a.setAttribute('data-reply-url', msg.reply_url);
+            if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
+            if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
+        }
         var fromText = msg.from || 'Unknown';
         var snippet = msg.snippet || '';
         var draftBadge = msg.is_draft
@@ -3645,6 +3728,10 @@
         window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
 
         var pollFolders = collectPostSendPollFolders(data, form);
+        if (data && Array.isArray(data.dest_folders) && data.dest_folders.length) {
+            postSendRefreshFolders = data.dest_folders.slice();
+            window.setTimeout(function () { postSendRefreshFolders = []; }, 15000);
+        }
         if (pollFolders.length) {
             var card = getListCard();
             if (card) card.classList.add('is-syncing');
@@ -3841,6 +3928,8 @@
                             });
                         }
                     });
+
+                    reorderMailListFromPoll(data.messages);
 
                     syncErrorShown = false;
                 })

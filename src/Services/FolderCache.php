@@ -339,7 +339,7 @@ class FolderCache
             $paths
         ), static fn (string $p): bool => $p !== '')));
 
-        if ($messageId === '' || count($paths) < 2) {
+        if ($messageId === '' || $paths === []) {
             return;
         }
 
@@ -355,6 +355,64 @@ class FolderCache
             'until' => time() + 300,
         ];
         $_SESSION[self::PENDING_FILTER_ROUTES_KEY] = $routes;
+        self::appendPendingFilterRouteFile($messageId, $paths);
+    }
+
+    /**
+     * @param list<string> $paths
+     */
+    private static function appendPendingFilterRouteFile(string $messageId, array $paths): void
+    {
+        $routes = self::readPendingFilterRoutesFile();
+        $routes[] = [
+            'message_id' => $messageId,
+            'paths' => $paths,
+            'until' => time() + 300,
+        ];
+        self::writePendingFilterRoutesFile($routes);
+    }
+
+    /**
+     * @return list<array{message_id: string, paths: list<string>, until: int}>
+     */
+    private static function readPendingFilterRoutesFile(): array
+    {
+        $path = self::pendingFilterRoutesFile();
+        if (!is_readable($path)) {
+            return [];
+        }
+
+        $decoded = json_decode((string) file_get_contents($path), true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @param list<array{message_id: string, paths: list<string>, until: int}> $routes
+     */
+    private static function writePendingFilterRoutesFile(array $routes): void
+    {
+        $now = time();
+        $routes = array_values(array_filter(
+            $routes,
+            static fn (array $entry): bool => $now <= (int) ($entry['until'] ?? 0)
+        ));
+
+        @file_put_contents(
+            self::pendingFilterRoutesFile(),
+            json_encode($routes) ?: '[]',
+            LOCK_EX
+        );
+    }
+
+    private static function pendingFilterRoutesFile(): string
+    {
+        $logPath = (string) (config('app')['log_path'] ?? '');
+        $dir = $logPath !== ''
+            ? dirname(dirname($logPath))
+            : dirname(__DIR__, 2) . '/storage';
+
+        return $dir . '/pending_filter_routes.json';
     }
 
     /**
@@ -367,43 +425,98 @@ class FolderCache
             return null;
         }
 
-        $pending = $_SESSION[self::PENDING_FILTER_ROUTES_KEY] ?? null;
-        if (!is_array($pending)) {
+        $claimed = self::claimPendingFilterRouteFromList(
+            is_array($_SESSION[self::PENDING_FILTER_ROUTES_KEY] ?? null)
+                ? $_SESSION[self::PENDING_FILTER_ROUTES_KEY]
+                : [],
+            $messageId
+        );
+
+        if ($claimed !== null) {
+            ensure_session_writable();
+            $remaining = self::removePendingFilterRouteFromList(
+                $_SESSION[self::PENDING_FILTER_ROUTES_KEY] ?? [],
+                $messageId
+            );
+            if ($remaining === []) {
+                unset($_SESSION[self::PENDING_FILTER_ROUTES_KEY]);
+            } else {
+                $_SESSION[self::PENDING_FILTER_ROUTES_KEY] = $remaining;
+            }
+
+            self::removePendingFilterRouteFromFile($messageId);
+
+            return $claimed;
+        }
+
+        $fileRoutes = self::readPendingFilterRoutesFile();
+        $claimed = self::claimPendingFilterRouteFromList($fileRoutes, $messageId);
+        if ($claimed === null) {
             return null;
         }
 
-        $now = time();
-        $remaining = [];
-        $claimed = null;
+        self::writePendingFilterRoutesFile(
+            self::removePendingFilterRouteFromList($fileRoutes, $messageId)
+        );
 
-        foreach ($pending as $entry) {
+        return $claimed;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $routes
+     * @return list<string>|null
+     */
+    private static function claimPendingFilterRouteFromList(array $routes, string $messageId): ?array
+    {
+        $now = time();
+
+        foreach ($routes as $entry) {
             if (!is_array($entry) || $now > (int) ($entry['until'] ?? 0)) {
                 continue;
             }
 
             if (normalize_message_id((string) ($entry['message_id'] ?? '')) === $messageId) {
-                $claimed = array_values(array_filter(
+                $paths = array_values(array_filter(
                     (array) ($entry['paths'] ?? []),
                     static fn (string $p): bool => $p !== ''
                 ));
+
+                return $paths !== [] ? $paths : null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $routes
+     * @return list<array<string, mixed>>
+     */
+    private static function removePendingFilterRouteFromList(array $routes, string $messageId): array
+    {
+        $remaining = [];
+        $now = time();
+
+        foreach ($routes as $entry) {
+            if (!is_array($entry) || $now > (int) ($entry['until'] ?? 0)) {
+                continue;
+            }
+
+            if (normalize_message_id((string) ($entry['message_id'] ?? '')) === $messageId) {
                 continue;
             }
 
             $remaining[] = $entry;
         }
 
-        if ($claimed === null || count($claimed) < 2) {
-            return null;
-        }
+        return $remaining;
+    }
 
-        ensure_session_writable();
-        if ($remaining === []) {
-            unset($_SESSION[self::PENDING_FILTER_ROUTES_KEY]);
-        } else {
-            $_SESSION[self::PENDING_FILTER_ROUTES_KEY] = $remaining;
-        }
-
-        return $claimed;
+    private static function removePendingFilterRouteFromFile(string $messageId): void
+    {
+        $routes = self::readPendingFilterRoutesFile();
+        $remaining = self::removePendingFilterRouteFromList($routes, $messageId);
+        self::writePendingFilterRoutesFile($remaining);
     }
 
     /**
@@ -420,7 +533,14 @@ class FolderCache
         foreach ($folderData['folders'] ?? [] as $folder) {
             $path = (string) ($folder['path'] ?? '');
             if ($path !== '' && folder_shows_unread_badge($path)) {
-                $result[$path] = (int) ($session[$path] ?? 0);
+                $sessionCount = (int) ($session[$path] ?? 0);
+                $messagesPath = employee_messages_imap_path($path);
+                if (strcasecmp($messagesPath, $path) !== 0 && isset($session[$messagesPath])) {
+                    $sessionCount = max($sessionCount, (int) $session[$messagesPath]);
+                }
+                $result[$path] = $sessionCount > 0
+                    ? $sessionCount
+                    : \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount);
             }
         }
 
@@ -429,7 +549,9 @@ class FolderCache
 
     private static function canonicalUnreadPath(string $path): string
     {
-        return self::resolvePath($path);
+        $resolved = self::resolvePath($path);
+
+        return self::resolvePath(employee_messages_imap_path($resolved));
     }
 
     /**
@@ -444,13 +566,16 @@ class FolderCache
         $normalized = [];
 
         foreach ($counts as $path => $count) {
-            $canonical = self::resolvePath((string) $path);
+            $canonical = self::resolvePath(employee_messages_imap_path((string) $path));
             if ($canonical === '' || !folder_shows_unread_badge($canonical)) {
                 continue;
             }
-            if ($path === $canonical || !array_key_exists($canonical, $normalized)) {
-                $normalized[$canonical] = (int) $count;
+            $count = (int) $count;
+            if (!array_key_exists($canonical, $normalized)) {
+                $normalized[$canonical] = $count;
+                continue;
             }
+            $normalized[$canonical] = max($normalized[$canonical], $count);
         }
 
         return $normalized;
@@ -718,6 +843,9 @@ class FolderCache
 
         foreach ($data['folders'] as $folder) {
             $path = $folder['path'];
+            if ($this->isEmployeeMailboxContainer($path, $employeeRoots)) {
+                continue;
+            }
             if ($this->isEmployeePersonalSubfolder($path, $employeeRoots)) {
                 continue;
             }
@@ -867,7 +995,7 @@ class FolderCache
         $systemLeaves = ['sent', 'drafts', 'draft', 'archive', 'junk', 'spam', 'trash'];
 
         foreach ($employeeRoots as $root) {
-            $prefix = rtrim($root, '.') . '.';
+            $prefix = rtrim(employee_mailbox_root_prefix($root), '.') . '.';
             if (
                 strlen($path) <= strlen($prefix)
                 || strncasecmp($path, $prefix, strlen($prefix)) !== 0
@@ -877,6 +1005,23 @@ class FolderCache
 
             $leaf = strtolower(substr($path, strlen($prefix)));
             if (in_array($leaf, $systemLeaves, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Hide INBOX.Name container mailboxes when employee mail lives in INBOX.Name.Inbox.
+     *
+     * @param list<string> $employeeRoots
+     */
+    private function isEmployeeMailboxContainer(string $path, array $employeeRoots): bool
+    {
+        foreach ($employeeRoots as $root) {
+            $container = employee_mailbox_root_prefix($root);
+            if (strcasecmp($path, $container) === 0 && strcasecmp($root, $container) !== 0) {
                 return true;
             }
         }

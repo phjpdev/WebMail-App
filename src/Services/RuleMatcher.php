@@ -112,6 +112,15 @@ class RuleMatcher
      * @param array<string, string|null> $headers
      * @return list<string>
      */
+    public static function recipientAddressesFromHeaders(array $headers): array
+    {
+        return self::recipientAddresses($headers);
+    }
+
+    /**
+     * @param array<string, string|null> $headers
+     * @return list<string>
+     */
     private static function recipientAddresses(array $headers): array
     {
         $shared = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));

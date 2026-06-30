@@ -70,9 +70,20 @@ class FilterService
                     };
 
                 if ($matched) {
-                    $paths[$path] = true;
+                    $paths[FolderCache::resolvePath(employee_messages_imap_path($path))] = true;
                     break;
                 }
+            }
+        }
+
+        foreach (array_keys($emails) as $email) {
+            $aliasFolder = folder_for_alias_email($email);
+            if ($aliasFolder === null) {
+                continue;
+            }
+            $resolved = FolderCache::resolvePath(employee_messages_imap_path($aliasFolder));
+            if ($resolved !== '') {
+                $paths[$resolved] = true;
             }
         }
 
@@ -334,10 +345,6 @@ class FilterService
         $result = ['processed' => 0, 'moved' => 0, 'errors' => [], 'duration_ms' => 0];
 
         $rules = $this->loadRules();
-        if ($rules === []) {
-            $result['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
-            return $result;
-        }
 
         $sourceFolder = config('app')['filter_source_folder'];
         $batchLimit = config('app')['filter_batch_limit'];
@@ -398,7 +405,7 @@ class FilterService
 
             if ($targetPaths !== []) {
                 $primaryRule = $targetPaths[0];
-                $primaryPath = (string) $primaryRule['imap_path'];
+                $primaryPath = employee_messages_imap_path((string) $primaryRule['imap_path']);
                 $extraPaths = array_slice($targetPaths, 1);
 
                 if ($extraPaths === []) {
@@ -419,7 +426,7 @@ class FilterService
                     } else {
                         $delivered = 0;
                         foreach ($targetPaths as $rule) {
-                            $destPath = (string) ($rule['imap_path'] ?? '');
+                            $destPath = employee_messages_imap_path((string) ($rule['imap_path'] ?? ''));
                             if ($destPath === '') {
                                 continue;
                             }
@@ -467,7 +474,7 @@ class FilterService
      */
     private function resolveTargetPaths(array $matchedRules, ?array $pendingPaths): array
     {
-        if ($pendingPaths !== null && count($pendingPaths) > 1) {
+        if ($pendingPaths !== null && $pendingPaths !== []) {
             $paths = [];
             foreach ($pendingPaths as $path) {
                 $path = (string) $path;
@@ -540,7 +547,83 @@ class FilterService
             return [$rule];
         }
 
+        foreach ($this->aliasRouteTargets($headers) as $path => $label) {
+            if (!isset($toMatches[$path])) {
+                $toMatches[$path] = ['imap_path' => $path, 'name' => $label];
+            }
+        }
+
+        if ($toMatches !== []) {
+            $this->dropSharedMailboxCatchAllWhenEmployeeAliasMatches($headers, $toMatches);
+        }
+
         return array_values($toMatches);
+    }
+
+    /**
+     * Route mail to employee folders by send-as alias even when filter rules are
+     * missing or the MTA rewrites the visible To line to the shared mailbox.
+     *
+     * @param array<string, string|null> $headers
+     * @return array<string, string> imap_path => rule label
+     */
+    private function aliasRouteTargets(array $headers): array
+    {
+        $from = strtolower(trim((string) ($headers['from'] ?? '')));
+        $targets = [];
+
+        foreach (RuleMatcher::recipientAddressesFromHeaders($headers) as $email) {
+            $email = strtolower(trim($email));
+            if ($email === '' || ($from !== '' && strcasecmp($email, $from) === 0)) {
+                continue;
+            }
+
+            $folder = folder_for_alias_email($email);
+            if ($folder === null) {
+                continue;
+            }
+
+            $path = employee_messages_imap_path(FolderCache::resolvePath($folder));
+            if ($path !== '') {
+                $targets[$path] = 'alias:' . $email;
+            }
+        }
+
+        return $targets;
+    }
+
+    /**
+     * Internal sends from the shared mailbox often echo into INBOX with To:
+     * support@… even when compose addressed an employee alias. Employee alias
+     * routing must win over the shared catch-all rule in that case.
+     *
+     * @param array<string, string|null> $headers
+     * @param array<string, array<string, mixed>> $toMatches
+     */
+    private function dropSharedMailboxCatchAllWhenEmployeeAliasMatches(
+        array $headers,
+        array &$toMatches,
+    ): void {
+        $aliasTargets = $this->aliasRouteTargets($headers);
+        if ($aliasTargets === []) {
+            return;
+        }
+
+        $shared = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
+        $from = strtolower(trim((string) ($headers['from'] ?? '')));
+        if ($shared === '' || $from !== $shared) {
+            return;
+        }
+
+        $supportFolder = folder_for_alias_email($shared);
+        if ($supportFolder === null) {
+            return;
+        }
+
+        $supportPath = FolderCache::resolvePath($supportFolder);
+        if ($supportPath !== '' && isset($toMatches[$supportPath])) {
+            unset($toMatches[$supportPath]);
+        }
     }
 
     /**

@@ -312,6 +312,9 @@ class ComposeController
                 'dest_paths' => $destPaths,
                 'sent_message_id' => $sentMessageId,
                 'from_email' => $fromEmail,
+                'subject' => $subject,
+                'to_header' => $toHeader,
+                'snippet' => mail_conversation_snippet($plainBody),
             ]);
 
             if (wants_json()) {
@@ -352,10 +355,30 @@ class ComposeController
                         }
                     }
                 }
-                json_response($jsonPayload);
+                json_response_then($jsonPayload, function () use ($destPaths, $sentMime, $fromEmail, $sentMessageId, $postSendToken): void {
+                    if ($destPaths !== [] && $sentMime !== '') {
+                        deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
+                        reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId);
+                    }
+                    dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
+                });
             }
 
             dispatch_async_request('compose/post-send-deferred', ['token' => $postSendToken]);
+
+            // Shared hosts often block loopback async requests — deliver synchronously
+            // so employee/client folders update even when the background job never runs.
+            if ($destPaths !== [] && $sentMime !== '') {
+                deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
+                reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId);
+            }
+
+            with_session_write(function () use ($destPaths, $sentMessageId): void {
+                if ($destPaths !== [] && $sentMessageId !== null && $sentMessageId !== '') {
+                    FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
+                }
+            });
+
             flash('success', 'Email sent successfully.');
             $redirectFolder = $contextFolder !== '' ? $contextFolder : $sentFolder;
             redirect('folder/' . encode_folder_path($redirectFolder));
@@ -402,6 +425,13 @@ class ComposeController
             (int) ($job['draft_uid'] ?? 0),
         );
         $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
+        if ($destPaths !== [] && $sentMime !== '') {
+            deliver_outbound_copies_to_folders(
+                $sentMime,
+                $destPaths,
+                (string) ($job['from_email'] ?? '')
+            );
+        }
         $this->syncMailboxAfterSend(
             (string) ($job['from_email'] ?? ''),
             (string) ($job['return_folder'] ?? ''),
@@ -446,7 +476,11 @@ class ComposeController
         $sentMessageId = isset($job['sent_message_id']) ? (string) $job['sent_message_id'] : null;
         $fromEmail = (string) ($job['from_email'] ?? '');
 
-        with_session_write(function () use ($destPaths, $sentMessageId, $fromEmail): void {
+        $subject = (string) ($job['subject'] ?? '');
+        $toHeader = (string) ($job['to_header'] ?? '');
+        $snippet = (string) ($job['snippet'] ?? '');
+
+        with_session_write(function () use ($destPaths, $sentMessageId, $fromEmail, $subject, $toHeader, $snippet): void {
             unset($_SESSION[self::DRAFT_KEY], $_SESSION[self::FORWARD_KEY]);
             $_SESSION['_post_send_at'] = time();
             unset($_SESSION['_after_send_filter_ran']);
@@ -454,13 +488,15 @@ class ComposeController
             $_SESSION['_post_send_from'] = $fromEmail;
             $_SESSION['_post_send_message_id'] = $sentMessageId;
 
+            mail_store_post_send_previews($fromEmail, $destPaths, $subject, $toHeader, $sentMessageId, $snippet);
+
             foreach ($destPaths as $path) {
                 mail_note_employee_correspondent((string) $path);
             }
 
             $pendingBadges = [];
             foreach ($destPaths as $path) {
-                $resolved = FolderCache::resolvePath((string) $path);
+                $resolved = FolderCache::resolvePath(employee_messages_imap_path((string) $path));
                 if ($resolved === '') {
                     continue;
                 }
@@ -473,7 +509,7 @@ class ComposeController
             if ($pendingBadges !== []) {
                 FolderCache::setPendingBadgePaths($pendingBadges);
             }
-            if (count($destPaths) > 1 && $sentMessageId !== null && $sentMessageId !== '') {
+            if ($destPaths !== [] && $sentMessageId !== null && $sentMessageId !== '') {
                 FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
             }
         });
@@ -893,7 +929,9 @@ class ComposeController
         ]);
 
         if ($this->isEmbedRequest()) {
+            send_csrf_header();
             view('mail/compose-embed', $viewData);
+
             return;
         }
 
@@ -1313,7 +1351,7 @@ class ComposeController
                 $badgePaths = FolderCache::getPendingBadgePaths();
             }
             foreach ($destPaths as $path) {
-                $resolved = FolderCache::resolvePath((string) $path);
+                $resolved = FolderCache::resolvePath(employee_messages_imap_path((string) $path));
                 if (
                     $resolved !== ''
                     && folder_shows_unread_badge($resolved)
@@ -1325,8 +1363,8 @@ class ComposeController
             $badgePaths = array_values(array_unique(array_filter($badgePaths)));
             if ($badgePaths !== []) {
                 foreach ($badgePaths as $path) {
-                    MailCacheService::reconcileBadgeFromIndex($path);
-                    if (MailCacheService::hasFolderData($path)) {
+                    $badgeCount = MailCacheService::reconcileBadgeFromIndex($path);
+                    if ($badgeCount > 0 && MailCacheService::hasFolderData($path)) {
                         FolderCache::clearPendingBadgePath($path);
                     }
                 }

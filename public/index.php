@@ -125,6 +125,7 @@ $router->get('/compose/post-send-deferred', fn () => $composeController->postSen
 
 $router->get('/status', fn () => $dashboardController->status());
 $router->get('/status/check', fn () => $dashboardController->statusCheck());
+$router->get('/session/csrf', fn () => $dashboardController->sessionCsrf());
 $router->post('/test-email', fn () => $dashboardController->sendTestEmail());
 
 $router->get('/admin', fn () => $adminController->dashboard());

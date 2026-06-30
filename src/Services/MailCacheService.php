@@ -112,7 +112,7 @@ class MailCacheService
         $folderPath = self::indexFolderPath($folderPath);
         $linkedId = self::linkedUserId($folderPath);
         if ($linkedId === null) {
-            return self::countUnseenInIndex($folderPath);
+            return self::countRawUnseenInIndex($folderPath);
         }
 
         $viewerId = (int) (Auth::user()['id'] ?? 0);
@@ -120,7 +120,24 @@ class MailCacheService
             return 0;
         }
 
-        return self::countUnseenForUser($viewerId, $folderPath);
+        $truth = self::countUnseenForUser($viewerId, $folderPath);
+
+        return $truth;
+    }
+
+    public static function countRawUnseenInIndex(string $folderPath): int
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '') {
+            return 0;
+        }
+
+        $row = Database::fetchOne(
+            'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 0',
+            [$folderPath]
+        );
+
+        return (int) ($row['c'] ?? 0);
     }
 
     /**
@@ -411,6 +428,17 @@ class MailCacheService
         $folderPath = self::indexFolderPath($folderPath);
 
         if (self::usesPerUserRead($folderPath) && $userId > 0) {
+            $linkedId = self::linkedUserId($folderPath);
+            if ($linkedId !== null && $userId !== $linkedId && self::viewerIsAdmin()) {
+                if (self::userHasRead($userId, $folderPath, $uid)) {
+                    return true;
+                }
+
+                $indexSeen = self::indexSeenState($folderPath, $uid);
+
+                return $indexSeen === null ? false : $indexSeen;
+            }
+
             return self::userHasRead($userId, $folderPath, $uid);
         }
 
@@ -1337,6 +1365,25 @@ class MailCacheService
         return $row !== null ? (bool) $row['seen'] : null;
     }
 
+    public static function messageInIndex(string $folderPath, int $uid): bool
+    {
+        if ($uid <= 0) {
+            return false;
+        }
+
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '') {
+            return false;
+        }
+
+        $row = Database::fetchOne(
+            'SELECT 1 FROM mail_index WHERE folder_path = ? AND imap_uid = ? LIMIT 1',
+            [$folderPath, $uid]
+        );
+
+        return $row !== null;
+    }
+
     public static function updateIndexFlagged(string $folderPath, int $uid, bool $flagged): void
     {
         Database::query(
@@ -1969,9 +2016,15 @@ class MailCacheService
         $uid = (int) ($row['imap_uid'] ?? 0);
 
         if (self::usesPerUserRead($folderPath)) {
-            $seen = $readMap !== null
-                ? isset($readMap[$uid])
-                : self::effectiveSeen($folderPath, $uid, $viewerId);
+            $viewerId = $viewerId ?? (int) (Auth::user()['id'] ?? 0);
+            $linkedId = self::linkedUserId($folderPath);
+            if ($linkedId !== null && $viewerId !== $linkedId && self::viewerIsAdmin()) {
+                $seen = ($readMap !== null && isset($readMap[$uid])) || (bool) ($row['seen'] ?? false);
+            } else {
+                $seen = $readMap !== null
+                    ? isset($readMap[$uid])
+                    : self::effectiveSeen($folderPath, $uid, $viewerId);
+            }
         } else {
             $seen = (bool) ($row['seen'] ?? false);
         }
@@ -1985,6 +2038,7 @@ class MailCacheService
             'snippet' => $snippet,
             'subject' => (string) ($row['subject'] ?? '(no subject)'),
             'date' => $row['msg_date'] ?? '',
+            'sort_date' => $row['msg_date'] ?? '',
             'seen' => $seen,
             'flagged' => (bool) ($row['flagged'] ?? false),
             'has_attachment' => (bool) ($row['has_attachment'] ?? false),

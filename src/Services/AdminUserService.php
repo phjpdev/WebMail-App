@@ -193,7 +193,14 @@ class AdminUserService
             $created = true;
         }
 
+        $this->migrateEmployeeFolderToMessagesInbox($imapPath, $folderId);
+
         return $created;
+    }
+
+    private function migrateEmployeeFolderToMessagesInbox(string $rootPath, int $folderId): void
+    {
+        migrate_employee_folder_to_messages_inbox($rootPath, $folderId);
     }
 
     /**

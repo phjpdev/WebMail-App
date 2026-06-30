@@ -87,4 +87,11 @@ class DashboardController
 
         redirect('status');
     }
+
+    public function sessionCsrf(): void
+    {
+        requireAuth();
+        send_csrf_header();
+        json_response(['csrf' => csrf_token()]);
+    }
 }

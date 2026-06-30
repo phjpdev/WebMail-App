@@ -83,7 +83,8 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     data-folder-plain="<?= e($folderPath) ?>"
     data-folder-url="<?= e(folder_url($folderPath)) ?>"
     data-folder-kind="<?= e(folder_icon_type($folderPath)) ?>"
-    data-total-messages="<?= (int) $totalMessages ?>">
+    data-total-messages="<?= (int) $totalMessages ?>"
+    data-cache-stale="<?= !empty($listCacheStale) ? '1' : '0' ?>">
 
     <?php require base_path('views/partials/mail-toolbar.php'); ?>
 
@@ -113,15 +114,19 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
 
     <div class="mail-list-mobile" id="mail-list-mobile"<?= (empty($messages) || !empty($listAwaitingSync)) ? ' hidden' : '' ?> role="listbox" aria-label="Messages">
         <?php foreach ($messages as $msg): ?>
-            <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= is_draft_folder($folderPath) ? ' mail-card--draft' : '' ?>"
+            <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= is_draft_folder($folderPath) ? ' mail-card--draft' : '' ?><?= !empty($msg['optimistic']) ? ' mail-row--optimistic' : '' ?>"
                role="option" tabindex="0" aria-selected="false"
                data-uid="<?= (int) $msg['uid'] ?>"
                data-seen="<?= $msg['seen'] ? '1' : '0' ?>"
                data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
+               <?php if (empty($msg['optimistic'])): ?>
                data-href="<?= e(message_url($folderPath, (int) $msg['uid'])) ?>"
                data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
                data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
-               data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>">
+               data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . (int) $msg['uid'])) ?>"
+               <?php else: ?>
+               data-optimistic="1"
+               <?php endif; ?>>
                 <?php
                 $rowDisplay = mail_list_row_display($msg, $folderPath);
                 $fromDisplay = $rowDisplay['list_from'];

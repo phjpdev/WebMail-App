@@ -8,17 +8,21 @@ $fromDisplay = $rowDisplay['list_from'];
 $snippet = $rowDisplay['snippet'];
 $uid = (int) $msg['uid'];
 ?>
-<div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= $rowDisplay['is_draft'] ? ' mail-row--draft' : '' ?>"
+<div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= $rowDisplay['is_draft'] ? ' mail-row--draft' : '' ?><?= !empty($msg['optimistic']) ? ' mail-row--optimistic' : '' ?>"
     role="option"
     tabindex="-1"
     aria-selected="false"
     data-uid="<?= $uid ?>"
     data-seen="<?= !empty($msg['seen']) ? '1' : '0' ?>"
     data-flagged="<?= !empty($msg['flagged']) ? '1' : '0' ?>"
+    <?php if (!empty($msg['optimistic'])): ?>
+    data-optimistic="1"
+    <?php else: ?>
     data-href="<?= e(message_url($folderPath, $uid)) ?>"
     data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>"
     data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>"
-    data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>">
+    data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>"
+    <?php endif; ?>>
     <div class="mail-row-check" onclick="event.stopPropagation()">
         <input type="checkbox" class="mail-check" value="<?= $uid ?>" aria-label="Select message">
     </div>
