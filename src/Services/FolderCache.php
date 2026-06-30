@@ -874,6 +874,7 @@ class FolderCache
 
     /**
      * Employee folders with no active linked user (left behind after account delete).
+     * Alias-backed mailboxes (e.g. Support) are excluded — they intentionally have no user.
      *
      * @return list<string>
      */
@@ -888,7 +889,11 @@ class FolderCache
                  LEFT JOIN users u ON u.id = f.linked_user_id AND u.active = 1
                  WHERE f.folder_type = 'employee'
                    AND f.active = 1
-                   AND (f.linked_user_id IS NULL OR u.id IS NULL)"
+                   AND (f.linked_user_id IS NULL OR u.id IS NULL)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM aliases a
+                       WHERE a.default_folder_id = f.id AND a.active = 1
+                   )"
             )->fetchAll();
 
             foreach ($rows as $row) {
