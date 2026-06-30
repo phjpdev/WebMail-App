@@ -512,9 +512,13 @@ a:hover {
 
 .sidebar-footer {
     flex-shrink: 0;
-    padding: 0.5rem 0.25rem 0.75rem;
+    padding: 0.35rem 0.25rem 0.65rem;
     margin-top: auto;
-    border-top: 1px solid var(--color-border);
+    border-top: 1px solid var(--color-border-subtle);
+}
+
+.sidebar-footer.sidebar-folder-tree {
+    padding-top: 0.4rem;
 }
 
 .sidebar-label {
@@ -6498,10 +6502,13 @@ body:has(.mail-workspace) {
     }
 
     .sidebar-primary-folders .sidebar-link,
-    .sidebar-group-items .sidebar-link,
-    .sidebar-footer .sidebar-link {
+    .sidebar-group-items .sidebar-link {
         min-height: 2.125rem;
         padding: 0.3rem 0.6rem;
+    }
+
+    .sidebar-footer .sidebar-tree-row {
+        min-height: 1.75rem;
     }
 
     .sidebar .folder-icon {

@@ -145,17 +145,23 @@ if ($grouped['other'] !== []) {
     </div>
 
     <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
-        <div class="sidebar-footer">
-            <a class="sidebar-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
-               href="<?= e(url('admin')) ?>">
-                <span class="folder-icon folder-icon-admin" aria-hidden="true"></span>
-                <span class="sidebar-link-text">Admin panel</span>
-            </a>
-            <a class="sidebar-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
-               href="<?= e(url('status')) ?>">
-                <span class="folder-icon folder-icon-connection" aria-hidden="true"></span>
-                <span class="sidebar-link-text">Connection status</span>
-            </a>
+        <div class="sidebar-footer sidebar-folder-tree">
+            <div class="sidebar-tree-row" style="--tree-depth: 0;">
+                <span class="sidebar-tree-toggle-spacer" aria-hidden="true"></span>
+                <a class="sidebar-link sidebar-tree-link<?= ($activeFolder ?? '') === '__admin__' ? ' active' : '' ?>"
+                   href="<?= e(url('admin')) ?>">
+                    <span class="folder-icon folder-icon-admin" aria-hidden="true"></span>
+                    <span class="sidebar-link-text">Admin panel</span>
+                </a>
+            </div>
+            <div class="sidebar-tree-row" style="--tree-depth: 0;">
+                <span class="sidebar-tree-toggle-spacer" aria-hidden="true"></span>
+                <a class="sidebar-link sidebar-tree-link<?= ($activeFolder ?? '') === '__status__' ? ' active' : '' ?>"
+                   href="<?= e(url('status')) ?>">
+                    <span class="folder-icon folder-icon-connection" aria-hidden="true"></span>
+                    <span class="sidebar-link-text">Connection status</span>
+                </a>
+            </div>
         </div>
     <?php endif; ?>
 </nav>
