@@ -123,6 +123,8 @@ class AdminUserService
         string $username
     ): bool {
         $created = false;
+        $folderService = new AdminFolderService();
+        $needsFolderCacheClear = false;
 
         $folderName = ($folderName !== null && trim($folderName) !== '') ? trim($folderName) : $username;
         $safeFolder = preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
@@ -139,13 +141,14 @@ class AdminUserService
         if ($existingFolder !== null) {
             $folderId = (int) $existingFolder['id'];
         } else {
-            $folderId = (new AdminFolderService())->insertFolder([
+            $folderId = $folderService->insertFolder([
                 'imap_path' => $imapPath,
                 'display_name' => $folderName,
                 'folder_type' => 'employee',
                 'linked_user_id' => $userId,
-            ]);
+            ], false);
             $created = true;
+            $needsFolderCacheClear = true;
         }
 
         $existingAlias = Database::fetchOne(
@@ -189,11 +192,15 @@ class AdminUserService
 
         FilterService::clearProcessed((string) (config('app')['filter_source_folder'] ?? 'INBOX'));
 
-        if ($this->provisionEmployeeSubfolders($imapPath, $userId)) {
+        if ($this->provisionEmployeeSubfolders($imapPath, $userId, $folderService)) {
             $created = true;
+            $needsFolderCacheClear = true;
         }
 
         $this->migrateEmployeeFolderToMessagesInbox($imapPath, $folderId);
+        if ($needsFolderCacheClear) {
+            (new FolderCache())->clear();
+        }
 
         return $created;
     }
@@ -208,10 +215,8 @@ class AdminUserService
      *
      * @return bool true if anything new was created
      */
-    private function provisionEmployeeSubfolders(string $imapPath, int $userId): bool
+    private function provisionEmployeeSubfolders(string $imapPath, int $userId, AdminFolderService $folderService): bool
     {
-        $created = false;
-        $folderService = new AdminFolderService();
         $subfolders = [
             ['suffix' => 'Sent', 'display_name' => 'Sent', 'folder_type' => 'sent'],
             ['suffix' => 'Drafts', 'display_name' => 'Drafts', 'folder_type' => 'other'],
@@ -220,30 +225,48 @@ class AdminUserService
             ['suffix' => 'Trash', 'display_name' => 'Trash', 'folder_type' => 'trash'],
         ];
 
+        $paths = [];
+        foreach ($subfolders as $subfolder) {
+            $paths[] = $imapPath . '.' . $subfolder['suffix'];
+        }
+
+        $existingPaths = [];
+        if ($paths !== []) {
+            $placeholders = implode(',', array_fill(0, count($paths), '?'));
+            $rows = Database::query(
+                'SELECT imap_path FROM folders WHERE imap_path IN (' . $placeholders . ')',
+                $paths
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $path = trim((string) ($row['imap_path'] ?? ''));
+                if ($path !== '') {
+                    $existingPaths[strtoupper($path)] = true;
+                }
+            }
+        }
+
+        $toInsert = [];
         foreach ($subfolders as $subfolder) {
             $subPath = $imapPath . '.' . $subfolder['suffix'];
-            $existing = Database::fetchOne(
-                'SELECT id FROM folders WHERE imap_path = ? LIMIT 1',
-                [$subPath]
-            );
-            if ($existing !== null) {
+            if (isset($existingPaths[strtoupper($subPath)])) {
                 continue;
             }
 
-            $folderService->insertFolder([
+            $toInsert[] = [
                 'imap_path' => $subPath,
                 'display_name' => $subfolder['display_name'],
                 'folder_type' => $subfolder['folder_type'],
                 'linked_user_id' => $userId,
-            ]);
-            $created = true;
+            ];
         }
 
-        if ($created) {
-            (new FolderCache())->clear();
+        if ($toInsert === []) {
+            return false;
         }
 
-        return $created;
+        $folderService->insertFolders($toInsert, false);
+
+        return true;
     }
 
     /**

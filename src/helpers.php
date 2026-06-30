@@ -4500,10 +4500,6 @@ function ensure_employee_messages_folder_exists(string $messagesPath): string
     }
 
     if ($imap->folderExistsOnServer($messagesPath)) {
-        if ($created) {
-            (new App\Services\FolderCache())->clear();
-        }
-
         return \App\Services\FolderCache::resolvePath($messagesPath);
     }
 
@@ -4527,7 +4523,6 @@ function migrate_employee_folder_to_messages_inbox(string $rootPath, int $folder
             'UPDATE folders SET imap_path = ? WHERE id = ? AND folder_type = ?',
             [$messagesPath, $folderId, 'employee']
         );
-        (new App\Services\FolderCache())->clear();
     } catch (\Throwable $e) {
         app_log('migrate_employee_folder_to_messages_inbox failed: ' . $e->getMessage());
     }

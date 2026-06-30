@@ -115,31 +115,56 @@ class AdminFolderService
     }
 
     /**
-     * @param array{imap_path: string, display_name: string, folder_type: string, linked_user_id?: int|null} $data
+     * @param list<array{imap_path: string, display_name: string, folder_type: string, linked_user_id?: int|null}> $folders
+     * @return list<int>
      */
-    public function insertFolder(array $data): int
+    public function insertFolders(array $folders, bool $clearFolderCache = true): array
     {
+        if ($folders === []) {
+            return [];
+        }
+
         $imap = new ImapService();
         if (!$imap->connect()) {
             throw new \RuntimeException('Could not connect to the mail server to create the folder.');
         }
-        if (!$imap->ensureFolderPath($data['imap_path'])) {
-            throw new \RuntimeException('Could not create the folder on the mail server: ' . $imap->getLastError());
+
+        $ids = [];
+        foreach ($folders as $data) {
+            if (!$imap->ensureFolderPath($data['imap_path'])) {
+                throw new \RuntimeException('Could not create the folder on the mail server: ' . $imap->getLastError());
+            }
+
+            Database::query(
+                'INSERT INTO folders (imap_path, display_name, folder_type, linked_user_id, active) VALUES (?, ?, ?, ?, 1)',
+                [
+                    $data['imap_path'],
+                    $data['display_name'],
+                    $data['folder_type'],
+                    $data['linked_user_id'] ?? null,
+                ]
+            );
+            $ids[] = (int) Database::connection()->lastInsertId();
         }
 
-        Database::query(
-            'INSERT INTO folders (imap_path, display_name, folder_type, linked_user_id, active) VALUES (?, ?, ?, ?, 1)',
-            [
-                $data['imap_path'],
-                $data['display_name'],
-                $data['folder_type'],
-                $data['linked_user_id'] ?? null,
-            ]
-        );
+        if ($clearFolderCache) {
+            (new FolderCache())->clear();
+        }
 
-        (new FolderCache())->clear();
+        return $ids;
+    }
 
-        return (int) Database::connection()->lastInsertId();
+    /**
+     * @param array{imap_path: string, display_name: string, folder_type: string, linked_user_id?: int|null} $data
+     */
+    public function insertFolder(array $data, bool $clearFolderCache = true): int
+    {
+        $ids = $this->insertFolders([$data], $clearFolderCache);
+        if ($ids === []) {
+            throw new \RuntimeException('Could not create the folder.');
+        }
+
+        return $ids[0];
     }
 
     /**
@@ -390,9 +415,11 @@ class AdminFolderService
             static fn (string $a, string $b): int => substr_count($b, '.') <=> substr_count($a, '.')
         );
 
+        $serverPaths = $imap->serverFolderLookup();
+
         $failures = [];
         foreach ($deleteOrder as $path) {
-            if (!$imap->folderExistsOnServer($path)) {
+            if (!isset($serverPaths[strtoupper($path)])) {
                 continue;
             }
             if (!$imap->deleteFolder($path)) {
@@ -422,10 +449,15 @@ class AdminFolderService
             'SELECT id FROM folders WHERE imap_path = ? OR imap_path LIKE ?',
             [$root, $prefix . '%']
         )->fetchAll();
-        foreach ($folderIds as $row) {
+        $folderIdList = array_values(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['id'] ?? 0),
+            $folderIds
+        ), static fn (int $id): bool => $id > 0));
+        if ($folderIdList !== []) {
+            $placeholders = implode(',', array_fill(0, count($folderIdList), '?'));
             Database::query(
-                'UPDATE aliases SET default_folder_id = NULL WHERE default_folder_id = ?',
-                [(int) ($row['id'] ?? 0)]
+                'UPDATE aliases SET default_folder_id = NULL WHERE default_folder_id IN (' . $placeholders . ')',
+                $folderIdList
             );
         }
 

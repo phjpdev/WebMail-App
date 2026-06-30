@@ -16,6 +16,12 @@ class ImapService
     private static $sharedConnection = null;
     private static bool $shutdownRegistered = false;
 
+    /** @var list<array{path: string, name: string, delimiter: string}>|null */
+    private static ?array $folderListCache = null;
+
+    /** @var array<string, true>|null uppercase path => true */
+    private static ?array $folderPathLookup = null;
+
     private string $lastError = '';
 
     public function connect(): bool
@@ -113,6 +119,13 @@ class ImapService
             @imap_close(self::$sharedConnection);
             self::$sharedConnection = null;
         }
+        self::invalidateFolderListCache();
+    }
+
+    public static function invalidateFolderListCache(): void
+    {
+        self::$folderListCache = null;
+        self::$folderPathLookup = null;
     }
 
     public function getLastError(): string
@@ -123,8 +136,12 @@ class ImapService
     /**
      * @return list<array{path: string, name: string, delimiter: string}>
      */
-    public function listFolders(): array
+    public function listFolders(bool $forceRefresh = false): array
     {
+        if (!$forceRefresh && self::$folderListCache !== null) {
+            return self::$folderListCache;
+        }
+
         if (!$this->ensureConnected()) {
             return [];
         }
@@ -151,7 +168,32 @@ class ImapService
 
         usort($result, fn ($a, $b) => strcasecmp($a['name'], $b['name']));
 
+        self::$folderListCache = $result;
+        self::$folderPathLookup = null;
+
         return $result;
+    }
+
+    /**
+     * @return array<string, true> uppercase path keys
+     */
+    public function serverFolderLookup(): array
+    {
+        if (self::$folderPathLookup !== null) {
+            return self::$folderPathLookup;
+        }
+
+        $lookup = [];
+        foreach ($this->listFolders() as $folder) {
+            $serverPath = (string) ($folder['path'] ?? '');
+            if ($serverPath !== '') {
+                $lookup[strtoupper($serverPath)] = true;
+            }
+        }
+
+        self::$folderPathLookup = $lookup;
+
+        return $lookup;
     }
 
     public function openFolder(string $path): bool
@@ -1574,6 +1616,7 @@ class ImapService
             // Subscribe so the folder is listed by clients that honor LSUB
             // (e.g. Apple Mail) — otherwise a created folder appears "missing".
             @imap_subscribe($this->connection, $mailbox);
+            self::invalidateFolderListCache();
 
             return true;
         }
@@ -1656,6 +1699,7 @@ class ImapService
             // Keep the renamed folder subscribed so it stays listed in clients.
             @imap_unsubscribe($this->connection, $oldMailbox);
             @imap_subscribe($this->connection, $newMailbox);
+            self::invalidateFolderListCache();
 
             return true;
         }
@@ -1682,19 +1726,23 @@ class ImapService
             return true;
         }
 
-        if (!$this->emptyFolder($path)) {
+        if ($this->getMessageCount($path) > 0 && !$this->emptyFolder($path)) {
             app_log('IMAP folder empty failed for ' . $path . ': ' . $this->getLastError());
         }
 
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($path);
 
         if (@imap_deletemailbox($this->connection, $mailbox)) {
+            self::invalidateFolderListCache();
+
             return true;
         }
 
         $errors = imap_errors() ?: [];
         $this->lastError = 'Failed to delete folder: ' . implode('; ', $errors);
         if (self::isMissingMailboxError($this->lastError)) {
+            self::invalidateFolderListCache();
+
             return true;
         }
         app_log($this->lastError);
@@ -1732,16 +1780,14 @@ class ImapService
 
     public function folderExistsOnServer(string $path): bool
     {
-        $resolved = FolderCache::resolvePath($path);
-
-        foreach ($this->listFolders() as $folder) {
-            $serverPath = (string) ($folder['path'] ?? '');
-            if ($serverPath === $resolved || strcasecmp($serverPath, $path) === 0) {
-                return true;
-            }
+        if (!$this->ensureConnected()) {
+            return false;
         }
 
-        return false;
+        $lookup = $this->serverFolderLookup();
+        $resolved = FolderCache::resolvePath($path);
+
+        return isset($lookup[strtoupper($resolved)]) || isset($lookup[strtoupper($path)]);
     }
 
     /**

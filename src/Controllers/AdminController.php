@@ -158,14 +158,10 @@ class AdminController
 
         if (($data['role'] ?? 'employee') === 'employee') {
             FilterService::reprocess();
-            $filter = FilterService::runBackground(true);
-            $moved = (int) ($filter['moved'] ?? 0);
             $this->audit('user_create', 'Created user ' . $data['username']);
             flash(
                 'success',
-                $moved > 0
-                    ? sprintf('User created with folder and routing rule. %d existing message(s) moved from Inbox.', $moved)
-                    : 'User created with folder, alias, and filter rule. New mail to their address will route to their folder.'
+                'User created with folder, alias, and filter rule. Existing Inbox mail will route on the next mailbox sync.'
             );
         } else {
             $this->audit('user_create', 'Created user ' . $data['username']);
