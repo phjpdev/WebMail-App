@@ -2884,6 +2884,11 @@
         return '3' + folder.name.toLowerCase();
     }
 
+    function isDraftFolderPath(path) {
+        if (!path) return false;
+        return String(path).toLowerCase().indexOf('draft') >= 0;
+    }
+
     function isSpamFolderPath(path) {
         if (!path) return false;
         var lower = String(path).toLowerCase();
@@ -2898,7 +2903,7 @@
             var path = link.getAttribute('data-folder-path');
             if (!path || path === current) return;
             var lower = path.toLowerCase();
-            if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0 || lower.indexOf('trash') >= 0) return;
+            if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0 || lower.indexOf('trash') >= 0 || lower.indexOf('draft') >= 0) return;
             var textEl = link.querySelector('.sidebar-link-text');
             out.push({
                 path: path,
@@ -2918,7 +2923,7 @@
         if (!sel) return collectMoveFoldersFromSidebar();
         var out = [];
         sel.querySelectorAll('option').forEach(function (opt) {
-            if (!opt.value) return;
+            if (!opt.value || isDraftFolderPath(opt.value)) return;
             out.push({
                 path: opt.value,
                 name: opt.textContent.trim(),
@@ -2934,7 +2939,7 @@
         if (!sel) return collectToolbarMoveFolders();
         var out = [];
         sel.querySelectorAll('option').forEach(function (opt) {
-            if (!opt.value) return;
+            if (!opt.value || isDraftFolderPath(opt.value)) return;
             out.push({
                 path: opt.value,
                 name: opt.textContent.trim(),

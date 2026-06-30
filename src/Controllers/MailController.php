@@ -1153,7 +1153,7 @@ class MailController
             'replyFrom' => $replyFrom,
             'moveTargets' => array_values(array_filter(
                 $folders,
-                fn ($f) => $f['path'] !== $folderPath
+                static fn ($f) => $f['path'] !== $folderPath && !is_draft_folder($f['path'])
             )),
             'pollInterval' => (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']),
             'wasUnread' => $wasUnread,
@@ -1477,6 +1477,12 @@ class MailController
         $resolvedFolderPath = FolderCache::resolvePath($folderPath);
         $indexFolderPath = MailCacheService::indexFolderPath($resolvedFolderPath);
         $targetPath = mail_resolve_move_target_path($targetPath);
+        if ($targetPath === '' || is_draft_folder($targetPath)) {
+            if (wants_json()) {
+                json_response(['ok' => false, 'error' => 'Messages cannot be moved to Drafts.'], 422);
+            }
+            $this->actionError('Messages cannot be moved to Drafts.', $redirect);
+        }
         $targetIndexPath = MailCacheService::indexFolderPath($targetPath);
         $siblingMode = $this->siblingCopyModeForTarget($targetPath);
         $filterInbox = FolderCache::resolvePath((string) (config('app')['filter_source_folder'] ?? 'INBOX'));

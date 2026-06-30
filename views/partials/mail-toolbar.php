@@ -56,7 +56,7 @@
                     <select id="cmd-move-target" class="mail-cmd-move-select" disabled aria-label="Move to folder" tabindex="-1">
                         <option value="">Move to…</option>
                         <?php foreach ($folders as $f): ?>
-                            <?php if ($f['path'] !== $folderPath): ?>
+                            <?php if ($f['path'] !== $folderPath && !is_draft_folder($f['path'])): ?>
                                 <option value="<?= e($f['path']) ?>"><?= e($f['name']) ?></option>
                             <?php endif; ?>
                         <?php endforeach; ?>
