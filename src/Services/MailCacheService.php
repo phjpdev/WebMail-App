@@ -702,11 +702,14 @@ class MailCacheService
         if (FolderCache::isPendingBadgePath($folderPath)) {
             return false;
         }
+        if (mail_get_post_send_preview($folderPath) !== null) {
+            return false;
+        }
 
         $state = self::getSyncState($folderPath);
         $imapTotal = (int) ($state['imap_total'] ?? 0);
         if ($imapTotal <= 0) {
-            $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            $session = FolderCache::sessionUnreadCountRaw($folderPath);
             if ($session > 0 || self::badgeAheadOfIndex($folderPath)) {
                 return false;
             }
@@ -943,7 +946,7 @@ class MailCacheService
             return false;
         }
 
-        $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        $session = FolderCache::sessionUnreadCountRaw($folderPath);
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
             return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails) > $session;
@@ -978,7 +981,7 @@ class MailCacheService
         }
 
         if ($sessionCount === null) {
-            $sessionCount = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            $sessionCount = FolderCache::sessionUnreadCountRaw($folderPath);
         }
 
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
@@ -993,7 +996,7 @@ class MailCacheService
                 return self::countUnseenForUser($linkedId, $folderPath);
             }
             if ($linkedId !== null && self::viewerIsAdmin()) {
-                return self::countAdminEmployeeInboxBadge($folderPath);
+                return max(self::countAdminEmployeeInboxBadge($folderPath), $sessionCount);
             }
         }
 
@@ -1034,8 +1037,12 @@ class MailCacheService
      */
     public static function badgeAheadOfIndex(string $folderPath): bool
     {
-        $folderData = FolderCache::load(skipUnreadRefresh: true);
-        $badge = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
+        $folderPath = FolderCache::resolvePath($folderPath);
+        if ($folderPath === '') {
+            return false;
+        }
+
+        $badge = FolderCache::sessionUnreadCountRaw($folderPath);
         if ($badge <= 0) {
             return false;
         }
@@ -1717,9 +1724,13 @@ class MailCacheService
                 return $truth;
             }
             if ($linkedId !== null && self::viewerIsAdmin()) {
-                $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+                $session = FolderCache::sessionUnreadCountRaw($folderPath);
                 $truth = self::countAdminEmployeeInboxBadge($folderPath);
-                if (FolderCache::isPendingBadgePath($folderPath)) {
+                if (
+                    FolderCache::isPendingBadgePath($folderPath)
+                    || mail_get_post_send_preview($folderPath) !== null
+                    || self::badgeAheadOfIndex($folderPath)
+                ) {
                     $truth = max($truth, $session);
                 }
                 FolderCache::setUnreadCount($folderPath, $truth);
@@ -1728,7 +1739,7 @@ class MailCacheService
             }
         }
 
-        $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        $session = FolderCache::sessionUnreadCountRaw($folderPath);
 
         $pageUnread = 0;
         if ($pageMessages !== null && !folder_uses_draft_badge($folderPath)) {
@@ -1777,7 +1788,7 @@ class MailCacheService
         }
 
         if (self::syncBadgeFromIndex($folderPath)) {
-            return (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+            return FolderCache::sessionUnreadCountRaw($folderPath);
         }
 
         $indexUnread = self::countBadgeFromIndex($folderPath);
@@ -1833,7 +1844,7 @@ class MailCacheService
             }
         }
 
-        $session = (int) (FolderCache::load(skipUnreadRefresh: true)['unread_counts'][$folderPath] ?? 0);
+        $session = FolderCache::sessionUnreadCountRaw($folderPath);
         $indexUnread = self::countBadgeFromIndex($folderPath);
         $truth = folder_uses_draft_badge($folderPath)
             ? $indexUnread

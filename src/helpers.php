@@ -1909,16 +1909,16 @@ function mail_store_post_send_previews(
         ? $fromDisplay . ' <' . $fromEmail . '>'
         : $fromEmail;
     $msgId = $sentMessageId ?? '';
-    $optimisticUid = $msgId !== ''
-        ? -(int) sprintf('%u', crc32($msgId))
-        : -time();
-
     $folders = [];
     foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
         $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
         if ($resolved === '') {
             continue;
         }
+        $optimisticUid = $msgId !== ''
+            ? -(int) sprintf('%u', crc32($msgId . '|' . strtolower($resolved)))
+            : -(int) sprintf('%u', crc32($resolved) ^ time());
+
         $folders[$resolved] = [
             'uid' => $optimisticUid,
             'from' => $from,

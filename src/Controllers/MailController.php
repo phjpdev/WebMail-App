@@ -162,14 +162,14 @@ class MailController
         }
 
         $explicitRefresh = ($params['refresh'] ?? $_GET['refresh'] ?? '') === '1';
-        $badgePending = FolderCache::isPendingBadgePath($folderPath)
-            || MailCacheService::badgeAheadOfIndex($folderPath)
-            || mail_get_post_send_preview($folderPath) !== null;
         $forceRefresh = $explicitRefresh;
         $query = trim($_GET['q'] ?? '');
         $preferCache = $query === '' && !$explicitRefresh;
 
         $folderData = FolderCache::load(skipUnreadRefresh: true);
+        $badgePending = FolderCache::isPendingBadgePath($folderPath)
+            || MailCacheService::badgeAheadOfIndex($folderPath)
+            || mail_get_post_send_preview($folderPath) !== null;
 
         if (
             !$this->shouldSkipPostSendFilter()

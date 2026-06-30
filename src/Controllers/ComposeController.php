@@ -1363,6 +1363,13 @@ class ComposeController
             $badgePaths = array_values(array_unique(array_filter($badgePaths)));
             if ($badgePaths !== []) {
                 foreach ($badgePaths as $path) {
+                    if (
+                        FolderCache::isPendingBadgePath($path)
+                        || mail_get_post_send_preview($path) !== null
+                        || MailCacheService::badgeAheadOfIndex($path)
+                    ) {
+                        continue;
+                    }
                     $badgeCount = MailCacheService::reconcileBadgeFromIndex($path);
                     if ($badgeCount > 0 && MailCacheService::hasFolderData($path)) {
                         FolderCache::clearPendingBadgePath($path);

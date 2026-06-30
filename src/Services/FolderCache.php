@@ -159,6 +159,15 @@ class FolderCache
 
             $sessionUnread = (int) ($_SESSION[self::SESSION_KEY]['unread_counts'][$path] ?? 0);
 
+            if (
+                self::isPendingBadgePath($path)
+                || mail_post_send_preview_pending($path)
+                || MailCacheService::badgeAheadOfIndex($path)
+            ) {
+                $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = max(0, $sessionUnread);
+                continue;
+            }
+
             if (MailCacheService::usesPerUserRead($path)) {
                 $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = MailCacheService::sidebarBadgeCount(
                     $path,
@@ -536,10 +545,10 @@ class FolderCache
                 continue;
             }
 
-            $sessionCount = (int) ($session[$path] ?? 0);
+            $sessionCount = self::sessionUnreadForSidebarPath($path, $session);
             $messagesPath = employee_messages_imap_path($path);
-            if (strcasecmp($messagesPath, $path) !== 0 && isset($session[$messagesPath])) {
-                $sessionCount = max($sessionCount, (int) $session[$messagesPath]);
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
 
             $count = $sessionCount > 0
@@ -572,10 +581,10 @@ class FolderCache
                 continue;
             }
 
+            $count = self::sessionUnreadForSidebarPath($path, $session);
             $messagesPath = employee_messages_imap_path($path);
-            $count = (int) ($session[$path] ?? 0);
             if (strcasecmp($messagesPath, $path) !== 0) {
-                $count = max($count, (int) ($session[$messagesPath] ?? 0));
+                $count = max($count, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
 
             $result[$path] = $count;
@@ -595,6 +604,30 @@ class FolderCache
     }
 
     /**
+     * Raw session unread count for one folder (no load/filter/DB — safe during FolderCache::load).
+     */
+    public static function sessionUnreadCountRaw(string $path): int
+    {
+        $path = self::canonicalUnreadPath($path);
+        if ($path === '' || !folder_shows_unread_badge($path)) {
+            return 0;
+        }
+
+        $counts = $_SESSION[self::SESSION_KEY]['unread_counts'] ?? [];
+        if (!is_array($counts)) {
+            return 0;
+        }
+
+        $count = (int) ($counts[$path] ?? 0);
+        $messagesPath = employee_messages_imap_path($path);
+        if (strcasecmp($messagesPath, $path) !== 0) {
+            $count = max($count, (int) ($counts[$messagesPath] ?? 0));
+        }
+
+        return max(0, $count);
+    }
+
+    /**
      * Read a sidebar badge from session counts (no per-folder DB/IMAP recompute).
      *
      * @param array<string, int> $session
@@ -609,6 +642,18 @@ class FolderCache
         $messagesPath = employee_messages_imap_path($path);
         if (strcasecmp($messagesPath, $path) !== 0) {
             $count = max($count, (int) ($session[$messagesPath] ?? 0));
+        }
+
+        if (
+            $count <= 0
+            && (
+                self::isPendingBadgePath($path)
+                || self::isPendingBadgePath($messagesPath)
+                || mail_get_post_send_preview($path) !== null
+                || mail_get_post_send_preview($messagesPath) !== null
+            )
+        ) {
+            $count = 1;
         }
 
         return max(0, $count);
