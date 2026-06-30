@@ -1174,6 +1174,8 @@ class MailController
             return null;
         }
 
+        $message = mail_enrich_message_recipients_from_copies($folderPath, $uid, $message);
+
         mail_note_correspondents_from_message($message);
 
         $wasUnread = mail_local_thread_has_unread($folderPath, $uid, $message);

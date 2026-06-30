@@ -1538,34 +1538,222 @@ function mail_prefer_richer_thread_entry(array $a, array $b): array
     $aPending = !empty($a['is_pending_reply']);
     $bPending = !empty($b['is_pending_reply']);
     if ($aPending !== $bPending) {
-        return $aPending ? $b : $a;
+        return mail_merge_thread_entry_headers($aPending ? $b : $a, $aPending ? $a : $b);
     }
 
     $aBody = strlen(trim((string) ($a['body'] ?? '')));
     $bBody = strlen(trim((string) ($b['body'] ?? '')));
     if ($aBody !== $bBody) {
-        return $aBody > $bBody ? $a : $b;
+        return mail_merge_thread_entry_headers($aBody > $bBody ? $a : $b, $aBody > $bBody ? $b : $a);
     }
 
     $aHtml = strlen(trim((string) ($a['body_html'] ?? '')));
     $bHtml = strlen(trim((string) ($b['body_html'] ?? '')));
     if ($aHtml !== $bHtml) {
-        return $aHtml > $bHtml ? $a : $b;
+        return mail_merge_thread_entry_headers($aHtml > $bHtml ? $a : $b, $aHtml > $bHtml ? $b : $a);
     }
 
     $aAtt = is_array($a['attachments'] ?? null) ? count($a['attachments']) : 0;
     $bAtt = is_array($b['attachments'] ?? null) ? count($b['attachments']) : 0;
     if ($aAtt !== $bAtt) {
-        return $aAtt > $bAtt ? $a : $b;
+        return mail_merge_thread_entry_headers($aAtt > $bAtt ? $a : $b, $aAtt > $bAtt ? $b : $a);
     }
 
     $aUid = (int) ($a['imap_uid'] ?? 0);
     $bUid = (int) ($b['imap_uid'] ?? 0);
     if ($aUid !== $bUid) {
-        return $aUid > $bUid ? $a : $b;
+        return mail_merge_thread_entry_headers($aUid > $bUid ? $a : $b, $aUid > $bUid ? $b : $a);
     }
 
-    return $a;
+    return mail_merge_thread_entry_headers($a, $b);
+}
+
+/**
+ * Merge To/Cc (and other empty headers) when the same message exists in multiple folders.
+ *
+ * @param array<string, mixed> $primary
+ * @param array<string, mixed> $secondary
+ * @return array<string, mixed>
+ */
+function mail_merge_thread_entry_headers(array $primary, array $secondary): array
+{
+    foreach (['to', 'cc'] as $field) {
+        $primaryValue = trim((string) ($primary[$field] ?? ''));
+        $secondaryValue = trim((string) ($secondary[$field] ?? ''));
+        if ($secondaryValue === '') {
+            continue;
+        }
+        if ($primaryValue === '' || strlen($secondaryValue) > strlen($primaryValue)) {
+            $primary[$field] = $secondary[$field];
+        }
+    }
+
+    foreach (['from', 'date'] as $field) {
+        if (trim((string) ($primary[$field] ?? '')) === '' && trim((string) ($secondary[$field] ?? '')) !== '') {
+            $primary[$field] = $secondary[$field];
+        }
+    }
+
+    return $primary;
+}
+
+/**
+ * Fill missing To/Cc from other mailbox copies of the same Message-ID.
+ *
+ * @param array<string, mixed> $segment
+ * @return array<string, mixed>
+ */
+function mail_enrich_segment_recipients_from_copies(array $segment): array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath((string) ($segment['folder_path'] ?? ''));
+    $uid = (int) ($segment['imap_uid'] ?? 0);
+    if ($folderPath === '' || $uid <= 0) {
+        return $segment;
+    }
+
+    $bestTo = trim((string) ($segment['to'] ?? ''));
+    $bestCc = trim((string) ($segment['cc'] ?? ''));
+
+    $messageId = \App\Services\MailCacheService::messageIdForUid($folderPath, $uid);
+    if ($messageId === null || $messageId === '') {
+        try {
+            $indexIdRow = App\Database::fetchOne(
+                'SELECT message_id FROM mail_index WHERE folder_path = ? AND imap_uid = ? LIMIT 1',
+                [$folderPath, $uid]
+            );
+            $messageId = trim((string) ($indexIdRow['message_id'] ?? ''));
+        } catch (\Throwable) {
+            $messageId = '';
+        }
+    }
+
+    $copies = ($messageId !== null && $messageId !== '')
+        ? \App\Services\MailCacheService::copiesByMessageId($messageId)
+        : [['folder_path' => $folderPath, 'imap_uid' => $uid]];
+
+    foreach ($copies as $copy) {
+        $copyPath = \App\Services\FolderCache::resolvePath((string) ($copy['folder_path'] ?? ''));
+        $copyUid = (int) ($copy['imap_uid'] ?? 0);
+        if ($copyPath === '' || $copyUid <= 0) {
+            continue;
+        }
+
+        $body = \App\Services\MailCacheService::getBody($copyPath, $copyUid);
+        try {
+            $indexRow = App\Database::fetchOne(
+                'SELECT COALESCE(to_addrs, \'\') AS to_addrs, COALESCE(cc_addrs, \'\') AS cc_addrs
+                 FROM mail_index
+                 WHERE folder_path = ? AND imap_uid = ?
+                 LIMIT 1',
+                [$copyPath, $copyUid]
+            );
+        } catch (\Throwable) {
+            $indexRow = null;
+        }
+
+        $to = trim((string) ($body['to'] ?? ($indexRow['to_addrs'] ?? '')));
+        $cc = trim((string) ($body['cc'] ?? ($indexRow['cc_addrs'] ?? '')));
+
+        if ($to !== '' && ($bestTo === '' || strlen($to) > strlen($bestTo))) {
+            $bestTo = $to;
+        }
+        if ($cc !== '' && ($bestCc === '' || strlen($cc) > strlen($bestCc))) {
+            $bestCc = $cc;
+        }
+    }
+
+    if ($bestCc === '' || $bestTo === '') {
+        try {
+            $anchor = App\Database::fetchOne(
+                'SELECT from_addr, subject, msg_date
+                 FROM mail_index
+                 WHERE folder_path = ? AND imap_uid = ?
+                 LIMIT 1',
+                [$folderPath, $uid]
+            );
+        } catch (\Throwable) {
+            $anchor = null;
+        }
+
+        $fromAddr = trim((string) ($anchor['from_addr'] ?? ($segment['from'] ?? '')));
+        $subject = trim((string) ($anchor['subject'] ?? ''));
+        $msgDate = trim((string) ($anchor['msg_date'] ?? ($segment['date'] ?? '')));
+        $msgTs = strtotime($msgDate) ?: 0;
+
+        if ($fromAddr !== '' && $subject !== '') {
+            try {
+                $rows = App\Database::query(
+                    'SELECT COALESCE(NULLIF(b.to_addrs, \'\'), i.to_addrs, \'\') AS to_addrs,
+                            COALESCE(NULLIF(b.cc_addrs, \'\'), i.cc_addrs, \'\') AS cc_addrs
+                     FROM mail_index i
+                     LEFT JOIN mail_bodies b
+                       ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                     WHERE i.subject = ?
+                       AND LOWER(i.from_addr) LIKE ?
+                       AND (? = 0 OR ABS(TIMESTAMPDIFF(MINUTE, i.msg_date, FROM_UNIXTIME(?))) <= 3)',
+                    [$subject, '%' . strtolower(normalize_email_token($fromAddr)) . '%', $msgTs, $msgTs]
+                )->fetchAll();
+            } catch (\Throwable) {
+                $rows = [];
+            }
+
+            foreach ($rows as $row) {
+                $to = trim((string) ($row['to_addrs'] ?? ''));
+                $cc = trim((string) ($row['cc_addrs'] ?? ''));
+                if ($to !== '' && ($bestTo === '' || strlen($to) > strlen($bestTo))) {
+                    $bestTo = $to;
+                }
+                if ($cc !== '' && ($bestCc === '' || strlen($cc) > strlen($bestCc))) {
+                    $bestCc = $cc;
+                }
+            }
+        }
+    }
+
+    if ($bestTo !== '') {
+        $segment['to'] = $bestTo;
+    }
+    if ($bestCc !== '') {
+        $segment['cc'] = $bestCc;
+    }
+
+    return $segment;
+}
+
+/**
+ * @param array<string, mixed> $message
+ * @return array<string, mixed>
+ */
+function mail_enrich_message_recipients_from_copies(string $folderPath, int $uid, array $message): array
+{
+    $segment = mail_enrich_segment_recipients_from_copies([
+        'folder_path' => $folderPath,
+        'imap_uid' => $uid,
+        'to' => (string) ($message['to'] ?? ''),
+        'cc' => (string) ($message['cc'] ?? ''),
+    ]);
+
+    if (trim((string) ($segment['to'] ?? '')) !== '') {
+        $message['to'] = $segment['to'];
+    }
+    if (trim((string) ($segment['cc'] ?? '')) !== '') {
+        $message['cc'] = $segment['cc'];
+    }
+
+    return $message;
+}
+
+/**
+ * @param list<array<string, mixed>> $segments
+ * @return list<array<string, mixed>>
+ */
+function mail_enrich_thread_segments_recipients(array $segments): array
+{
+    foreach ($segments as $i => $segment) {
+        $segments[$i] = mail_enrich_segment_recipients_from_copies($segment);
+    }
+
+    return $segments;
 }
 
 /**
@@ -6413,7 +6601,9 @@ function mail_build_correspondent_conversation_thread(
         }
     }
 
-    return mail_sort_thread_segments_chronological(mail_dedupe_thread_segments($segments));
+    return mail_sort_thread_segments_chronological(mail_enrich_thread_segments_recipients(
+        mail_dedupe_thread_segments($segments)
+    ));
 }
 
 /**
@@ -6820,7 +7010,9 @@ function mail_build_conversation_thread(
         }
     }
 
-    return mail_sort_thread_segments_chronological(mail_dedupe_thread_segments($segments));
+    return mail_sort_thread_segments_chronological(mail_enrich_thread_segments_recipients(
+        mail_dedupe_thread_segments($segments)
+    ));
 }
 
 /**
