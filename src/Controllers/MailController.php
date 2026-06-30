@@ -11,6 +11,7 @@ use App\Services\FilterService;
 use App\Services\FolderCache;
 use App\Services\ImapService;
 use App\Services\MailCacheService;
+use App\Services\SystemBootstrapService;
 
 class MailController
 {
@@ -375,6 +376,19 @@ class MailController
     }
 
     /**
+     * Route INBOX mail for every employee/folder using the current rule set.
+     * Throttled via filter_min_interval unless $force is true (after send, bootstrap).
+     */
+    private function runThrottledGlobalFilter(bool $force = false): void
+    {
+        if ($this->shouldSkipPostSendFilter()) {
+            return;
+        }
+
+        FilterService::runBackground($force, 8);
+    }
+
+    /**
      * Run filter on inbox visits; throttle on other folders and poll sync.
      *
      * @return array{processed: int, moved: int, errors: list<string>, duration_ms: int, done?: bool}|null
@@ -441,15 +455,25 @@ class MailController
             return;
         }
 
-        $paths = $this->bootstrapFolderPaths($folderData['folders'], $_GET['folder'] ?? '');
-        $paths = array_values(array_filter($paths, fn (string $p) => FolderCache::canAccess($p)));
-
         $imap = new ImapService();
         if (!$imap->connect()) {
             http_response_code(503);
             echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
             return;
         }
+
+        $bootstrapped = (new SystemBootstrapService())->ensureDefaults();
+        if ($bootstrapped) {
+            $folderData = FolderCache::load(skipUnreadRefresh: true);
+            if (!$folderData['connected']) {
+                http_response_code(503);
+                echo json_encode(['ok' => false, 'error' => $folderData['error'] ?: 'IMAP unavailable']);
+                return;
+            }
+        }
+
+        $paths = $this->bootstrapFolderPaths($folderData['folders'], $_GET['folder'] ?? '');
+        $paths = array_values(array_filter($paths, fn (string $p) => FolderCache::canAccess($p)));
 
         FilterService::runBackground(true, 10);
 
@@ -533,6 +557,7 @@ class MailController
 
         // Lightweight poll: MySQL cache only — never IMAP (keeps polling fast).
         if ($light && $query === '') {
+            $this->runThrottledGlobalFilter();
             $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
             if ($cached === null) {
                 $cached = [
@@ -736,14 +761,8 @@ class MailController
         releaseSessionLock();
         header('Content-Type: application/json; charset=utf-8');
 
-        $light = ($_GET['light'] ?? '') === '1';
         $afterSend = ($_GET['after_send'] ?? '') === '1';
-
-        if (($_GET['filter'] ?? '') === '1' || !$light) {
-            $user = Auth::user();
-            $forceFilter = $afterSend || ($user !== null && ($user['role'] ?? '') === 'admin');
-            FilterService::runBackground($forceFilter, 8);
-        }
+        $this->runThrottledGlobalFilter($afterSend);
 
         $this->syncAdminSharedMailboxIndexes();
         $this->reconcileSidebarBadgesFromIndex();

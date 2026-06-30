@@ -168,6 +168,65 @@ class AdminFolderService
     }
 
     /**
+     * Create Sent/Drafts/Archive/Junk/Trash under a mailbox root when missing.
+     *
+     * @return bool true if anything new was created
+     */
+    public function provisionStandardSubfolders(string $imapPath, ?int $linkedUserId = null, bool $clearFolderCache = true): bool
+    {
+        $subfolders = [
+            ['suffix' => 'Sent', 'display_name' => 'Sent', 'folder_type' => 'sent'],
+            ['suffix' => 'Drafts', 'display_name' => 'Drafts', 'folder_type' => 'other'],
+            ['suffix' => 'Archive', 'display_name' => 'Archive', 'folder_type' => 'other'],
+            ['suffix' => 'Junk', 'display_name' => 'Junk', 'folder_type' => 'spam'],
+            ['suffix' => 'Trash', 'display_name' => 'Trash', 'folder_type' => 'trash'],
+        ];
+
+        $paths = [];
+        foreach ($subfolders as $subfolder) {
+            $paths[] = $imapPath . '.' . $subfolder['suffix'];
+        }
+
+        $existingPaths = [];
+        if ($paths !== []) {
+            $placeholders = implode(',', array_fill(0, count($paths), '?'));
+            $rows = Database::query(
+                'SELECT imap_path FROM folders WHERE imap_path IN (' . $placeholders . ')',
+                $paths
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $path = trim((string) ($row['imap_path'] ?? ''));
+                if ($path !== '') {
+                    $existingPaths[strtoupper($path)] = true;
+                }
+            }
+        }
+
+        $toInsert = [];
+        foreach ($subfolders as $subfolder) {
+            $subPath = $imapPath . '.' . $subfolder['suffix'];
+            if (isset($existingPaths[strtoupper($subPath)])) {
+                continue;
+            }
+
+            $toInsert[] = [
+                'imap_path' => $subPath,
+                'display_name' => $subfolder['display_name'],
+                'folder_type' => $subfolder['folder_type'],
+                'linked_user_id' => $linkedUserId,
+            ];
+        }
+
+        if ($toInsert === []) {
+            return false;
+        }
+
+        $this->insertFolders($toInsert, $clearFolderCache);
+
+        return true;
+    }
+
+    /**
      * @param array{display_name?: string, folder_type?: string, active?: int} $data
      */
     public function update(int $id, array $data): void
