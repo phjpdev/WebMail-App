@@ -2170,7 +2170,19 @@ function mail_store_post_send_previews(
         : $fromEmail;
     $msgId = $sentMessageId ?? '';
     $folders = [];
-    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
+    $previewPaths = array_values(array_unique(array_filter($destPaths)));
+    $senderFolder = folder_for_alias_email($fromEmail);
+    if ($senderFolder !== null && $senderFolder !== '') {
+        $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
+        if (
+            $senderResolved !== ''
+            && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved)
+        ) {
+            $previewPaths[] = $senderResolved;
+        }
+    }
+
+    foreach ($previewPaths as $path) {
         $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
         if ($resolved === '') {
             continue;
@@ -2469,17 +2481,6 @@ function mail_merge_post_send_preview_into_list(string $folderPath, array $list)
 
             return $list;
         }
-    }
-
-    if (
-        !\App\Services\FolderCache::isPendingBadgePath($folderPath)
-        && !\App\Services\MailCacheService::badgeAheadOfIndex($folderPath)
-        && \App\Services\MailCacheService::hasFolderData($folderPath)
-        && \App\Services\MailCacheService::countListableMessagesInIndex($folderPath) > 0
-    ) {
-        mail_clear_post_send_preview($folderPath);
-
-        return $list;
     }
 
     $messages = array_merge([$preview], $list['messages']);
@@ -2890,6 +2891,22 @@ function mail_post_send_preview_already_synced(string $folderPath, array $previe
     if ($previewId === '') {
         $previewId = normalize_message_id((string) ($_SESSION['_post_send_message_id'] ?? ''));
     }
+
+    if (\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
+        $merged = employee_merge_shared_mailbox_outbound_list($folderPath, ['messages' => []]);
+        foreach ($merged['messages'] ?? [] as $msg) {
+            if (!is_array($msg)) {
+                continue;
+            }
+            if (mail_list_message_matches_post_send_preview($msg, $preview)) {
+                return true;
+            }
+            if ($previewId !== '' && normalize_message_id((string) ($msg['message_id'] ?? '')) === $previewId) {
+                return true;
+            }
+        }
+    }
+
     if ($previewId !== '') {
         try {
             $row = App\Database::fetchOne(
@@ -2973,6 +2990,115 @@ function mail_post_send_preview_already_synced(string $folderPath, array $previe
     }
 
     return false;
+}
+
+/**
+ * Shared mailbox (admin): include outbound copies stored in employee inboxes.
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function employee_merge_shared_mailbox_outbound_list(string $folderPath, array $list): array
+{
+    if (
+        !\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
+        || !\App\Services\MailCacheService::viewerIsAdmin()
+        || !isset($list['messages'])
+        || !is_array($list['messages'])
+    ) {
+        return $list;
+    }
+
+    $sharedInbox = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($sharedInbox === '') {
+        return $list;
+    }
+
+    $aliasEmail = alias_email_for_folder($sharedInbox);
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        $root = employee_mailbox_root_prefix($sharedInbox);
+        if ($root !== '') {
+            $aliasEmail = alias_email_for_folder($root);
+        }
+    }
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        return $list;
+    }
+
+    $fingerprints = [];
+    foreach ($list['messages'] as $msg) {
+        if (is_array($msg)) {
+            $fingerprints[mail_list_message_fingerprint($msg)] = true;
+        }
+    }
+
+    try {
+        $inboxRows = App\Database::query(
+            "SELECT imap_path FROM folders
+             WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL"
+        )->fetchAll();
+    } catch (\Throwable) {
+        return $list;
+    }
+
+    $like = '%' . strtolower(trim($aliasEmail)) . '%';
+    $extra = [];
+
+    foreach ($inboxRows as $inboxRow) {
+        $employeeInbox = \App\Services\FolderCache::resolvePath(
+            employee_messages_imap_path((string) ($inboxRow['imap_path'] ?? ''))
+        );
+        if ($employeeInbox === '' || strcasecmp($employeeInbox, $sharedInbox) === 0) {
+            continue;
+        }
+
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                        b.plain_body, b.html_body, b.message_id,
+                        COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                        COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+                 FROM mail_index i
+                 LEFT JOIN mail_bodies b
+                    ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                 WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?
+                 ORDER BY i.msg_date DESC, i.imap_uid DESC
+                 LIMIT 60',
+                [$employeeInbox, $like]
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $employeeInbox);
+            $msg['seen'] = true;
+            $msg['list_folder'] = $employeeInbox;
+            if (!empty($row['message_id'])) {
+                $msg['message_id'] = (string) $row['message_id'];
+            }
+            $fp = mail_list_message_fingerprint($msg);
+            if (isset($fingerprints[$fp])) {
+                continue;
+            }
+            $fingerprints[$fp] = true;
+            $extra[] = $msg;
+        }
+    }
+
+    if ($extra === []) {
+        return $list;
+    }
+
+    $merged = array_merge($list['messages'], $extra);
+
+    return mail_filter_removed_messages($sharedInbox, [
+        'messages' => $merged,
+        'total' => count($merged),
+        'page' => (int) ($list['page'] ?? 1),
+        'per_page' => (int) ($list['per_page'] ?? mail_per_page()),
+        'total_pages' => (int) ($list['total_pages'] ?? 1),
+    ]);
 }
 
 /**
