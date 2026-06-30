@@ -5947,7 +5947,7 @@ function admin_employee_inbox_preview_inflates_badge(string $folderPath): bool
 
     $preview = mail_get_post_send_preview($folderPath);
     if ($preview === null) {
-        return true;
+        return false;
     }
 
     return !admin_should_hide_employee_inbox_correspondent_message($preview);

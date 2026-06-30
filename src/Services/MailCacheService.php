@@ -2085,12 +2085,27 @@ class MailCacheService
             if ($linkedId !== null && self::viewerIsAdmin()) {
                 $session = FolderCache::sessionUnreadCountRaw($folderPath);
                 $truth = self::countAdminEmployeeInboxBadge($folderPath);
-                if (
-                    FolderCache::isPendingBadgePath($folderPath)
-                    || admin_employee_inbox_preview_inflates_badge($folderPath)
-                ) {
+
+                $pageUnread = null;
+                if ($pageMessages !== null && !folder_uses_draft_badge($folderPath)) {
+                    $pageUnread = 0;
+                    foreach ($pageMessages as $msg) {
+                        if (empty($msg['seen'])) {
+                            $pageUnread++;
+                        }
+                    }
+                }
+
+                $allowSessionInflate = FolderCache::isPendingBadgePath($folderPath)
+                    || admin_employee_inbox_preview_inflates_badge($folderPath);
+                if ($pageUnread !== null && $pageUnread === 0 && $truth === 0) {
+                    $allowSessionInflate = false;
+                }
+
+                if ($allowSessionInflate) {
                     $truth = max($truth, $session);
                 }
+
                 FolderCache::setUnreadCount($folderPath, $truth);
 
                 return $truth;
