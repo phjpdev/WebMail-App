@@ -235,19 +235,17 @@ class FilterService
             if ($pathsToRefresh !== []) {
                 $pathList = array_keys($pathsToRefresh);
 
-                if ($totals['moved'] > 0) {
-                    $imap = new ImapService();
-                    if ($imap->connect()) {
-                        foreach ($pathList as $path) {
-                            try {
-                                MailCacheService::syncFolderHeaders($imap, $path);
-                                MailCacheService::reconcileBadgeFromIndex($path);
-                            } catch (\Throwable $e) {
-                                app_log('Mail cache sync after filter failed for ' . $path . ': ' . $e->getMessage());
-                            }
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    foreach ($pathList as $path) {
+                        try {
+                            MailCacheService::syncFolderHeaders($imap, $path);
+                            MailCacheService::reconcileBadgeFromIndex($path);
+                        } catch (\Throwable $e) {
+                            app_log('Mail cache sync after filter failed for ' . $path . ': ' . $e->getMessage());
                         }
-                        reconcile_alias_self_sent_echoes($imap, $pathList);
                     }
+                    reconcile_alias_self_sent_echoes($imap, $pathList);
                 }
 
                 // Per-folder header sync + reconcile already updated badges; skip

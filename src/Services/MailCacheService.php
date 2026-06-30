@@ -102,13 +102,26 @@ class MailCacheService
     public static function readUpdatesImapState(string $folderPath, ?array $user = null): bool
     {
         $user = $user ?? Auth::user();
-        if ($user === null || !self::usesPerUserRead($folderPath)) {
+        if ($user === null) {
+            return true;
+        }
+
+        $userId = (int) ($user['id'] ?? 0);
+        if (
+            $userId > 0
+            && ($user['role'] ?? '') === 'employee'
+            && self::sharedMailboxUsesPerUserSeen($folderPath, $userId)
+        ) {
+            return false;
+        }
+
+        if (!self::usesPerUserRead($folderPath)) {
             return true;
         }
 
         $linkedId = self::linkedUserId($folderPath);
 
-        return $linkedId !== null && (int) ($user['id'] ?? 0) === $linkedId;
+        return $linkedId !== null && $userId === $linkedId;
     }
 
     public static function viewerIsAdmin(?array $user = null): bool
@@ -574,7 +587,42 @@ class MailCacheService
             return self::userHasRead($userId, $folderPath, $uid);
         }
 
+        if ($userId > 0 && self::sharedMailboxUsesPerUserSeen($folderPath, $userId)) {
+            return self::userHasRead($userId, $folderPath, $uid);
+        }
+
         return (bool) self::indexSeenState($folderPath, $uid);
+    }
+
+    /**
+     * Employees reading a shared correspondent mailbox (e.g. Support) track seen
+     * state per user — IMAP \\Seen on outbound copies must not hide admin replies.
+     */
+    public static function sharedMailboxUsesPerUserSeen(string $folderPath, ?int $userId = null): bool
+    {
+        $userId = $userId ?? (int) (Auth::user()['id'] ?? 0);
+        if ($userId <= 0 || !self::isSharedEmployeeMailbox($folderPath)) {
+            return false;
+        }
+
+        $user = Auth::user();
+        if ($user !== null && (int) ($user['id'] ?? 0) === $userId) {
+            return ($user['role'] ?? '') === 'employee'
+                && employee_is_correspondent_folder($folderPath);
+        }
+
+        try {
+            $row = Database::fetchOne(
+                'SELECT role FROM users WHERE id = ? AND active = 1 LIMIT 1',
+                [$userId]
+            );
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $row !== null
+            && ($row['role'] ?? '') === 'employee'
+            && employee_is_correspondent_folder($folderPath);
     }
 
     public static function countUnseenForUser(int $userId, string $folderPath): int

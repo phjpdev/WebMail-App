@@ -736,9 +736,12 @@ class MailController
         $afterSend = ($_GET['after_send'] ?? '') === '1';
 
         if (($_GET['filter'] ?? '') === '1' || !$light) {
-            FilterService::runBackground($afterSend);
+            $user = Auth::user();
+            $forceFilter = $afterSend || ($user !== null && ($user['role'] ?? '') === 'admin');
+            FilterService::runBackground($forceFilter, 8);
         }
 
+        $this->syncAdminSharedMailboxIndexes();
         $this->reconcileSidebarBadgesFromIndex();
 
         echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
@@ -754,7 +757,17 @@ class MailController
             if ($path === '' || !folder_shows_unread_badge($path)) {
                 continue;
             }
-            if (folder_badge_uses_index_truth($path) && !MailCacheService::hasFolderData($path)) {
+            if (!folder_badge_uses_index_truth($path)) {
+                continue;
+            }
+            if (
+                MailCacheService::viewerIsAdmin()
+                && MailCacheService::isSharedEmployeeMailbox($path)
+            ) {
+                $refreshPaths[] = $path;
+                continue;
+            }
+            if (!MailCacheService::hasFolderData($path)) {
                 $refreshPaths[] = $path;
             }
         }
@@ -769,6 +782,43 @@ class MailController
                 continue;
             }
             MailCacheService::reconcileBadgeFromIndex($path);
+        }
+    }
+
+    /**
+     * Keep shared mailbox indexes fresh for admin so employee inbound (e.g. Erik → Support)
+     * badges update without waiting for a filter move.
+     */
+    private function syncAdminSharedMailboxIndexes(): void
+    {
+        if (!MailCacheService::viewerIsAdmin()) {
+            return;
+        }
+
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        $paths = [];
+        foreach ($folderData['folders'] ?? [] as $folder) {
+            $path = FolderCache::resolvePath((string) ($folder['path'] ?? ''));
+            if ($path !== '' && MailCacheService::isSharedEmployeeMailbox($path)) {
+                $paths[] = $path;
+            }
+        }
+
+        if ($paths === []) {
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return;
+        }
+
+        foreach (array_values(array_unique($paths)) as $path) {
+            try {
+                MailCacheService::refreshHeadersIfNeeded($imap, $path);
+            } catch (\Throwable $e) {
+                app_log('Admin shared mailbox sync failed for ' . $path . ': ' . $e->getMessage());
+            }
         }
     }
 
@@ -1184,7 +1234,17 @@ class MailController
 
         mail_note_correspondents_from_message($message);
 
+        $viewerId = (int) (Auth::user()['id'] ?? 0);
         $wasUnread = mail_local_thread_has_unread($folderPath, $uid, $message);
+        if (
+            !$wasUnread
+            && $markRead
+            && $viewerId > 0
+            && MailCacheService::sharedMailboxUsesPerUserSeen($folderPath, $viewerId)
+            && !MailCacheService::userHasRead($viewerId, $folderPath, $uid)
+        ) {
+            $wasUnread = true;
+        }
 
         if ($wasUnread && $markRead) {
             $message['seen'] = true;
@@ -1221,7 +1281,7 @@ class MailController
 
         $unreadCounts = ($wasUnread && $markRead)
             ? mail_unread_counts_after_read($folderPath)
-            : FolderCache::sidebarUnreadCountsFromSession();
+            : FolderCache::sidebarUnreadCounts();
 
         $aliasService = new AliasService();
         $userId = Auth::user()['id'] ?? null;
@@ -2194,6 +2254,15 @@ class MailController
             'subject' => '',
             'from' => '',
         ]);
+        $viewerId = (int) (Auth::user()['id'] ?? 0);
+        if (
+            $seen
+            && $viewerId > 0
+            && MailCacheService::sharedMailboxUsesPerUserSeen($folderPath, $viewerId)
+            && !MailCacheService::userHasRead($viewerId, $folderPath, $uid)
+        ) {
+            $alreadySeen = false;
+        }
         $markedUids = [$uid];
 
         if ($seen) {

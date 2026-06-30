@@ -2497,7 +2497,7 @@ function mail_unread_counts_after_read(string $folderPath): array
         mail_reconcile_linked_correspondent_badges($folderPath);
     }
 
-    return \App\Services\FolderCache::sidebarUnreadCountsFromSession();
+    return \App\Services\FolderCache::sidebarUnreadCounts();
 }
 
 /**
