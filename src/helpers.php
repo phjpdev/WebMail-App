@@ -792,7 +792,9 @@ function employee_linked_inbox_path(?array $user = null): ?string
             "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' AND active = 1 LIMIT 1",
             [$userId]
         );
-        $cache[$userId] = ($row !== null && !empty($row['imap_path'])) ? (string) $row['imap_path'] : null;
+        $cache[$userId] = ($row !== null && !empty($row['imap_path']))
+            ? employee_mailbox_root_prefix((string) $row['imap_path'])
+            : null;
     } catch (\Throwable) {
         $cache[$userId] = null;
     }
@@ -1130,8 +1132,9 @@ function employee_correspondent_folder_paths(?int $userId = null): array
 
 function employee_can_access_correspondent_folder(string $path): bool
 {
+    $path = \App\Services\FolderCache::resolvePath($path);
     foreach (employee_correspondent_folder_paths() as $allowed) {
-        if (strcasecmp($path, $allowed) === 0) {
+        if (employee_path_under_mailbox_root($path, $allowed)) {
             return true;
         }
     }
@@ -1149,7 +1152,8 @@ function employee_is_correspondent_folder(string $folderPath): bool
         return false;
     }
 
-    if (strcasecmp($folderPath, $own) === 0) {
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if (employee_path_under_mailbox_root($folderPath, $own)) {
         return false;
     }
 
@@ -2714,10 +2718,15 @@ function employee_is_own_inbox_folder(string $folderPath): bool
         return false;
     }
 
-    return strcasecmp(
-        \App\Services\FolderCache::resolvePath($folderPath),
-        \App\Services\FolderCache::resolvePath($own),
-    ) === 0;
+    $resolved = \App\Services\FolderCache::resolvePath($folderPath);
+    $ownResolved = \App\Services\FolderCache::resolvePath($own);
+    if (strcasecmp($resolved, $ownResolved) === 0) {
+        return true;
+    }
+
+    $messagesInbox = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($own));
+
+    return $messagesInbox !== '' && strcasecmp($resolved, $messagesInbox) === 0;
 }
 
 /**
@@ -3887,7 +3896,7 @@ function default_mail_folder(): string
             [(int) $user['id']]
         );
         if ($row !== null && !empty($row['imap_path'])) {
-            return $row['imap_path'];
+            return employee_messages_imap_path((string) $row['imap_path']);
         }
     } catch (\Throwable $e) {
         // ignore
@@ -4070,6 +4079,27 @@ function reconcile_outbound_routing(array $destPaths, string $fromEmail, ?string
     }
 
     App\Services\FolderCache::invalidateUnread();
+}
+
+/**
+ * True when $path is a mailbox root or any folder beneath it (case-insensitive).
+ */
+function employee_path_under_mailbox_root(string $path, string $root): bool
+{
+    $path = \App\Services\FolderCache::resolvePath($path);
+    $root = employee_mailbox_root_prefix(\App\Services\FolderCache::resolvePath($root));
+    if ($path === '' || $root === '') {
+        return false;
+    }
+
+    if (strcasecmp($path, $root) === 0) {
+        return true;
+    }
+
+    $prefix = rtrim($root, '.') . '.';
+
+    return strlen($path) > strlen($prefix)
+        && strncasecmp($path, $prefix, strlen($prefix)) === 0;
 }
 
 /**
@@ -4889,8 +4919,14 @@ function sidebar_dedupe_primary_bucket(array $folders, string $bucket): array
 function folder_icon_type(string $path): string
 {
     $employeeInbox = employee_linked_inbox_path();
-    if ($employeeInbox !== null && strcasecmp($path, $employeeInbox) === 0) {
-        return 'inbox';
+    if ($employeeInbox !== null) {
+        if (strcasecmp($path, $employeeInbox) === 0) {
+            return 'inbox';
+        }
+        $messagesInbox = employee_messages_imap_path($employeeInbox);
+        if ($messagesInbox !== '' && strcasecmp($path, $messagesInbox) === 0) {
+            return 'inbox';
+        }
     }
 
     if ($path === 'INBOX' || strcasecmp($path, 'INBOX') === 0) {
@@ -4911,8 +4947,14 @@ function folder_icon_type(string $path): string
 function sidebar_folder_bucket(string $path): string
 {
     $employeeInbox = employee_linked_inbox_path();
-    if ($employeeInbox !== null && strcasecmp($path, $employeeInbox) === 0) {
-        return 'inbox';
+    if ($employeeInbox !== null) {
+        if (strcasecmp($path, $employeeInbox) === 0) {
+            return 'inbox';
+        }
+        $messagesInbox = employee_messages_imap_path($employeeInbox);
+        if ($messagesInbox !== '' && strcasecmp($path, $messagesInbox) === 0) {
+            return 'inbox';
+        }
     }
 
     if ($path === 'INBOX' || strcasecmp($path, 'INBOX') === 0) {

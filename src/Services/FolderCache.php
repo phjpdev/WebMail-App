@@ -1162,7 +1162,7 @@ class FolderCache
                 [$userId]
             );
             if ($linked !== null && !empty($linked['imap_path'])) {
-                return (string) $linked['imap_path'];
+                return employee_mailbox_root_prefix((string) $linked['imap_path']);
             }
         } catch (\Throwable $e) {
             // ignore
