@@ -830,6 +830,20 @@ function sidebar_folder_nav_path(string $folderPath): string
 }
 
 /**
+ * Message index path for an employee correspondent mailbox (e.g. INBOX.support → INBOX.support.Inbox).
+ * Sidebar badges must use the same folder as the list, not the parent container path.
+ */
+function mail_correspondent_messages_folder_path(string $folderPath): string
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '' || !employee_is_correspondent_folder($folderPath)) {
+        return $folderPath;
+    }
+
+    return sidebar_folder_nav_path($folderPath);
+}
+
+/**
  * Personal inbox path for the logged-in employee (e.g. INBOX.Jean).
  */
 function employee_linked_inbox_path(?array $user = null): ?string
@@ -3699,9 +3713,8 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
         return false;
     }
 
-    $corrFolder = \App\Services\MailCacheService::indexFolderPath(
-        \App\Services\FolderCache::resolvePath($corrFolder)
-    );
+    $corrFolder = mail_correspondent_messages_folder_path($corrFolder);
+    $corrFolder = \App\Services\MailCacheService::indexFolderPath($corrFolder);
     $baseSubject = mail_normalize_thread_subject((string) $baseSubject);
     if ($corrFolder === '') {
         return false;
@@ -3786,9 +3799,8 @@ function mail_correspondent_inbox_has_unread_for_thread(string $corrFolder, stri
  */
 function mail_support_folder_has_thread_key(string $corrFolder, string $threadKey): bool
 {
-    $corrFolder = \App\Services\MailCacheService::indexFolderPath(
-        \App\Services\FolderCache::resolvePath($corrFolder)
-    );
+    $corrFolder = mail_correspondent_messages_folder_path($corrFolder);
+    $corrFolder = \App\Services\MailCacheService::indexFolderPath($corrFolder);
     $threadKey = (string) $threadKey;
     if ($corrFolder === '' || $threadKey === '') {
         return false;
@@ -3854,23 +3866,22 @@ function mail_correspondent_folder_badge_count(string $folderPath): int
         return 0;
     }
 
-    static $memo = [];
-
     $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
     if ($folderPath === '') {
         return 0;
     }
 
-    if (array_key_exists($folderPath, $memo)) {
-        return $memo[$folderPath];
+    $folderPath = mail_correspondent_messages_folder_path($folderPath);
+    if ($folderPath === '') {
+        return 0;
     }
 
     $privacyEmails = employee_correspondent_privacy_emails($folderPath);
     if ($privacyEmails === null) {
-        return $memo[$folderPath] = 0;
+        return 0;
     }
 
-    return $memo[$folderPath] = \App\Services\MailCacheService::countCorrespondentUnseenWithReplies(
+    return \App\Services\MailCacheService::countCorrespondentUnseenWithReplies(
         $folderPath,
         $privacyEmails
     );

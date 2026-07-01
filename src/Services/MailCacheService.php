@@ -2021,6 +2021,7 @@ class MailCacheService
             return 0;
         }
 
+        $folderPath = mail_correspondent_messages_folder_path($folderPath);
         $folderPath = self::indexFolderPath($folderPath);
         $viewerId = (int) (Auth::user()['id'] ?? 0);
         if ($viewerId <= 0) {
@@ -2293,7 +2294,10 @@ class MailCacheService
         // party to, never the whole-folder IMAP unseen count. Set it exactly.
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
-            $truth = self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
+            $truth = self::countCorrespondentUnseenWithReplies(
+                mail_correspondent_messages_folder_path($folderPath),
+                $privacyEmails
+            );
             FolderCache::setUnreadCount($folderPath, $truth);
 
             return $truth;
