@@ -2739,10 +2739,14 @@ function mail_format_post_send_preview_for_client(array $preview): ?array
         return null;
     }
 
+    $subject = (string) ($preview['subject'] ?? '(no subject)');
+    $threadKey = mail_normalize_thread_subject($subject);
+
     return [
         'uid' => (int) ($preview['uid'] ?? 0),
         'from' => format_mail_from((string) ($preview['from'] ?? '')),
-        'subject' => (string) ($preview['subject'] ?? '(no subject)'),
+        'subject' => $subject,
+        'thread_key' => $threadKey !== '' ? $threadKey : null,
         'snippet' => (string) ($preview['snippet'] ?? ''),
         'date' => format_mail_date((string) ($preview['date'] ?? '')),
         'sort_date' => (string) ($preview['sort_date'] ?? $preview['date'] ?? ''),

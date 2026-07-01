@@ -348,6 +348,7 @@ class ComposeController
                 }
                 if ($threadReply !== null) {
                     $jsonPayload['reply_date'] = (string) ($threadReply['reply']['date'] ?? '');
+                    $jsonPayload['thread_subject'] = $subject;
                 }
                 dispatch_post_send($postSendToken);
                 releaseSessionLock();

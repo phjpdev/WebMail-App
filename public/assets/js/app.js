@@ -133,6 +133,7 @@
     var afterSendBadgePollInFlight = false;
     var postSendFolderPollTimers = [];
     var postSendRefreshFolders = [];
+    var postSendSelectionThreadKey = '';
     var mailListLoadingGuard = null;
     var attachmentHintsTimer = null;
     var listSnippetsTimer = null;
@@ -2167,6 +2168,100 @@
         }
     }
 
+    function findListRowUidForThread(threadKey, messages) {
+        if (!threadKey) return 0;
+        var tkLower = threadKey.toLowerCase();
+
+        if (messages && messages.length) {
+            for (var i = 0; i < messages.length; i++) {
+                var m = messages[i];
+                var mtk = (m.thread_key || normalizeThreadSubject(m.subject)).toLowerCase();
+                if (mtk === tkLower) {
+                    return parseInt(m.uid, 10) || 0;
+                }
+            }
+        }
+
+        var found = 0;
+        document.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]').forEach(function (row) {
+            if (found) return;
+            var rowTk = row.getAttribute('data-thread-key');
+            if (!rowTk) {
+                var subjEl = row.querySelector('.mail-row-subject, .mail-card-subject');
+                rowTk = normalizeThreadSubject(subjEl ? subjEl.textContent : '');
+            }
+            if (rowTk.toLowerCase() === tkLower) {
+                found = parseInt(row.getAttribute('data-uid'), 10) || 0;
+            }
+        });
+
+        return found;
+    }
+
+    function resolvePostSendSelectionUid(data, form) {
+        var card = getListCard();
+        var folderB64 = card ? card.getAttribute('data-folder-b64') || '' : '';
+        var plainPath = card ? card.getAttribute('data-folder-plain') || '' : '';
+        var preview = lookupListPreview(data, folderB64, plainPath);
+
+        if (preview && preview.uid) {
+            return parseInt(preview.uid, 10) || 0;
+        }
+        if (data && data.sent_list_preview && data.sent_list_preview.uid) {
+            return parseInt(data.sent_list_preview.uid, 10) || 0;
+        }
+
+        var subject = '';
+        if (form && form.querySelector) {
+            subject = (form.querySelector('input[name="subject"]') || {}).value || '';
+        }
+        if (!subject && data && data.thread_subject) {
+            subject = data.thread_subject;
+        }
+
+        var threadKey = normalizeThreadSubject(subject);
+        if (threadKey) {
+            var byThread = findListRowUidForThread(threadKey);
+            if (byThread) return byThread;
+        }
+
+        if (data && data.reply_uid) {
+            return parseInt(data.reply_uid, 10) || 0;
+        }
+        if (composePanelRestoreUid) {
+            return composePanelRestoreUid;
+        }
+        if (form && form.querySelector) {
+            return parseInt((form.querySelector('input[name="uid"]') || {}).value || '0', 10) || 0;
+        }
+
+        return 0;
+    }
+
+    function rememberPostSendSelectionThread(data, form) {
+        var subject = '';
+        if (form && form.querySelector) {
+            subject = (form.querySelector('input[name="subject"]') || {}).value || '';
+        }
+        if (!subject && data && data.thread_subject) {
+            subject = data.thread_subject;
+        }
+        postSendSelectionThreadKey = normalizeThreadSubject(subject);
+        if (postSendSelectionThreadKey) {
+            window.setTimeout(function () {
+                postSendSelectionThreadKey = '';
+            }, 60000);
+        }
+    }
+
+    function selectPostSendListRow(messages) {
+        if (!postSendSelectionThreadKey) return false;
+        var uid = findListRowUidForThread(postSendSelectionThreadKey, messages);
+        if (!uid) return false;
+        setSelectedRow(uid);
+        return true;
+    }
+
     function restorePaneAfterReplySend(data, form) {
         var composeMode = (form && form.querySelector)
             ? ((form.querySelector('input[name="mode"]') || {}).value || '')
@@ -2175,24 +2270,22 @@
             return false;
         }
 
-        var restoreUid = (data && data.reply_uid ? parseInt(data.reply_uid, 10) : 0)
-            || composePanelRestoreUid
-            || (form && form.querySelector ? parseInt((form.querySelector('input[name="uid"]') || {}).value || '0', 10) : 0);
-        if (!restoreUid) {
+        var selectionUid = resolvePostSendSelectionUid(data, form);
+        if (!selectionUid) {
             return false;
         }
 
-        invalidatePaneCache(restoreUid);
+        invalidatePaneCache(selectionUid);
         if (data && (data.thread_preview || data.reply_date || data.thread_subject)) {
             applySnippetToRow(
-                restoreUid,
+                selectionUid,
                 data.thread_preview || null,
                 data.reply_date || null,
                 data.thread_subject || null
             );
         }
-        rowsForUid(restoreUid).forEach(function (el) {
-            setRowSeen(restoreUid, true);
+        rowsForUid(selectionUid).forEach(function (el) {
+            setRowSeen(selectionUid, true);
         });
         if (data && data.unread_counts) {
             applyUnreadCounts(data.unread_counts);
@@ -2202,7 +2295,8 @@
         if (form) {
             resetComposeUiState();
         }
-        openMessageInPaneNow(restoreUid, false, true);
+        setSelectedRow(selectionUid);
+        openMessageInPaneNow(selectionUid, false, true);
         return true;
     }
 
@@ -2244,6 +2338,7 @@
 
         invalidatePaneCache(paneUid);
         invalidatePaneCache(newestUid);
+        setSelectedRow(parseInt(newestUid, 10) || parseInt(paneUid, 10));
         openMessageInPaneNow(parseInt(newestUid, 10) || parseInt(paneUid, 10), false, true);
     }
 
@@ -4229,6 +4324,7 @@
             updateMailCount(nextTotal, parseInt(label.getAttribute('data-unread') || '0', 10) || 0);
         }
         scheduleListSnippets(card);
+        setSelectedRow(parseInt(preview.uid, 10) || 0);
         return true;
     }
 
@@ -4274,6 +4370,13 @@
         var returnFolder = data && data.return_folder ? String(data.return_folder) : '';
 
         injectPostSendListPreview(data);
+        rememberPostSendSelectionThread(data, form);
+        if (data && data.reply_uid) {
+            var immediateSelection = resolvePostSendSelectionUid(data, form);
+            if (immediateSelection) {
+                setSelectedRow(immediateSelection);
+            }
+        }
 
         var needFolderSwitch = false;
         if (returnFolder && returnFolder !== currentB64) {
@@ -4541,6 +4644,7 @@
                     }
 
                     refreshPaneIfThreadListChanged(data.messages);
+                    selectPostSendListRow(data.messages);
 
                     reorderMailListFromPoll(data.messages);
                     syncListEmptyState();
