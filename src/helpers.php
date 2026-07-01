@@ -3607,8 +3607,8 @@ function mail_find_correspondent_inbox_unread_targets_for_thread(string $corrFol
 }
 
 /**
- * True when the employee has per-user read on any Support/shared copy in this thread.
- * Hidden inbox copies must not keep the thread unread once Support was read.
+ * True when the employee has read the latest Support/shared copy in this thread.
+ * Older read segments must not hide a newer unread reply.
  */
 function mail_correspondent_support_thread_read_for_employee(string $corrFolder, string $baseSubject): bool
 {
@@ -3642,13 +3642,15 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
 
     try {
         $rows = App\Database::query(
-            'SELECT imap_uid, subject FROM mail_index WHERE folder_path = ?',
+            'SELECT imap_uid, subject, msg_date FROM mail_index WHERE folder_path = ?',
             [$corrFolder]
         )->fetchAll();
     } catch (\Throwable) {
         return false;
     }
 
+    $latestUid = 0;
+    $latestTs = -1;
     foreach ($rows as $row) {
         $uid = (int) ($row['imap_uid'] ?? 0);
         if ($uid <= 0) {
@@ -3657,12 +3659,18 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
         if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
             continue;
         }
-        if (\App\Services\MailCacheService::effectiveSeen($corrFolder, $uid, $viewerId)) {
-            return true;
+        $ts = strtotime((string) ($row['msg_date'] ?? '')) ?: 0;
+        if ($ts > $latestTs || ($ts === $latestTs && $uid > $latestUid)) {
+            $latestTs = $ts;
+            $latestUid = $uid;
         }
     }
 
-    return false;
+    if ($latestUid <= 0) {
+        return false;
+    }
+
+    return \App\Services\MailCacheService::effectiveSeen($corrFolder, $latestUid, $viewerId);
 }
 
 function mail_correspondent_inbox_has_unread_for_thread(string $corrFolder, string $baseSubject): bool
@@ -3762,16 +3770,15 @@ function mail_correspondent_folder_badge_count(string $folderPath): int
         return $memo[$folderPath];
     }
 
-    $perPage = max(mail_per_page(), 200);
-    $list = \App\Services\MailCacheService::listFromCache($folderPath, 1, $perPage);
-    if ($list === null || empty($list['messages'])) {
+    $privacyEmails = employee_correspondent_privacy_emails($folderPath);
+    if ($privacyEmails === null) {
         return $memo[$folderPath] = 0;
     }
 
-    $list = mail_filter_removed_messages($folderPath, $list);
-    $list = mail_apply_folder_list_view_pipeline($folderPath, $list, true);
-
-    return $memo[$folderPath] = mail_count_correspondent_list_unread($folderPath, $list['messages']);
+    return $memo[$folderPath] = \App\Services\MailCacheService::countCorrespondentUnseenWithReplies(
+        $folderPath,
+        $privacyEmails
+    );
 }
 
 /**
