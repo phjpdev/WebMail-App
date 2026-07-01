@@ -4407,16 +4407,19 @@
                     }
 
                     // Remove rows that no longer exist on the server (moved/deleted
-                    // elsewhere), so the list self-heals.
-                    known.forEach(function (uid) {
-                        if (!freshUids[uid]) {
-                            rowsForUid(uid).forEach(function (el) {
-                                if (el.getAttribute('data-optimistic') === '1') return;
-                                if (parseInt(uid, 10) < 0) return;
-                                if (el.parentNode) el.parentNode.removeChild(el);
-                            });
-                        }
-                    });
+                    // elsewhere), so the list self-heals — but not during post-send
+                    // when the server may return a partial fast-path list.
+                    if (!isPostSendQuiet()) {
+                        known.forEach(function (uid) {
+                            if (!freshUids[uid]) {
+                                rowsForUid(uid).forEach(function (el) {
+                                    if (el.getAttribute('data-optimistic') === '1') return;
+                                    if (parseInt(uid, 10) < 0) return;
+                                    if (el.parentNode) el.parentNode.removeChild(el);
+                                });
+                            }
+                        });
+                    }
 
                     reorderMailListFromPoll(data.messages);
                     syncListEmptyState();

@@ -314,6 +314,9 @@ class MailController
             $list = employee_filter_correspondent_list($folderPath, $list);
             $list = employee_filter_own_inbox_list($folderPath, $list);
             $list = admin_filter_employee_inbox_correspondent_list($folderPath, $list);
+            if (!MailCacheService::viewerIsAdmin() && employee_is_correspondent_folder($folderPath)) {
+                $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
+            }
             $list = mail_merge_post_send_preview_into_list($folderPath, $list);
             $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
             $list = mail_group_list_by_thread($folderPath, $list);
