@@ -3672,12 +3672,21 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
 
     try {
         $rows = App\Database::query(
-            'SELECT imap_uid, subject, msg_date FROM mail_index WHERE folder_path = ?',
+            'SELECT imap_uid, from_addr, subject, msg_date FROM mail_index WHERE folder_path = ?',
             [$corrFolder]
         )->fetchAll();
     } catch (\Throwable) {
         return false;
     }
+
+    $corrEmail = alias_email_for_folder($corrFolder);
+    if ($corrEmail === null || trim($corrEmail) === '') {
+        $root = employee_mailbox_root_prefix($corrFolder);
+        if ($root !== '') {
+            $corrEmail = alias_email_for_folder($root);
+        }
+    }
+    $corrEmail = $corrEmail !== null ? strtolower(trim($corrEmail)) : '';
 
     $latestUid = 0;
     $latestTs = -1;
@@ -3689,7 +3698,19 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
         if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
             continue;
         }
-        $ts = strtotime((string) ($row['msg_date'] ?? '')) ?: 0;
+
+        $fromRaw = (string) ($row['from_addr'] ?? '');
+        if (mail_is_sent_by_user($fromRaw, $viewerId)) {
+            continue;
+        }
+        if ($corrEmail !== '') {
+            $fromToken = strtolower(normalize_email_token($fromRaw));
+            if ($fromToken !== $corrEmail && !str_contains(strtolower($fromRaw), $corrEmail)) {
+                continue;
+            }
+        }
+
+        $ts = mail_message_timestamp($row['msg_date'] ?? '');
         if ($ts > $latestTs || ($ts === $latestTs && $uid > $latestUid)) {
             $latestTs = $ts;
             $latestUid = $uid;
@@ -3697,7 +3718,7 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
     }
 
     if ($latestUid <= 0) {
-        return false;
+        return true;
     }
 
     return \App\Services\MailCacheService::effectiveSeen($corrFolder, $latestUid, $viewerId);
@@ -3705,12 +3726,8 @@ function mail_correspondent_support_thread_read_for_employee(string $corrFolder,
 
 function mail_correspondent_inbox_has_unread_for_thread(string $corrFolder, string $baseSubject): bool
 {
-    if (mail_correspondent_support_thread_read_for_employee($corrFolder, (string) $baseSubject)) {
-        return false;
-    }
-
-    if (mail_support_folder_has_thread_key($corrFolder, (string) $baseSubject)) {
-        return false;
+    if (!mail_correspondent_support_thread_read_for_employee($corrFolder, (string) $baseSubject)) {
+        return true;
     }
 
     return mail_find_correspondent_inbox_unread_targets_for_thread($corrFolder, $baseSubject) !== [];
@@ -3856,6 +3873,19 @@ function mail_apply_correspondent_inbox_unread_to_list_row(string $folderPath, a
         return;
     }
 
+    $base = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+    if ($base !== '' && !mail_correspondent_support_thread_read_for_employee($folderPath, $base)) {
+        $msg['seen'] = false;
+
+        return;
+    }
+
+    if ($base !== '' && mail_find_correspondent_inbox_unread_targets_for_thread($folderPath, $base) !== []) {
+        $msg['seen'] = false;
+
+        return;
+    }
+
     $viewerId = (int) (App\Auth::user()['id'] ?? 0);
     $indexPath = \App\Services\MailCacheService::indexFolderPath(
         \App\Services\FolderCache::resolvePath($folderPath)
@@ -3863,19 +3893,6 @@ function mail_apply_correspondent_inbox_unread_to_list_row(string $folderPath, a
     $uid = (int) ($msg['uid'] ?? 0);
     if ($uid > 0 && $viewerId > 0 && \App\Services\MailCacheService::effectiveSeen($indexPath, $uid, $viewerId)) {
         $msg['seen'] = true;
-
-        return;
-    }
-
-    $base = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
-    if ($base !== '' && mail_correspondent_support_thread_read_for_employee($folderPath, $base)) {
-        $msg['seen'] = true;
-
-        return;
-    }
-
-    if ($base !== '' && mail_correspondent_inbox_has_unread_for_thread($folderPath, $base)) {
-        $msg['seen'] = false;
     }
 }
 
@@ -5234,9 +5251,21 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
             $bestUid = $entryUid;
         }
     }
+    $threadAwareSeen = array_key_exists('seen', $msg) ? (bool) $msg['seen'] : null;
     if ($bestUid > 0 && \App\Services\MailCacheService::messageInIndex($folderResolved, $bestUid)) {
         $msg['uid'] = $bestUid;
-        $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid);
+        if (
+            employee_is_correspondent_folder($folderPath)
+            && !empty($latest['is_inbound_reply'])
+        ) {
+            $replyFolder = \App\Services\FolderCache::resolvePath((string) ($latest['folder_path'] ?? $folderResolved));
+            $replyUid = (int) ($latest['imap_uid'] ?? 0);
+            if ($replyUid > 0) {
+                $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid, $employeeUserId);
+            }
+        } elseif ($threadAwareSeen === null) {
+            $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid, $employeeUserId);
+        }
     }
 
     $displayUid = (int) ($msg['uid'] ?? 0);
