@@ -4407,9 +4407,13 @@
                     }
 
                     // Remove rows that no longer exist on the server (moved/deleted
-                    // elsewhere), so the list self-heals — but not during post-send
-                    // when the server may return a partial fast-path list.
-                    if (!isPostSendQuiet()) {
+                    // elsewhere), so the list self-heals — but not when the poll
+                    // returns fewer rows than we already show (partial fast-path).
+                    var visible = visibleMailRowCount();
+                    var shouldPruneMissing = !isPostSendQuiet()
+                        && data.messages.length > 0
+                        && (visible === 0 || data.messages.length >= known.size);
+                    if (shouldPruneMissing) {
                         known.forEach(function (uid) {
                             if (!freshUids[uid]) {
                                 rowsForUid(uid).forEach(function (el) {

@@ -8252,6 +8252,12 @@ function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, b
         ) {
             $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
         }
+        if (
+            \App\Services\MailCacheService::viewerIsAdmin()
+            && \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
+        ) {
+            $list = employee_merge_shared_mailbox_outbound_list($folderPath, $list);
+        }
         $list = mail_merge_post_send_preview_into_list($folderPath, $list);
         $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
         $list = mail_group_list_by_thread($folderPath, $list);
