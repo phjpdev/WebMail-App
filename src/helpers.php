@@ -2847,6 +2847,54 @@ function mail_get_post_send_preview_by_uid(string $folderPath, int $uid): ?array
 }
 
 /**
+ * Real IMAP uid to anchor a post-send optimistic preview to the full conversation thread.
+ *
+ * @param array<string, mixed> $preview
+ */
+function mail_find_thread_anchor_uid_for_preview(string $folderPath, array $preview): int
+{
+    $baseSubject = mail_normalize_thread_subject((string) ($preview['subject'] ?? ''));
+    if ($baseSubject === '') {
+        return 0;
+    }
+
+    $folderPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
+    if ($folderPath === '') {
+        return 0;
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT imap_uid, subject, msg_date FROM mail_index WHERE folder_path = ?',
+            [$folderPath]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return 0;
+    }
+
+    $bestUid = 0;
+    $bestTs = -1;
+    foreach ($rows as $row) {
+        $rowUid = (int) ($row['imap_uid'] ?? 0);
+        if ($rowUid <= 0) {
+            continue;
+        }
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+            continue;
+        }
+        $ts = mail_message_timestamp($row['msg_date'] ?? '');
+        if ($ts > $bestTs || ($ts === $bestTs && $rowUid > $bestUid)) {
+            $bestTs = $ts;
+            $bestUid = $rowUid;
+        }
+    }
+
+    return $bestUid;
+}
+
+/**
  * Reading-pane context for a post-send preview before IMAP assigns a real UID.
  *
  * @param array<string, mixed> $preview
@@ -5957,21 +6005,33 @@ function alias_email_for_folder(string $folderPath): ?string
         return null;
     }
 
-    try {
-        $row = App\Database::fetchOne(
-            'SELECT a.email
-             FROM aliases a
-             INNER JOIN folders f ON a.default_folder_id = f.id AND f.active = 1
-             WHERE f.imap_path = ? AND a.active = 1
-             ORDER BY a.id ASC
-             LIMIT 1',
-            [$folderPath]
-        );
+    $candidates = [\App\Services\FolderCache::resolvePath($folderPath)];
+    $root = employee_mailbox_root_prefix($folderPath);
+    if ($root !== '' && strcasecmp($root, $candidates[0]) !== 0) {
+        $candidates[] = \App\Services\FolderCache::resolvePath($root);
+    }
 
-        return !empty($row['email']) ? (string) $row['email'] : null;
+    try {
+        foreach (array_values(array_unique(array_filter($candidates))) as $candidate) {
+            $row = App\Database::fetchOne(
+                'SELECT a.email
+                 FROM aliases a
+                 INNER JOIN folders f ON a.default_folder_id = f.id AND f.active = 1
+                 WHERE f.imap_path = ? AND a.active = 1
+                 ORDER BY a.id ASC
+                 LIMIT 1',
+                [$candidate]
+            );
+
+            if (!empty($row['email'])) {
+                return (string) $row['email'];
+            }
+        }
     } catch (\Throwable $e) {
         return null;
     }
+
+    return null;
 }
 
 /**
@@ -9170,8 +9230,9 @@ function mail_dedupe_thread_segments(array $segments): array
 
     foreach ($segments as $segment) {
         $body = trim((string) ($segment['body'] ?? ''));
+        $bodyHtml = trim((string) ($segment['body_html'] ?? ''));
         $uid = (int) ($segment['imap_uid'] ?? 0);
-        if ($body === '' && $uid <= 0 && empty($segment['attachments'])) {
+        if ($body === '' && $bodyHtml === '' && empty($segment['attachments'])) {
             continue;
         }
 

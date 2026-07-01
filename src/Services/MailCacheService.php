@@ -2117,6 +2117,18 @@ class MailCacheService
             }
         }
 
+        // Employee correspondent folders: align badge with list rows — unread when the
+        // latest inbound Support reply in this folder is unread (not only inbox copies).
+        if (!self::viewerIsAdmin() && employee_is_correspondent_folder($folderPath)) {
+            foreach (array_keys($groups) as $threadKey) {
+                if (mail_correspondent_support_thread_read_for_employee($folderPath, (string) $threadKey)) {
+                    unset($unreadThreads[$threadKey]);
+                } else {
+                    $unreadThreads[$threadKey] = true;
+                }
+            }
+        }
+
         $ownInbox = employee_linked_inbox_path();
         if ($ownInbox === null || $ownInbox === '') {
             return count($unreadThreads);

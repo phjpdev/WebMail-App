@@ -1077,6 +1077,29 @@ class MailController
                 return;
             }
 
+            $anchorUid = mail_find_thread_anchor_uid_for_preview($folderPath, $preview);
+            if ($anchorUid > 0) {
+                $context = $this->loadMessageContext($folderPath, $anchorUid, markRead: false, deferred: $deferred);
+                if ($context !== null) {
+                    $html = view_string('mail/pane-read', $context);
+                    $payload = [
+                        'ok' => true,
+                        'uid' => $uid,
+                        'subject' => $context['message']['subject'] ?: '(no subject)',
+                        'seen' => !empty($context['message']['seen']),
+                        'was_unread' => false,
+                        'html' => $html,
+                        'optimistic' => true,
+                        'unread_counts' => $context['unreadCounts'],
+                        'folder_unread' => mail_folder_unread_count($context['unreadCounts'], $folderPath),
+                    ];
+                    if ($deferred !== null) {
+                        json_response_then($payload, $deferred);
+                    }
+                    json_response($payload);
+                }
+            }
+
             $context = mail_build_optimistic_pane_context($folderPath, $preview);
             $html = view_string('mail/pane-read', $context);
             json_response([

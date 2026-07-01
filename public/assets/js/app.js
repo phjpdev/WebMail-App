@@ -2238,6 +2238,47 @@
         return 0;
     }
 
+    function resolvePostSendPaneUid(data, form) {
+        if (data && data.reply_uid) {
+            var replyUid = parseInt(data.reply_uid, 10) || 0;
+            if (replyUid > 0) {
+                return replyUid;
+            }
+        }
+        if (form && form.querySelector) {
+            var formUid = parseInt((form.querySelector('input[name="uid"]') || {}).value || '0', 10) || 0;
+            if (formUid > 0) {
+                return formUid;
+            }
+        }
+        var selectionUid = resolvePostSendSelectionUid(data, form);
+        if (selectionUid > 0) {
+            return selectionUid;
+        }
+        return 0;
+    }
+
+    function resolveThreadPaneUid(messages, threadKey) {
+        if (!messages || !messages.length || !threadKey) {
+            return 0;
+        }
+        var tkLower = threadKey.toLowerCase();
+        var threadMsgs = messages.filter(function (m) {
+            return (m.thread_key || normalizeThreadSubject(m.subject)).toLowerCase() === tkLower;
+        });
+        if (!threadMsgs.length) {
+            return 0;
+        }
+        var i;
+        for (i = 0; i < threadMsgs.length; i++) {
+            var uid = parseInt(threadMsgs[i].uid, 10) || 0;
+            if (uid > 0) {
+                return uid;
+            }
+        }
+        return parseInt(threadMsgs[0].uid, 10) || 0;
+    }
+
     function rememberPostSendSelectionThread(data, form) {
         var subject = '';
         if (form && form.querySelector) {
@@ -2270,23 +2311,31 @@
             return false;
         }
 
-        var selectionUid = resolvePostSendSelectionUid(data, form);
-        if (!selectionUid) {
+        var listUid = resolvePostSendSelectionUid(data, form);
+        var paneUid = resolvePostSendPaneUid(data, form);
+        if (!listUid && !paneUid) {
             return false;
         }
 
-        invalidatePaneCache(selectionUid);
-        if (data && (data.thread_preview || data.reply_date || data.thread_subject)) {
-            applySnippetToRow(
-                selectionUid,
-                data.thread_preview || null,
-                data.reply_date || null,
-                data.thread_subject || null
-            );
+        if (listUid) {
+            invalidatePaneCache(listUid);
+            if (data && (data.thread_preview || data.reply_date || data.thread_subject)) {
+                applySnippetToRow(
+                    listUid,
+                    data.thread_preview || null,
+                    data.reply_date || null,
+                    data.thread_subject || null
+                );
+            }
+            rowsForUid(listUid).forEach(function (el) {
+                setRowSeen(listUid, true);
+            });
+            setSelectedRow(listUid);
         }
-        rowsForUid(selectionUid).forEach(function (el) {
-            setRowSeen(selectionUid, true);
-        });
+
+        if (paneUid) {
+            invalidatePaneCache(paneUid);
+        }
         if (data && data.unread_counts) {
             applyUnreadCounts(data.unread_counts);
         }
@@ -2295,9 +2344,10 @@
         if (form) {
             resetComposeUiState();
         }
-        setSelectedRow(selectionUid);
-        openMessageInPaneNow(selectionUid, false, true);
-        return true;
+        if (paneUid) {
+            openMessageInPaneNow(paneUid, false, true);
+        }
+        return !!(listUid || paneUid);
     }
 
     function schedulePaneReloadAfterReplySend(data, form) {
@@ -2323,23 +2373,20 @@
         }
         if (!paneThreadKey) return;
 
-        var tkLower = paneThreadKey.toLowerCase();
-        var threadMsgs = messages.filter(function (m) {
-            return (m.thread_key || normalizeThreadSubject(m.subject)).toLowerCase() === tkLower;
-        });
-        if (!threadMsgs.length) return;
+        var reloadUid = resolveThreadPaneUid(messages, paneThreadKey);
+        if (!reloadUid) return;
 
-        var newestUid = String(threadMsgs[0].uid);
-        var shouldReload = newestUid !== paneUid
+        var reloadUidStr = String(reloadUid);
+        var shouldReload = reloadUidStr !== paneUid
             || isPostSendQuiet()
             || postSendRefreshFolders.length > 0;
 
         if (!shouldReload) return;
 
         invalidatePaneCache(paneUid);
-        invalidatePaneCache(newestUid);
-        setSelectedRow(parseInt(newestUid, 10) || parseInt(paneUid, 10));
-        openMessageInPaneNow(parseInt(newestUid, 10) || parseInt(paneUid, 10), false, true);
+        invalidatePaneCache(reloadUid);
+        setSelectedRow(reloadUid);
+        openMessageInPaneNow(reloadUid, false, true);
     }
 
     function bindComposeFormAjax(form) {
