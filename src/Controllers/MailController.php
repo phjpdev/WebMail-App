@@ -801,6 +801,9 @@ class MailController
                 'avatar_initial' => mail_avatar_initial($rowDisplay['avatar_from']),
                 'avatar_color' => mail_avatar_color($rowDisplay['avatar_from']),
             ];
+            if (!empty($msg['thread_key'])) {
+                $entry['thread_key'] = (string) $msg['thread_key'];
+            }
             if (!empty($msg['optimistic'])) {
                 $entry['optimistic'] = true;
             } else {
@@ -817,6 +820,7 @@ class MailController
             'total' => $list['total'],
             'page' => $list['page'],
             'total_pages' => $list['total_pages'],
+            'list_grouped' => mail_should_group_list_by_thread($folderPath),
             'messages' => $messages,
             'unread_counts' => $light
                 ? FolderCache::sidebarUnreadCountsFromSession()

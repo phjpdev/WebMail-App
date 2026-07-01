@@ -3124,8 +3124,8 @@ function mail_resort_list_by_message_date(array $messages): array
     }
 
     usort($messages, static function (array $a, array $b): int {
-        $aTs = strtotime((string) ($a['sort_date'] ?? $a['date'] ?? '')) ?: 0;
-        $bTs = strtotime((string) ($b['sort_date'] ?? $b['date'] ?? '')) ?: 0;
+        $aTs = mail_message_timestamp($a['sort_date'] ?? $a['date'] ?? '');
+        $bTs = mail_message_timestamp($b['sort_date'] ?? $b['date'] ?? '');
         if ($aTs === $bTs) {
             return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
         }
@@ -3879,7 +3879,7 @@ function mail_list_message_fingerprint(array $msg): string
 {
     $parsed = mail_parse_address((string) ($msg['from'] ?? ''));
     $email = strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($msg['from'] ?? '')));
-    $ts = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+    $ts = mail_message_timestamp($msg['date'] ?? '');
     $minute = $ts > 0 ? (int) floor($ts / 60) : 0;
 
     return $email . '|' . $minute . '|' . mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
@@ -4800,9 +4800,9 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
             $key = 'uid:' . (int) ($msg['uid'] ?? 0);
         }
 
-        $msgTs = strtotime((string) ($msg['date'] ?? '')) ?: 0;
+        $msgTs = mail_message_timestamp($msg['date'] ?? '');
         $existingTs = isset($groups[$key])
-            ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
+            ? mail_message_timestamp($groups[$key]['date'] ?? '')
             : -1;
         $incomingUnread = empty($msg['seen']);
         if (!isset($groups[$key])) {
@@ -4823,11 +4823,19 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
     }
 
     $merged = array_values($groups);
-    usort($merged, static function (array $a, array $b): int {
-        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
-        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+    foreach ($merged as &$groupedMsg) {
+        if (!is_array($groupedMsg)) {
+            continue;
+        }
+        $threadKey = mail_normalize_thread_subject((string) ($groupedMsg['subject'] ?? ''));
+        if ($threadKey !== '') {
+            $groupedMsg['thread_key'] = $threadKey;
+        }
+    }
+    unset($groupedMsg);
 
-        return $bTs <=> $aTs;
+    usort($merged, static function (array $a, array $b): int {
+        return mail_message_timestamp($b['date'] ?? '') <=> mail_message_timestamp($a['date'] ?? '');
     });
 
     $list['messages'] = $merged;
@@ -5114,10 +5122,7 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
     }
 
     usort($threadEntries, static function (array $a, array $b): int {
-        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
-        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
-
-        return $aTs <=> $bTs;
+        return mail_message_timestamp($a['date'] ?? '') <=> mail_message_timestamp($b['date'] ?? '');
     });
 
     $latest = $threadEntries[count($threadEntries) - 1];
@@ -5128,6 +5133,7 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
     $latestDate = trim((string) ($latest['date'] ?? ''));
     if ($latestDate !== '') {
         $msg['date'] = $latestDate;
+        $msg['sort_date'] = $latestDate;
     }
 
     $snippet = mail_conversation_snippet((string) ($latest['body'] ?? ''));
@@ -5192,7 +5198,7 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
         if ($entryUid <= 0 || strcasecmp($entryFolder, $folderResolved) !== 0) {
             continue;
         }
-        $entryTs = strtotime((string) ($entry['date'] ?? '')) ?: 0;
+        $entryTs = mail_message_timestamp($entry['date'] ?? '');
         if ($entryTs > $bestTs || ($entryTs === $bestTs && $entryUid > $bestUid)) {
             $bestTs = $entryTs;
             $bestUid = $entryUid;
@@ -6333,6 +6339,16 @@ function format_app_datetime(?string $date, string $format = 'Y-m-d H:i:s'): str
     }
 
     return $dt->format($format);
+}
+
+/**
+ * Unix timestamp for list sort / thread grouping (always America/New_York).
+ */
+function mail_message_timestamp(mixed $date): int
+{
+    $dt = to_app_datetime($date);
+
+    return $dt !== null ? $dt->getTimestamp() : 0;
 }
 
 function format_mail_datetime(?string $date): string

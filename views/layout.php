@@ -150,6 +150,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=193" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=194" defer></script>
 </body>
 </html>

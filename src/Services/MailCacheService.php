@@ -1817,7 +1817,10 @@ class MailCacheService
                 }
             }
 
-            if (!$light) {
+            if (!$light
+                || employee_is_correspondent_folder($folderPath)
+                || self::isSharedEmployeeMailbox($folderPath)
+                || mail_linked_user_id_for_inbox($folderPath) !== null) {
                 mail_enrich_list_with_thread_preview($folderPath, $msg);
             }
             mail_note_correspondent_from_list_message($msg);

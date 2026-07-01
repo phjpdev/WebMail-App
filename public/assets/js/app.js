@@ -2805,6 +2805,53 @@
         return isNaN(uid) ? 0 : uid;
     }
 
+    function normalizeThreadSubject(subject) {
+        var s = String(subject || '').trim();
+        while (/^(Re|Fwd|Fw):\s*/i.test(s)) {
+            s = s.replace(/^(Re|Fwd|Fw):\s*/i, '').trim();
+        }
+        return s;
+    }
+
+    function rowThreadKey(row) {
+        var tk = row.getAttribute('data-thread-key');
+        if (tk) return tk.toLowerCase();
+        var subjEl = row.querySelector('.mail-row-subject, .mail-card-subject');
+        return normalizeThreadSubject(subjEl ? subjEl.textContent : '').toLowerCase();
+    }
+
+    function removeSupersededThreadRows(msg, keepUid) {
+        var tk = (msg.thread_key || normalizeThreadSubject(msg.subject)).toLowerCase();
+        if (!tk) return;
+        var keep = keepUid != null ? String(keepUid) : String(msg.uid);
+        document.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]').forEach(function (row) {
+            if (row.getAttribute('data-optimistic') === '1') return;
+            var uid = row.getAttribute('data-uid');
+            if (uid === keep) return;
+            if (rowThreadKey(row) === tk && row.parentNode) {
+                row.parentNode.removeChild(row);
+            }
+        });
+    }
+
+    function pruneThreadCollapsedRows(freshUids, messages) {
+        if (!messages || !messages.length) return;
+        var winners = {};
+        messages.forEach(function (m) {
+            var tk = (m.thread_key || normalizeThreadSubject(m.subject)).toLowerCase();
+            if (!tk) return;
+            winners[tk] = String(m.uid);
+        });
+        document.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]').forEach(function (row) {
+            if (row.getAttribute('data-optimistic') === '1') return;
+            var uid = row.getAttribute('data-uid');
+            if (!uid || freshUids[uid]) return;
+            var tk = rowThreadKey(row);
+            if (!tk || !winners[tk] || winners[tk] === uid) return;
+            if (row.parentNode) row.parentNode.removeChild(row);
+        });
+    }
+
     function reorderMailListFromPoll(messages) {
         if (!messages || !messages.length) return;
 
@@ -3689,6 +3736,8 @@
         row.setAttribute('data-uid', String(msg.uid));
         row.setAttribute('data-seen', msg.seen ? '1' : '0');
         row.setAttribute('data-flagged', msg.flagged ? '1' : '0');
+        var threadKey = msg.thread_key || normalizeThreadSubject(msg.subject);
+        if (threadKey) row.setAttribute('data-thread-key', threadKey);
         if (msg.sort_date) {
             var sortTs = Date.parse(msg.sort_date);
             if (!isNaN(sortTs)) row.setAttribute('data-sort-ts', String(sortTs));
@@ -3749,6 +3798,8 @@
         a.setAttribute('data-uid', String(msg.uid));
         a.setAttribute('data-seen', msg.seen ? '1' : '0');
         a.setAttribute('data-flagged', msg.flagged ? '1' : '0');
+        var cardThreadKey = msg.thread_key || normalizeThreadSubject(msg.subject);
+        if (cardThreadKey) a.setAttribute('data-thread-key', cardThreadKey);
         if (msg.sort_date) {
             var cardSortTs = Date.parse(msg.sort_date);
             if (!isNaN(cardSortTs)) a.setAttribute('data-sort-ts', String(cardSortTs));
@@ -4109,6 +4160,8 @@
         var preview = lookupListPreview(data, folderB64, plainPath);
         if (!preview) return false;
 
+        removeSupersededThreadRows(preview);
+
         var uid = String(preview.uid);
         var esc = window.CSS && CSS.escape ? CSS.escape(uid) : uid;
         if (document.querySelector('[data-uid="' + esc + '"]')) return false;
@@ -4410,9 +4463,12 @@
                     // elsewhere), so the list self-heals — but not when the poll
                     // returns fewer rows than we already show (partial fast-path).
                     var visible = visibleMailRowCount();
-                    var shouldPruneMissing = !isPostSendQuiet()
-                        && data.messages.length > 0
-                        && (visible === 0 || data.messages.length >= known.size);
+                    var shouldPruneMissing = data.messages.length > 0
+                        && (
+                            visible === 0
+                            || data.messages.length >= known.size
+                            || !!data.list_grouped
+                        );
                     if (shouldPruneMissing) {
                         known.forEach(function (uid) {
                             if (!freshUids[uid]) {
@@ -4423,6 +4479,9 @@
                                 });
                             }
                         });
+                    }
+                    if (data.list_grouped) {
+                        pruneThreadCollapsedRows(freshUids, data.messages);
                     }
 
                     reorderMailListFromPoll(data.messages);
