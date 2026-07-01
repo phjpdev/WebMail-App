@@ -624,17 +624,9 @@ class FolderCache
                 $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
 
-            $count = $sessionCount;
-            if (folder_badge_uses_index_truth($path)) {
-                $trustSession = !Auth::isAdmin()
-                    && employee_is_correspondent_folder($path)
-                    && !self::isPendingBadgePath($path)
-                    && !MailCacheService::badgeAheadOfIndex($path)
-                    && mail_get_post_send_preview($path) === null;
-                if (!$trustSession) {
-                    $count = MailCacheService::sidebarBadgeCount($path, $sessionCount);
-                }
-            }
+            $count = folder_badge_uses_index_truth($path)
+                ? MailCacheService::sidebarBadgeCount($path, $sessionCount)
+                : $sessionCount;
 
             if (mail_admin_outbound_suppresses_sidebar_badge($path)) {
                 $count = 0;
@@ -989,6 +981,13 @@ class FolderCache
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
 
+        ensure_session_writable();
+        if (isset($_SESSION[self::SESSION_KEY])) {
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
+                self::sanitizeUnreadCounts($counts)
+            );
+        }
+
         $data = $this->filterEmployeeSidebarFolders($data, $prefix);
 
         return $this->dedupeSidebarFoldersByMailboxRoot($data);
@@ -1169,7 +1168,7 @@ class FolderCache
             }
 
             $filtered[] = $folder;
-            $counts[$path] = self::sessionUnreadForSidebarPath($path, $data['unread_counts'] ?? []);
+            $counts[$path] = self::sidebarUnreadForFolderPath($path, $data['unread_counts'] ?? []);
             $messagesPath = employee_messages_imap_path($path);
             if (strcasecmp($messagesPath, $path) !== 0) {
                 $counts[$messagesPath] = $counts[$path];
@@ -1178,6 +1177,13 @@ class FolderCache
 
         $data['folders'] = $filtered;
         $data['unread_counts'] = $counts;
+
+        ensure_session_writable();
+        if (isset($_SESSION[self::SESSION_KEY])) {
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
+                self::sanitizeUnreadCounts($counts)
+            );
+        }
 
         return $this->finalizeAdminEmployeeFolderSidebar($data);
     }

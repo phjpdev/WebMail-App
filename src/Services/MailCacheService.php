@@ -1379,15 +1379,7 @@ class MailCacheService
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
             if (!self::viewerIsAdmin() && employee_is_correspondent_folder($folderPath)) {
-                if (
-                    FolderCache::isPendingBadgePath($folderPath)
-                    || self::badgeAheadOfIndex($folderPath)
-                    || mail_get_post_send_preview($folderPath) !== null
-                ) {
-                    return mail_correspondent_folder_badge_count($folderPath);
-                }
-
-                return max(0, (int) $sessionCount);
+                return mail_correspondent_folder_badge_count($folderPath);
             }
 
             return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);

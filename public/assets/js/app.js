@@ -4029,8 +4029,9 @@
         }
     }
 
-    function refreshUnreadBadges() {
-        fetch(apiUrl('folders/unread?light=1'), {
+    function refreshUnreadBadges(full) {
+        var url = apiUrl('folders/unread' + (full ? '' : '?light=1'));
+        fetch(url, {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         }).then(function (r) { return r.json(); })
@@ -4045,6 +4046,11 @@
                     updateMailCount(total, data.unread_counts[plainPath] || 0);
                 }
             }).catch(function () {});
+    }
+
+    function initSidebarBadgesOnLoad() {
+        if (!document.getElementById('mail-workspace')) return;
+        refreshUnreadBadges(true);
     }
 
     var afterSendBadgePolls = 0;
@@ -7181,7 +7187,7 @@
                     }
                 })
                 .catch(function () {});
-        }, 4000);
+        }, 800);
     }
 
     function initStatusPage() {
@@ -7277,6 +7283,7 @@
         prefetchUnreadInList(document);
         initAjaxFolderNav();
         initStatusPage();
+        initSidebarBadgesOnLoad();
         initMailBootstrap();
         initComposePanel();
         initReadViewActions();

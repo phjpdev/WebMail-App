@@ -301,7 +301,14 @@ class MailController
         $list = mail_filter_removed_messages($folderPath, $list);
 
         $fastList = ($preferCache && !$explicitRefresh && $this->shouldSkipPostSendFilter())
-            || mail_get_post_send_preview($folderPath) !== null;
+            || mail_get_post_send_preview($folderPath) !== null
+            || (
+                $preferCache
+                && !$explicitRefresh
+                && $query === ''
+                && !MailCacheService::viewerIsAdmin()
+                && employee_is_correspondent_folder($folderPath)
+            );
 
         if ($fastList) {
             $list = employee_filter_correspondent_list($folderPath, $list);
@@ -364,7 +371,7 @@ class MailController
             MailCacheService::reconcileBadgeFromIndex($folderPath, $list['messages']);
         }
 
-        $sidebarUnread = FolderCache::sidebarUnreadCountsSessionOnly();
+        $sidebarUnread = FolderCache::sidebarUnreadCounts();
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -537,7 +544,7 @@ class MailController
             'ok' => true,
             'synced' => $synced,
             'folders_changed' => $bootstrapped,
-            'unread_counts' => FolderCache::load(skipUnreadRefresh: true)['unread_counts'] ?? [],
+            'unread_counts' => FolderCache::sidebarUnreadCounts(),
         ]);
     }
 

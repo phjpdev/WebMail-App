@@ -59,6 +59,8 @@ class Auth
 
         session_regenerate_id(true);
 
+        (new \App\Services\FolderCache())->clear();
+
         // Rotate the CSRF token on privilege change so a token captured before
         // login can't be replayed against the authenticated session.
         unset($_SESSION['_csrf_token']);
