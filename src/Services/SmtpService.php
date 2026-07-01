@@ -45,21 +45,85 @@ class SmtpService
     public function send(array $options): bool
     {
         $config = config('mail');
+        $profiles = $this->smtpProfiles($config);
+
+        foreach ($profiles as $profile) {
+            if ($this->sendWithProfile($config, $profile, $options)) {
+                return true;
+            }
+
+            if (!$this->isConnectFailure($this->lastError)) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    public function getLastError(): string
+    {
+        return $this->lastError;
+    }
+
+    /**
+     * Full RFC822 MIME of the last successfully sent message (for saving to Sent).
+     */
+    public function getLastMime(): string
+    {
+        return $this->lastMime;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @return list<array{host: string, port: int, encryption: string}>
+     */
+    private function smtpProfiles(array $config): array
+    {
+        $host = (string) ($config['smtp']['host'] ?? '');
+        $port = (int) ($config['smtp']['port'] ?? 465);
+        $encryption = strtolower((string) ($config['smtp']['encryption'] ?? 'ssl'));
+
+        $profiles = [[
+            'host' => $host,
+            'port' => $port,
+            'encryption' => $encryption,
+        ]];
+
+        // GoDaddy/cPanel: implicit SSL on 465 often fails from PHP on Windows even
+        // when IMAP on 993 works. STARTTLS on 587 to the same host is the reliable fix.
+        if ($host !== '' && $port === 465 && $encryption === 'ssl') {
+            $profiles[] = [
+                'host' => $host,
+                'port' => 587,
+                'encryption' => 'tls',
+            ];
+        }
+
+        return $profiles;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param array{host: string, port: int, encryption: string} $profile
+     * @param array<string, mixed> $options
+     */
+    private function sendWithProfile(array $config, array $profile, array $options): bool
+    {
         $mail = new PHPMailer(true);
 
         try {
             $mail->isSMTP();
-            $mail->Host = $config['smtp']['host'];
+            $mail->Host = $profile['host'];
             $mail->SMTPAuth = true;
             $mail->Username = $config['mailbox_email'];
             $mail->Password = $config['mailbox_password'];
-            $mail->Port = $config['smtp']['port'];
+            $mail->Port = $profile['port'];
             $mail->Timeout = 20;
             $mail->CharSet = PHPMailer::CHARSET_UTF8;
 
-            if ($config['smtp']['encryption'] === 'ssl') {
+            if ($profile['encryption'] === 'ssl') {
                 $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-            } elseif ($config['smtp']['encryption'] === 'tls') {
+            } elseif ($profile['encryption'] === 'tls') {
                 $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
             }
 
@@ -160,17 +224,13 @@ class SmtpService
         }
     }
 
-    public function getLastError(): string
+    private function isConnectFailure(string $error): bool
     {
-        return $this->lastError;
-    }
+        $lower = strtolower($error);
 
-    /**
-     * Full RFC822 MIME of the last successfully sent message (for saving to Sent).
-     */
-    public function getLastMime(): string
-    {
-        return $this->lastMime;
+        return str_contains($lower, 'connect')
+            || str_contains($lower, 'timed out')
+            || str_contains($lower, 'timeout');
     }
 
     /**

@@ -567,6 +567,41 @@ class FolderCache
     }
 
     /**
+     * Sidebar badges from session only — no per-folder DB/IMAP (safe on send/fragment).
+     *
+     * @return array<string, int>
+     */
+    public static function sidebarUnreadCountsSessionOnly(): array
+    {
+        $folderData = self::load(skipUnreadRefresh: true);
+        $session = self::normalizeUnreadCounts($folderData['unread_counts'] ?? []);
+        $result = [];
+
+        foreach ($folderData['folders'] ?? [] as $folder) {
+            $path = (string) ($folder['path'] ?? '');
+            if ($path === '' || !folder_shows_unread_badge($path)) {
+                continue;
+            }
+
+            $count = self::sessionUnreadForSidebarPath($path, $session);
+            $messagesPath = employee_messages_imap_path($path);
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $count = max($count, self::sessionUnreadForSidebarPath($messagesPath, $session));
+            }
+            if (mail_admin_outbound_suppresses_sidebar_badge($path)) {
+                $count = 0;
+            }
+
+            $result[$path] = $count;
+            if (strcasecmp($messagesPath, $path) !== 0) {
+                $result[$messagesPath] = $count;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Fast sidebar badges for polling — session only, no per-folder DB/IMAP work.
      *
      * @return array<string, int>
@@ -589,9 +624,21 @@ class FolderCache
                 $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
 
-            $count = folder_badge_uses_index_truth($path)
-                ? MailCacheService::sidebarBadgeCount($path, $sessionCount)
-                : $sessionCount;
+            $count = $sessionCount;
+            if (folder_badge_uses_index_truth($path)) {
+                $trustSession = !Auth::isAdmin()
+                    && employee_is_correspondent_folder($path)
+                    && !self::isPendingBadgePath($path)
+                    && !MailCacheService::badgeAheadOfIndex($path)
+                    && mail_get_post_send_preview($path) === null;
+                if (!$trustSession) {
+                    $count = MailCacheService::sidebarBadgeCount($path, $sessionCount);
+                }
+            }
+
+            if (mail_admin_outbound_suppresses_sidebar_badge($path)) {
+                $count = 0;
+            }
 
             $result[$path] = $count;
             if (strcasecmp($messagesPath, $path) !== 0) {
@@ -652,11 +699,13 @@ class FolderCache
 
         if (
             $count <= 0
+            && !mail_admin_outbound_suppresses_sidebar_badge($path)
+            && !mail_admin_outbound_suppresses_sidebar_badge($messagesPath)
             && (
                 self::isPendingBadgePath($path)
                 || self::isPendingBadgePath($messagesPath)
-                || mail_get_post_send_preview($path) !== null
-                || mail_get_post_send_preview($messagesPath) !== null
+                || mail_post_send_preview_inflates_sidebar_badge($path)
+                || mail_post_send_preview_inflates_sidebar_badge($messagesPath)
             )
         ) {
             $count = 1;

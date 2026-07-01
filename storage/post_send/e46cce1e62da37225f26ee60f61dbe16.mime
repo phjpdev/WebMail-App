@@ -1,0 +1,23 @@
+Date: Wed, 1 Jul 2026 12:18:00 -0400
+To: support@bebenailsmd.com
+From: Jean Patrick Reyes <jean@bebenailsmd.com>
+Subject: 123
+Message-ID: <nXDheQLiQ9y4BsgT1oOY6StTEtjkFvYQyWMlGEmo@localhost>
+X-Mailer: PHPMailer 6.9.3 (https://github.com/PHPMailer/PHPMailer)
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="b1=_nXDheQLiQ9y4BsgT1oOY6StTEtjkFvYQyWMlGEmo"
+Content-Transfer-Encoding: 8bit
+
+--b1=_nXDheQLiQ9y4BsgT1oOY6StTEtjkFvYQyWMlGEmo
+Content-Type: text/plain; charset=us-ascii
+
+123
+
+--b1=_nXDheQLiQ9y4BsgT1oOY6StTEtjkFvYQyWMlGEmo
+Content-Type: text/html; charset=us-ascii
+
+123
+
+
+--b1=_nXDheQLiQ9y4BsgT1oOY6StTEtjkFvYQyWMlGEmo--

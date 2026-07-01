@@ -468,7 +468,12 @@ class ImapService
     public function moveMessage(string $fromPath, int $uid, string $toPath): bool
     {
         $fromPath = FolderCache::resolvePath($fromPath);
-        $toPath = employee_messages_imap_path(FolderCache::resolvePath($toPath));
+        $toPath = ensure_employee_messages_folder_exists(
+            employee_messages_imap_path(FolderCache::resolvePath($toPath))
+        );
+        if ($toPath === '') {
+            return false;
+        }
 
         if (!$this->openFolder($fromPath)) {
             return false;
@@ -1150,7 +1155,12 @@ class ImapService
             return false;
         }
 
-        $folderPath = employee_messages_imap_path(FolderCache::resolvePath($folderPath));
+        $folderPath = ensure_employee_messages_folder_exists(
+            employee_messages_imap_path(FolderCache::resolvePath($folderPath))
+        );
+        if ($folderPath === '') {
+            return false;
+        }
         $mailbox = $this->getMailboxString() . $this->encodeFolderPath($folderPath);
         $rawMessage = $this->normalizeRawMessage($rawMessage);
 

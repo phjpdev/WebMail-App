@@ -436,6 +436,49 @@ function dispatch_async_request(string $path, array $query = []): void
 }
 
 /**
+ * Run post-send IMAP sync outside the web server when possible (avoids blocking
+ * other requests on single-worker hosts like XAMPP).
+ */
+function dispatch_post_send(string $token): void
+{
+    if (PHP_SAPI === 'cli' || !preg_match('/^[a-f0-9]{32}$/', $token)) {
+        return;
+    }
+
+    $script = base_path('scripts/run-post-send.php');
+    $phpBin = trim((string) env('PHP_CLI_PATH', ''));
+    if ($phpBin === '' && defined('PHP_BINARY') && is_file(PHP_BINARY)) {
+        $phpBin = PHP_BINARY;
+    }
+    if ($phpBin === '') {
+        $xamppPhp = 'C:\\xampp\\php\\php.exe';
+        if (is_file($xamppPhp)) {
+            $phpBin = $xamppPhp;
+        }
+    }
+
+    if ($phpBin !== '' && is_file($script) && function_exists('proc_open')) {
+        $cmd = escapeshellarg($phpBin) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($token);
+        $logFile = base_path('storage/logs/post-send-cli.log');
+        $desc = [
+            0 => ['pipe', 'r'],
+            1 => ['file', $logFile, 'a'],
+            2 => ['file', $logFile, 'a'],
+        ];
+        $proc = @proc_open($cmd, $desc, $pipes, base_path());
+        if (is_resource($proc)) {
+            if (isset($pipes[0]) && is_resource($pipes[0])) {
+                fclose($pipes[0]);
+            }
+
+            return;
+        }
+    }
+
+    dispatch_async_request('compose/post-send-deferred', ['token' => $token]);
+}
+
+/**
  * Open the session, run a short write, then release the lock immediately.
  * Use inside background tasks instead of holding the session across IMAP work.
  */
@@ -852,6 +895,35 @@ function employee_linked_inbox_path_for_user_id(int $userId): ?string
 }
 
 /**
+ * Employee mailbox root (e.g. INBOX.Jean) for a platform user id.
+ */
+function employee_mailbox_root_for_user_id(int $userId): ?string
+{
+    if ($userId <= 0) {
+        return null;
+    }
+
+    static $cache = [];
+    if (array_key_exists($userId, $cache)) {
+        return $cache[$userId];
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' AND active = 1 LIMIT 1",
+            [$userId]
+        );
+        $cache[$userId] = ($row !== null && !empty($row['imap_path']))
+            ? employee_mailbox_root_prefix((string) $row['imap_path'])
+            : null;
+    } catch (\Throwable) {
+        $cache[$userId] = null;
+    }
+
+    return $cache[$userId];
+}
+
+/**
  * Linked inbox for a send-as address (e.g. jean@… → INBOX.Jean.Inbox).
  */
 function employee_linked_inbox_path_for_email(string $fromEmail): ?string
@@ -1035,26 +1107,39 @@ function employee_has_correspondence_with(
     int $userId,
 ): bool {
     $emailLike = '%' . strtolower($correspondentEmail) . '%';
-    $ownLike = strtolower($ownPrefix) . '.%';
+    $ownMessagesPath = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($ownPrefix));
+    $ownPaths = array_values(array_unique(array_filter([
+        $ownPrefix,
+        $ownMessagesPath,
+    ])));
+    $ownLikeClauses = [];
+    $ownParams = [];
+    foreach ($ownPaths as $ownPath) {
+        $ownLikeClauses[] = 'LOWER(folder_path) = LOWER(?)';
+        $ownParams[] = $ownPath;
+        $ownLikeClauses[] = 'LOWER(folder_path) LIKE ?';
+        $ownParams[] = strtolower($ownPath) . '.%';
+    }
+    $ownWhere = '(' . implode(' OR ', $ownLikeClauses) . ')';
 
     try {
         $inbound = App\Database::fetchOne(
-            'SELECT 1 FROM mail_index
-             WHERE (LOWER(folder_path) = LOWER(?) OR LOWER(folder_path) LIKE ?)
+            "SELECT 1 FROM mail_index
+             WHERE {$ownWhere}
                AND LOWER(from_addr) LIKE ?
-             LIMIT 1',
-            [$ownPrefix, $ownLike, $emailLike]
+             LIMIT 1",
+            array_merge($ownParams, [$emailLike])
         );
         if ($inbound !== null) {
             return true;
         }
 
         $outbound = App\Database::fetchOne(
-            'SELECT 1 FROM mail_bodies
-             WHERE (LOWER(folder_path) = LOWER(?) OR LOWER(folder_path) LIKE ?)
+            "SELECT 1 FROM mail_bodies
+             WHERE {$ownWhere}
                AND LOWER(to_addrs) LIKE ?
-             LIMIT 1',
-            [$ownPrefix, $ownLike, $emailLike]
+             LIMIT 1",
+            array_merge($ownParams, [$emailLike])
         );
         if ($outbound !== null) {
             return true;
@@ -1088,12 +1173,31 @@ function employee_correspondent_folder_paths(?int $userId = null): array
 {
     $cache = &employee_correspondent_folder_paths_cache();
 
-    $user = App\Auth::user();
+    $authUser = App\Auth::user();
     if ($userId === null) {
-        $userId = (int) ($user['id'] ?? 0);
+        $userId = (int) ($authUser['id'] ?? 0);
     }
 
-    if ($userId <= 0 || $user === null || ($user['role'] ?? '') !== 'employee') {
+    if ($userId <= 0) {
+        return [];
+    }
+
+    $role = null;
+    if ($authUser !== null && (int) ($authUser['id'] ?? 0) === $userId) {
+        $role = (string) ($authUser['role'] ?? '');
+    }
+    if ($role === null || $role === '') {
+        try {
+            $row = App\Database::fetchOne(
+                'SELECT role FROM users WHERE id = ? AND active = 1 LIMIT 1',
+                [$userId]
+            );
+            $role = (string) ($row['role'] ?? '');
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+    if ($role !== 'employee') {
         return [];
     }
 
@@ -1101,7 +1205,7 @@ function employee_correspondent_folder_paths(?int $userId = null): array
         return $cache[$userId];
     }
 
-    $ownPrefix = employee_linked_inbox_path($user);
+    $ownPrefix = employee_mailbox_root_for_user_id($userId);
     if ($ownPrefix === null || $ownPrefix === '') {
         $cache[$userId] = [];
 
@@ -1109,7 +1213,9 @@ function employee_correspondent_folder_paths(?int $userId = null): array
     }
 
     $paths = [];
-    $session = $_SESSION['_employee_correspondents'] ?? [];
+    $session = ($authUser !== null && (int) ($authUser['id'] ?? 0) === $userId)
+        ? ($_SESSION['_employee_correspondents'] ?? [])
+        : [];
     if (is_array($session)) {
         foreach ($session as $path => $ts) {
             if (is_string($path) && $path !== '' && (int) $ts > 0) {
@@ -1128,8 +1234,11 @@ function employee_correspondent_folder_paths(?int $userId = null): array
             continue;
         }
 
-        if (\App\Services\MailCacheService::countListableMessagesInIndex($mailbox['path']) <= 0) {
-            continue;
+        $corrPath = \App\Services\FolderCache::resolvePath($mailbox['path']);
+        if (!\App\Services\MailCacheService::isSharedEmployeeMailbox($corrPath)) {
+            if (\App\Services\MailCacheService::countListableMessagesInIndex($corrPath) <= 0) {
+                continue;
+            }
         }
 
         $paths[] = $mailbox['path'];
@@ -2111,20 +2220,241 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
 {
     mail_apply_destination_folder_badges($fromEmail, $destPaths);
 
-    $reconcilePaths = array_values(array_unique(array_filter($destPaths)));
-    $senderFolder = folder_for_alias_email($fromEmail);
-    if ($senderFolder !== null && $senderFolder !== '') {
-        $reconcilePaths[] = $senderFolder;
+    // Avoid reconciling from a stale index mid-send — that briefly flashes wrong badges.
+    return \App\Services\FolderCache::sidebarUnreadCountsSessionOnly();
+}
+
+/**
+ * Apply session state after a successful send (badges, previews, filter hints).
+ *
+ * @param list<string> $destPaths
+ * @param array<string, mixed>|null $threadReply
+ */
+function mail_apply_post_send_session_state(
+    string $fromEmail,
+    string $contextFolder,
+    array $destPaths,
+    string $toHeader,
+    string $ccHeader,
+    string $bccHeader,
+    string $subject,
+    ?string $sentMessageId,
+    string $snippet,
+    ?array $threadReply = null,
+): void {
+    mail_note_admin_outbound_send($fromEmail, $destPaths);
+    foreach ($destPaths as $destPath) {
+        mail_note_employee_correspondent((string) $destPath);
     }
-    foreach ($reconcilePaths as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-        if ($resolved === '' || !folder_badge_uses_index_truth($resolved)) {
-            continue;
+    mail_note_correspondents_from_addresses($toHeader, $ccHeader, $bccHeader);
+    if ($threadReply !== null) {
+        mail_store_thread_reply(
+            (string) ($threadReply['folder_path'] ?? ''),
+            (int) ($threadReply['uid'] ?? 0),
+            is_array($threadReply['reply'] ?? null) ? $threadReply['reply'] : [],
+        );
+    }
+    $_SESSION['_post_send_at'] = time();
+    if ($sentMessageId !== null && $sentMessageId !== '') {
+        $_SESSION['_post_send_message_id'] = $sentMessageId;
+    }
+    mail_store_post_send_previews(
+        $fromEmail,
+        $destPaths,
+        $subject,
+        $toHeader,
+        $sentMessageId,
+        $snippet,
+        $contextFolder,
+    );
+    if ($destPaths !== [] && $sentMessageId !== null && $sentMessageId !== '') {
+        \App\Services\FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
+    }
+}
+
+/**
+ * Client payload for compose/send JSON after session state is written.
+ *
+ * @param list<string> $destPaths
+ * @return array{
+ *   return_folder_b64: string,
+ *   list_previews: array<string, array<string, mixed>>,
+ *   sent_list_preview: array<string, mixed>|null,
+ *   unread_counts: array<string, int>,
+ *   dest_folders: list<string>
+ * }
+ */
+function mail_build_post_send_client_state(
+    string $fromEmail,
+    string $contextFolder,
+    array $destPaths,
+): array {
+    $listPreviews = mail_post_send_previews_for_client();
+    $sentPreview = null;
+    if ($contextFolder !== '') {
+        $raw = mail_get_post_send_preview($contextFolder);
+        if ($raw !== null) {
+            $sentPreview = mail_format_post_send_preview_for_client($raw);
         }
-        \App\Services\MailCacheService::reconcileBadgeFromIndex($resolved);
     }
 
-    return \App\Services\FolderCache::sidebarUnreadCounts();
+    return [
+        'return_folder_b64' => $contextFolder !== '' ? encode_folder_path($contextFolder) : '',
+        'list_previews' => $listPreviews,
+        'sent_list_preview' => $sentPreview,
+        'unread_counts' => mail_post_send_optimistic_unread_counts($fromEmail, $destPaths),
+        'dest_folders' => mail_post_send_poll_folder_tokens($fromEmail, $destPaths, $contextFolder),
+    ];
+}
+
+/**
+ * True while post-send background sync is in flight — skip heavy list/filter work.
+ */
+function mail_in_post_send_fast_window(): bool
+{
+    $at = (int) ($_SESSION['_post_send_at'] ?? 0);
+    if ($at > 0 && (time() - $at) < 120) {
+        return true;
+    }
+
+    $suppress = $_SESSION['_admin_outbound_suppress_badges'] ?? null;
+
+    return is_array($suppress) && time() <= (int) ($suppress['until'] ?? 0);
+}
+
+/**
+ * Remember admin outbound sends so sidebar badges stay suppressed until post-send sync.
+ *
+ * @param list<string> $destPaths
+ */
+function mail_note_admin_outbound_send(string $fromEmail, array $destPaths): void
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'admin') {
+        return;
+    }
+
+    $fromEmail = strtolower(trim($fromEmail));
+    if ($fromEmail === '') {
+        return;
+    }
+
+    $suppress = [];
+    $senderFolder = folder_for_alias_email($fromEmail);
+    if ($senderFolder !== null && $senderFolder !== '') {
+        $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
+        if (
+            $senderResolved !== ''
+            && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved)
+        ) {
+            foreach (mail_folder_path_aliases($senderResolved) as $alias) {
+                $suppress[strtolower($alias)] = $alias;
+            }
+        }
+    }
+
+    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
+        if ($resolved === '' || !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+            continue;
+        }
+        foreach (mail_folder_path_aliases($resolved) as $alias) {
+            $suppress[strtolower($alias)] = $alias;
+        }
+    }
+
+    if ($suppress === []) {
+        return;
+    }
+
+    ensure_session_writable();
+    $_SESSION['_post_send_from'] = $fromEmail;
+    $_SESSION['_post_send_at'] = time();
+    $_SESSION['_admin_outbound_suppress_badges'] = [
+        'until' => time() + 120,
+        'from' => $fromEmail,
+        'paths' => array_values($suppress),
+    ];
+}
+
+function mail_clear_admin_outbound_badge_suppression(): void
+{
+    unset($_SESSION['_admin_outbound_suppress_badges'], $_SESSION['_post_send_from']);
+}
+
+/**
+ * Admin sent from a shared mailbox (Support) into employee inboxes — hide badges on
+ * the shared sender folder and destination employee folders for this session.
+ */
+function mail_admin_outbound_suppresses_sidebar_badge(string $folderPath): bool
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'admin') {
+        return false;
+    }
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return false;
+    }
+
+    $pending = $_SESSION['_admin_outbound_suppress_badges'] ?? null;
+    $from = '';
+    if (is_array($pending) && time() <= (int) ($pending['until'] ?? 0)) {
+        $from = strtolower(trim((string) ($pending['from'] ?? '')));
+        foreach ((array) ($pending['paths'] ?? []) as $suppressed) {
+            foreach (mail_folder_path_aliases((string) $suppressed) as $alias) {
+                if (strcasecmp($folderPath, $alias) === 0) {
+                    return true;
+                }
+            }
+        }
+    } else {
+        unset($_SESSION['_admin_outbound_suppress_badges']);
+    }
+
+    if ($from === '') {
+        $from = strtolower(trim((string) ($_SESSION['_post_send_from'] ?? '')));
+    }
+    if ($from === '') {
+        return false;
+    }
+
+    if (admin_sent_to_employee_inbox_from_shared_mailbox($folderPath, $from)) {
+        return true;
+    }
+
+    $senderFolder = folder_for_alias_email($from);
+    if ($senderFolder === null || $senderFolder === '') {
+        return false;
+    }
+
+    $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
+
+    return $senderResolved !== ''
+        && strcasecmp($folderPath, $senderResolved) === 0
+        && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved);
+}
+
+/**
+ * Post-send list previews that should not inflate sidebar badges.
+ */
+function mail_post_send_preview_inflates_sidebar_badge(string $folderPath): bool
+{
+    $preview = mail_get_post_send_preview($folderPath);
+    if ($preview === null) {
+        return false;
+    }
+
+    if (!empty($preview['seen'])) {
+        return false;
+    }
+
+    if (mail_admin_outbound_suppresses_sidebar_badge($folderPath)) {
+        return false;
+    }
+
+    return admin_employee_inbox_preview_inflates_badge($folderPath);
 }
 
 /**
@@ -2135,6 +2465,7 @@ function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destP
 function mail_apply_destination_folder_badges(string $fromEmail, array $destPaths, ?array $user = null): void
 {
     $user = $user ?? App\Auth::user();
+    mail_note_admin_outbound_send($fromEmail, $destPaths);
     $senderInbox = employee_linked_inbox_path($user)
         ?? employee_linked_inbox_path_for_email($fromEmail);
     if ($senderInbox !== null && $senderInbox !== '') {
@@ -2148,6 +2479,7 @@ function mail_apply_destination_folder_badges(string $fromEmail, array $destPath
     if ($senderFolder !== null && $senderFolder !== '') {
         $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
         \App\Services\FolderCache::setUnreadCount($senderResolved, 0);
+        \App\Services\FolderCache::clearPendingBadgePath($senderResolved);
     }
 
     $pending = [];
@@ -2158,6 +2490,7 @@ function mail_apply_destination_folder_badges(string $fromEmail, array $destPath
         }
         if (admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
             \App\Services\FolderCache::setUnreadCount($resolved, 0);
+            \App\Services\FolderCache::clearPendingBadgePath($resolved);
             continue;
         }
         $currentUnread = \App\Services\MailCacheService::sidebarBadgeCount($resolved);
@@ -2178,13 +2511,39 @@ function mail_apply_destination_folder_badges(string $fromEmail, array $destPath
  */
 function mail_post_send_dest_folder_tokens(array $destPaths): array
 {
-    $tokens = [];
-    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-        if ($resolved === '') {
-            continue;
+    return mail_post_send_poll_folder_tokens('', $destPaths);
+}
+
+/**
+ * Encoded folder paths the client should refresh after send (destinations + shared sender).
+ *
+ * @param list<string> $destPaths
+ * @return list<string>
+ */
+function mail_post_send_poll_folder_tokens(string $fromEmail, array $destPaths, string $contextFolder = ''): array
+{
+    $paths = array_values(array_unique(array_filter($destPaths)));
+    if ($contextFolder !== '') {
+        $nav = sidebar_folder_nav_path($contextFolder);
+        if ($nav !== '') {
+            $paths[] = $nav;
         }
-        $tokens[] = encode_folder_path($resolved);
+    }
+    if ($fromEmail !== '') {
+        $senderFolder = folder_for_alias_email($fromEmail);
+        if ($senderFolder !== null && $senderFolder !== '') {
+            $paths[] = $senderFolder;
+        }
+    }
+
+    $tokens = [];
+    foreach ($paths as $path) {
+        foreach (mail_folder_path_aliases((string) $path) as $alias) {
+            $token = encode_folder_path($alias);
+            if (!in_array($token, $tokens, true)) {
+                $tokens[] = $token;
+            }
+        }
     }
 
     return $tokens;
@@ -2203,11 +2562,8 @@ function mail_store_post_send_previews(
     string $toHeader,
     ?string $sentMessageId = null,
     string $snippet = '',
+    string $contextFolder = '',
 ): void {
-    if ($destPaths === []) {
-        return;
-    }
-
     $aliasService = new App\Services\AliasService();
     $fromDisplay = $aliasService->getDisplayName($fromEmail);
     $from = $fromDisplay !== '' && strcasecmp($fromDisplay, $fromEmail) !== 0
@@ -2215,8 +2571,21 @@ function mail_store_post_send_previews(
         : $fromEmail;
     $msgId = $sentMessageId ?? '';
     $folders = [];
-    $previewPaths = array_values(array_unique(array_filter($destPaths)));
+    $previewPaths = [];
+    foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $destPath));
+        if ($resolved !== '') {
+            $previewPaths[] = $resolved;
+        }
+    }
+    if ($contextFolder !== '') {
+        $contextNav = sidebar_folder_nav_path($contextFolder);
+        if ($contextNav !== '') {
+            $previewPaths[] = $contextNav;
+        }
+    }
     $senderFolder = folder_for_alias_email($fromEmail);
+    $senderResolved = '';
     if ($senderFolder !== null && $senderFolder !== '') {
         $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
         if (
@@ -2224,19 +2593,20 @@ function mail_store_post_send_previews(
             && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved)
         ) {
             $senderIsDest = false;
-            foreach ($destPaths as $destPath) {
-                $destResolved = \App\Services\FolderCache::resolvePath(
-                    employee_messages_imap_path((string) $destPath)
-                );
-                if ($destResolved !== '' && strcasecmp($destResolved, $senderResolved) === 0) {
+            foreach ($previewPaths as $existing) {
+                if (strcasecmp($existing, $senderResolved) === 0) {
                     $senderIsDest = true;
                     break;
                 }
             }
-            if ($senderIsDest) {
+            if ($senderIsDest || \App\Services\MailCacheService::viewerIsAdmin()) {
                 $previewPaths[] = $senderResolved;
             }
         }
+    }
+    $previewPaths = array_values(array_unique(array_filter($previewPaths)));
+    if ($previewPaths === []) {
+        return;
     }
 
     foreach ($previewPaths as $path) {
@@ -2244,7 +2614,11 @@ function mail_store_post_send_previews(
         if ($resolved === '') {
             continue;
         }
-        if (admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+        $adminToEmployee = admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail);
+        $adminFromShared = $senderResolved !== ''
+            && strcasecmp($resolved, $senderResolved) === 0
+            && \App\Services\MailCacheService::viewerIsAdmin();
+        if ($adminToEmployee) {
             continue;
         }
         $optimisticUid = $msgId !== ''
@@ -2258,7 +2632,7 @@ function mail_store_post_send_previews(
             'subject' => $subject !== '' ? $subject : '(no subject)',
             'date' => date('r'),
             'sort_date' => date('r'),
-            'seen' => false,
+            'seen' => $adminFromShared,
             'flagged' => false,
             'has_attachment' => false,
             'size' => 0,
@@ -2280,6 +2654,109 @@ function mail_store_post_send_previews(
 }
 
 /**
+ * Client-ready optimistic rows keyed by folder path and base64 token.
+ *
+ * @return array<string, array<string, mixed>>
+ */
+function mail_post_send_previews_for_client(): array
+{
+    $pending = $_SESSION['_post_send_previews'] ?? null;
+    if (!is_array($pending) || time() > (int) ($pending['until'] ?? 0)) {
+        return [];
+    }
+
+    $out = [];
+    foreach ((array) ($pending['folders'] ?? []) as $path => $preview) {
+        if (!is_array($preview)) {
+            continue;
+        }
+
+        $entry = mail_format_post_send_preview_for_client($preview);
+        if ($entry === null) {
+            continue;
+        }
+
+        $resolved = \App\Services\FolderCache::resolvePath((string) $path);
+        if ($resolved === '') {
+            continue;
+        }
+
+        foreach (mail_folder_path_aliases($resolved) as $alias) {
+            $out[$alias] = $entry;
+            $out[encode_folder_path($alias)] = $entry;
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * @param array<string, mixed> $preview
+ * @return array<string, mixed>|null
+ */
+function mail_format_post_send_preview_for_client(array $preview): ?array
+{
+    if ($preview === []) {
+        return null;
+    }
+
+    return [
+        'uid' => (int) ($preview['uid'] ?? 0),
+        'from' => format_mail_from((string) ($preview['from'] ?? '')),
+        'subject' => (string) ($preview['subject'] ?? '(no subject)'),
+        'snippet' => (string) ($preview['snippet'] ?? ''),
+        'date' => format_mail_date((string) ($preview['date'] ?? '')),
+        'sort_date' => (string) ($preview['sort_date'] ?? $preview['date'] ?? ''),
+        'seen' => (bool) ($preview['seen'] ?? false),
+        'flagged' => false,
+        'has_attachment' => false,
+        'optimistic' => true,
+    ];
+}
+
+function mail_folder_path_aliases(string $folderPath): array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return [];
+    }
+
+    $aliases = [];
+    foreach ([
+        $folderPath,
+        \App\Services\MailCacheService::indexFolderPath($folderPath),
+        employee_messages_imap_path($folderPath),
+        employee_mailbox_root_prefix($folderPath),
+    ] as $candidate) {
+        $candidate = \App\Services\FolderCache::resolvePath((string) $candidate);
+        if ($candidate === '') {
+            continue;
+        }
+        $aliases[strtolower($candidate)] = $candidate;
+    }
+
+    return array_values($aliases);
+}
+
+/**
+ * True when a post-send preview row should appear in this folder list.
+ *
+ * @param array<string, mixed> $preview
+ */
+function mail_post_send_preview_visible_in_folder(string $folderPath, array $preview): bool
+{
+    if (
+        \App\Services\MailCacheService::viewerIsAdmin()
+        && mail_linked_user_id_for_inbox($folderPath) !== null
+        && admin_should_hide_employee_inbox_correspondent_message($preview)
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * @return array<string, mixed>|null
  */
 function mail_get_post_send_preview(string $folderPath): ?array
@@ -2297,8 +2774,10 @@ function mail_get_post_send_preview(string $folderPath): ?array
     }
 
     foreach ((array) ($pending['folders'] ?? []) as $path => $preview) {
-        if (strcasecmp((string) $path, $folderPath) === 0 && is_array($preview)) {
-            return $preview;
+        foreach (mail_folder_path_aliases($folderPath) as $alias) {
+            if (strcasecmp((string) $path, $alias) === 0 && is_array($preview)) {
+                return $preview;
+            }
         }
     }
 
@@ -2447,9 +2926,11 @@ function mail_clear_post_send_preview(string $folderPath): void
 
     $folders = (array) ($pending['folders'] ?? []);
     foreach (array_keys($folders) as $path) {
-        if (strcasecmp((string) $path, $folderPath) === 0) {
-            unset($folders[$path]);
-            break;
+        foreach (mail_folder_path_aliases($folderPath) as $alias) {
+            if (strcasecmp((string) $path, $alias) === 0) {
+                unset($folders[$path]);
+                break 2;
+            }
         }
     }
 
@@ -2470,14 +2951,50 @@ function mail_reconcile_linked_correspondent_badges(string $folderPath): void
         return;
     }
 
-    if (employee_is_own_inbox_folder($folderPath)) {
-        foreach (employee_correspondent_folder_paths() as $corrPath) {
-            \App\Services\MailCacheService::reconcileBadgeFromIndex($corrPath);
-        }
+    if (employee_is_own_inbox_folder($folderPath) || mail_linked_user_id_for_inbox($folderPath) !== null) {
+        mail_reconcile_correspondent_badges_for_linked_inbox($folderPath);
     } elseif (employee_is_correspondent_folder($folderPath)) {
         $ownInbox = employee_linked_inbox_path();
         if ($ownInbox !== null && $ownInbox !== '') {
             \App\Services\MailCacheService::reconcileBadgeFromIndex($ownInbox);
+        }
+    }
+}
+
+/**
+ * After an employee inbox sync, refresh badges on correspondent folders (e.g. Support)
+ * that surface mail stored in the employee's own mailbox.
+ */
+function mail_reconcile_correspondent_badges_for_linked_inbox(string $folderPath): void
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $linkedId = mail_linked_user_id_for_inbox($folderPath);
+    if ($linkedId === null || $linkedId <= 0) {
+        return;
+    }
+
+    $ownPrefix = employee_mailbox_root_for_user_id($linkedId);
+    if ($ownPrefix === null || $ownPrefix === '') {
+        return;
+    }
+
+    foreach (employee_other_mailboxes($linkedId, $ownPrefix) as $mailbox) {
+        if (!employee_has_correspondence_with(
+            $ownPrefix,
+            $mailbox['path'],
+            $mailbox['email'],
+            $linkedId,
+        )) {
+            continue;
+        }
+
+        $corrPath = \App\Services\FolderCache::resolvePath($mailbox['path']);
+        $root = employee_mailbox_root_prefix($corrPath);
+        $reconcilePath = $root !== ''
+            ? \App\Services\FolderCache::resolvePath($root)
+            : $corrPath;
+        if ($reconcilePath !== '') {
+            \App\Services\MailCacheService::reconcileBadgeFromIndex($reconcilePath);
         }
     }
 }
@@ -2493,7 +3010,7 @@ function mail_unread_counts_after_read(string $folderPath): array
     if ($folderPath !== '') {
         \App\Services\FolderCache::clearPendingBadgePath($folderPath);
         mail_clear_post_send_preview($folderPath);
-        \App\Services\MailCacheService::reconcileBadgeFromIndex($folderPath);
+        \App\Services\MailCacheService::reconcileBadgeFromIndex($folderPath, null);
         mail_reconcile_linked_correspondent_badges($folderPath);
     }
 
@@ -2534,6 +3051,12 @@ function mail_merge_post_send_preview_into_list(string $folderPath, array $list)
 {
     $preview = mail_get_post_send_preview($folderPath);
     if ($preview === null || !isset($list['messages']) || !is_array($list['messages'])) {
+        return $list;
+    }
+
+    if (!mail_post_send_preview_visible_in_folder($folderPath, $preview)) {
+        mail_clear_post_send_preview($folderPath);
+
         return $list;
     }
 
@@ -2596,6 +3119,34 @@ function mail_resort_list_by_message_date(array $messages): array
 
         return $bTs <=> $aTs;
     });
+
+    return $messages;
+}
+
+/**
+ * Outbound copies from a shared mailbox alias should not show as unread for admin.
+ *
+ * @param list<array<string, mixed>> $messages
+ * @return list<array<string, mixed>>
+ */
+function mail_finalize_shared_mailbox_list_seen(string $folderPath, array $messages): array
+{
+    if (
+        !\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
+        || !\App\Services\MailCacheService::viewerIsAdmin()
+    ) {
+        return $messages;
+    }
+
+    foreach ($messages as &$msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+        if (mail_is_shared_mailbox_alias_sent_echo($folderPath, $msg)) {
+            $msg['seen'] = true;
+        }
+    }
+    unset($msg);
 
     return $messages;
 }
@@ -2748,6 +3299,26 @@ function mail_message_involves_user(array $message, array $userEmails): bool
 }
 
 /**
+ * Inbound mail in the employee's own inbox counts toward a correspondent folder
+ * when it arrived from that mailbox's alias, even if To/Cc were not indexed yet.
+ *
+ * @param array<string, mixed> $message
+ * @param list<string> $userEmails lowercase addresses
+ */
+function mail_counts_as_correspondent_inbox_inbound(array $message, array $userEmails): bool
+{
+    if ($userEmails === []) {
+        return false;
+    }
+
+    if (mail_message_involves_user($message, $userEmails)) {
+        return true;
+    }
+
+    return employee_should_hide_inbox_correspondent_message($message);
+}
+
+/**
  * Apply correspondent-folder privacy to a message list: in another employee's
  * mailbox, hide messages the current user is not a party to. No-op for the
  * user's own mailbox, non-correspondent folders, and admins.
@@ -2850,12 +3421,15 @@ function employee_should_hide_inbox_correspondent_message(array $msg): bool
     }
 
     $corrFolder = folder_for_alias_email($fromEmail);
-    if ($corrFolder === null || !employee_can_access_correspondent_folder($corrFolder)) {
+    if ($corrFolder === null || $corrFolder === '') {
         return false;
     }
 
-    // Inbound from a correspondent alias (e.g. support@) belongs in that folder.
-    return true;
+    if (\App\Services\MailCacheService::isSharedEmployeeMailbox($corrFolder)) {
+        return true;
+    }
+
+    return employee_can_access_correspondent_folder($corrFolder);
 }
 
 /**
@@ -2891,6 +3465,385 @@ function employee_filter_own_inbox_list(string $folderPath, array $list): array
     $list['messages'] = $filtered;
 
     return $list;
+}
+
+/**
+ * Admin view of an employee inbox: hide inbound from shared/correspondent
+ * mailboxes (those threads live in Support or the correspondent folder).
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function admin_filter_employee_inbox_correspondent_list(string $folderPath, array $list): array
+{
+    $linkedId = mail_linked_user_id_for_inbox($folderPath);
+    if (
+        $linkedId === null
+        || !\App\Services\MailCacheService::viewerIsAdmin()
+        || !isset($list['messages'])
+        || !is_array($list['messages'])
+    ) {
+        return $list;
+    }
+
+    $before = count($list['messages']);
+    $filtered = [];
+    foreach ($list['messages'] as $msg) {
+        if (!is_array($msg) || !admin_should_hide_employee_inbox_correspondent_message($msg)) {
+            $filtered[] = $msg;
+        }
+    }
+
+    $removedCount = $before - count($filtered);
+    if ($removedCount > 0) {
+        $list['total'] = max(0, (int) ($list['total'] ?? 0) - $removedCount);
+        if ($filtered === []) {
+            $list['total_pages'] = 0;
+            $list['page'] = 1;
+        } elseif (isset($list['per_page'])) {
+            $perPage = max(1, (int) $list['per_page']);
+            $list['total_pages'] = (int) max(1, (int) ceil((int) $list['total'] / $perPage));
+        }
+    }
+
+    $list['messages'] = $filtered;
+
+    return $list;
+}
+
+/**
+ * True when the employee still has unread inbound mail in their own inbox for a
+ * correspondent thread (e.g. Support → Jean stored in Jean's inbox).
+ *
+ * @return list<array{folder_path: string, imap_uid: int}>
+ */
+function mail_find_correspondent_inbox_unread_targets_for_thread(string $corrFolder, string $baseSubject): array
+{
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    if ($baseSubject === '' || !employee_is_correspondent_folder($corrFolder)) {
+        return [];
+    }
+
+    $inboxPaths = employee_inbox_index_paths();
+    if ($inboxPaths === []) {
+        return [];
+    }
+
+    $corrFolder = \App\Services\FolderCache::resolvePath($corrFolder);
+    $aliasEmail = alias_email_for_folder($corrFolder);
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        $root = employee_mailbox_root_prefix($corrFolder);
+        if ($root !== '') {
+            $aliasEmail = alias_email_for_folder($root);
+        }
+    }
+    if ($aliasEmail === null || trim($aliasEmail) === '') {
+        return [];
+    }
+
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    if ($viewerId <= 0) {
+        return [];
+    }
+
+    $userEmails = mail_user_emails($viewerId);
+    $like = '%' . strtolower(trim($aliasEmail)) . '%';
+    $targets = [];
+
+    foreach ($inboxPaths as $ownInbox) {
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date,
+                        COALESCE(i.to_addrs, \'\') AS to_addrs,
+                        COALESCE(i.cc_addrs, \'\') AS cc_addrs
+                 FROM mail_index i
+                 WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?
+                 ORDER BY i.msg_date DESC',
+                [$ownInbox, $like]
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+                continue;
+            }
+
+            $msg = [
+                'from' => (string) ($row['from_addr'] ?? ''),
+                'to' => (string) ($row['to_addrs'] ?? ''),
+                'cc' => (string) ($row['cc_addrs'] ?? ''),
+            ];
+            if (!mail_counts_as_correspondent_inbox_inbound($msg, $userEmails)) {
+                continue;
+            }
+            if (mail_is_sent_by_user((string) ($msg['from'] ?? ''), $viewerId)) {
+                continue;
+            }
+
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid > 0 && !\App\Services\MailCacheService::effectiveSeen($ownInbox, $uid, $viewerId)) {
+                $key = strtolower($ownInbox) . '|' . $uid;
+                $targets[$key] = ['folder_path' => $ownInbox, 'imap_uid' => $uid];
+            }
+        }
+    }
+
+    return array_values($targets);
+}
+
+/**
+ * True when the employee has per-user read on any Support/shared copy in this thread.
+ * Hidden inbox copies must not keep the thread unread once Support was read.
+ */
+function mail_correspondent_support_thread_read_for_employee(string $corrFolder, string $baseSubject): bool
+{
+    if (!employee_is_correspondent_folder($corrFolder)) {
+        return false;
+    }
+
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    if ($viewerId <= 0) {
+        return false;
+    }
+
+    $corrFolder = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($corrFolder)
+    );
+    $baseSubject = mail_normalize_thread_subject((string) $baseSubject);
+    if ($corrFolder === '') {
+        return false;
+    }
+
+    if ($baseSubject === '') {
+        return false;
+    }
+
+    if (str_starts_with($baseSubject, 'uid:')) {
+        $uid = (int) substr($baseSubject, 4);
+
+        return $uid > 0
+            && \App\Services\MailCacheService::effectiveSeen($corrFolder, $uid, $viewerId);
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT imap_uid, subject FROM mail_index WHERE folder_path = ?',
+            [$corrFolder]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return false;
+    }
+
+    foreach ($rows as $row) {
+        $uid = (int) ($row['imap_uid'] ?? 0);
+        if ($uid <= 0) {
+            continue;
+        }
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+            continue;
+        }
+        if (\App\Services\MailCacheService::effectiveSeen($corrFolder, $uid, $viewerId)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function mail_correspondent_inbox_has_unread_for_thread(string $corrFolder, string $baseSubject): bool
+{
+    if (mail_correspondent_support_thread_read_for_employee($corrFolder, (string) $baseSubject)) {
+        return false;
+    }
+
+    if (mail_support_folder_has_thread_key($corrFolder, (string) $baseSubject)) {
+        return false;
+    }
+
+    return mail_find_correspondent_inbox_unread_targets_for_thread($corrFolder, $baseSubject) !== [];
+}
+
+/**
+ * True when the shared/correspondent mailbox index already has this thread.
+ */
+function mail_support_folder_has_thread_key(string $corrFolder, string $threadKey): bool
+{
+    $corrFolder = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($corrFolder)
+    );
+    $threadKey = (string) $threadKey;
+    if ($corrFolder === '' || $threadKey === '') {
+        return false;
+    }
+
+    if (str_starts_with($threadKey, 'uid:')) {
+        $uid = (int) substr($threadKey, 4);
+
+        return $uid > 0 && \App\Services\MailCacheService::messageInIndex($corrFolder, $uid);
+    }
+
+    $normalized = mail_normalize_thread_subject($threadKey);
+    if ($normalized === '') {
+        return false;
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT subject FROM mail_index WHERE folder_path = ?',
+            [$corrFolder]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return false;
+    }
+
+    foreach ($rows as $row) {
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) === $normalized) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Unread rows on the current correspondent-folder list page (matches list UI).
+ *
+ * @param list<array<string, mixed>> $messages
+ */
+function mail_count_correspondent_list_unread(string $folderPath, array $messages): int
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return 0;
+    }
+
+    $unread = 0;
+    foreach ($messages as $msg) {
+        if (is_array($msg) && empty($msg['seen'])) {
+            $unread++;
+        }
+    }
+
+    return $unread;
+}
+
+/**
+ * Sidebar badge for an employee correspondent folder — matches the visible list.
+ * Uses cached headers + the fast list pipeline (no IMAP merges) to avoid timeouts.
+ */
+function mail_correspondent_folder_badge_count(string $folderPath): int
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return 0;
+    }
+
+    static $memo = [];
+
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($folderPath === '') {
+        return 0;
+    }
+
+    if (array_key_exists($folderPath, $memo)) {
+        return $memo[$folderPath];
+    }
+
+    $perPage = max(mail_per_page(), 200);
+    $list = \App\Services\MailCacheService::listFromCache($folderPath, 1, $perPage);
+    if ($list === null || empty($list['messages'])) {
+        return $memo[$folderPath] = 0;
+    }
+
+    $list = mail_filter_removed_messages($folderPath, $list);
+    $list = mail_apply_folder_list_view_pipeline($folderPath, $list, true);
+
+    return $memo[$folderPath] = mail_count_correspondent_list_unread($folderPath, $list['messages']);
+}
+
+/**
+ * Whether a list row would still render as unread (matches list enrichment).
+ *
+ * @param array<string, mixed> $message
+ */
+function mail_correspondent_list_row_shows_unread(string $folderPath, int $uid, array $message): bool
+{
+    if ($uid <= 0) {
+        return false;
+    }
+
+    if (employee_is_correspondent_folder($folderPath)) {
+        $probe = [
+            'uid' => $uid,
+            'from' => (string) ($message['from'] ?? ''),
+            'subject' => (string) ($message['subject'] ?? ''),
+            'date' => (string) ($message['date'] ?? ''),
+            'seen' => \App\Services\MailCacheService::effectiveSeen($folderPath, $uid),
+        ];
+        mail_enrich_correspondent_folder_list_row($folderPath, $probe);
+        mail_apply_correspondent_inbox_unread_to_list_row($folderPath, $probe);
+
+        return empty($probe['seen']);
+    }
+
+    return mail_local_thread_has_unread($folderPath, $uid, $message);
+}
+
+/**
+ * Align correspondent list-row unread styling with sidebar badge logic.
+ *
+ * @param array<string, mixed> $msg
+ */
+function mail_apply_correspondent_inbox_unread_to_list_row(string $folderPath, array &$msg): void
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return;
+    }
+
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    $indexPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
+    $uid = (int) ($msg['uid'] ?? 0);
+    if ($uid > 0 && $viewerId > 0 && \App\Services\MailCacheService::effectiveSeen($indexPath, $uid, $viewerId)) {
+        $msg['seen'] = true;
+
+        return;
+    }
+
+    $base = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+    if ($base !== '' && mail_correspondent_support_thread_read_for_employee($folderPath, $base)) {
+        $msg['seen'] = true;
+
+        return;
+    }
+
+    if ($base !== '' && mail_correspondent_inbox_has_unread_for_thread($folderPath, $base)) {
+        $msg['seen'] = false;
+    }
+}
+
+/**
+ * Ensure correspondent-folder list rows show unread when badge logic would count them.
+ *
+ * @param list<array<string, mixed>> $messages
+ * @return list<array<string, mixed>>
+ */
+function mail_finalize_correspondent_list_seen(string $folderPath, array $messages): array
+{
+    if (!employee_is_correspondent_folder($folderPath)) {
+        return $messages;
+    }
+
+    foreach ($messages as &$msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+        mail_apply_correspondent_inbox_unread_to_list_row($folderPath, $msg);
+    }
+    unset($msg);
+
+    return $messages;
 }
 
 /**
@@ -3169,11 +4122,15 @@ function employee_merge_correspondent_inbox_inbound_list(string $folderPath, arr
     $extra = [];
     foreach ($rows as $row) {
         $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $ownInbox);
-        if (!mail_message_involves_user($msg, $userEmails)) {
+        if (!mail_counts_as_correspondent_inbox_inbound($msg, $userEmails)) {
             continue;
         }
         if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
             continue;
+        }
+        $uid = (int) ($msg['uid'] ?? 0);
+        if ($uid > 0) {
+            $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($ownInbox, $uid);
         }
         $msg['list_folder'] = $ownInbox;
         if (!empty($row['message_id'])) {
@@ -3268,7 +4225,7 @@ function mail_count_correspondent_inbox_inbound_unseen(string $corrFolder, array
             'to' => (string) ($row['to_addrs'] ?? ''),
             'cc' => (string) ($row['cc_addrs'] ?? ''),
         ];
-        if (!mail_message_involves_user($msg, $emails)) {
+        if (!mail_counts_as_correspondent_inbox_inbound($msg, $emails)) {
             continue;
         }
         if (mail_is_sent_by_user((string) ($msg['from'] ?? ''))) {
@@ -3638,6 +4595,139 @@ function employee_merge_linked_inbox_correspondent_list(string $folderPath, arra
 }
 
 /**
+ * Admin linked employee inbox: include seen copies from shared sender folders
+ * (e.g. Support) when admin sent into that employee's inbox.
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int}
+ */
+function admin_merge_linked_inbox_from_shared_mailboxes(string $folderPath, array $list): array
+{
+    $linkedId = mail_linked_user_id_for_inbox($folderPath);
+    if (
+        $linkedId === null
+        || !\App\Services\MailCacheService::viewerIsAdmin()
+        || !isset($list['messages'])
+        || !is_array($list['messages'])
+    ) {
+        return $list;
+    }
+
+    $employeeInbox = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($folderPath));
+    if ($employeeInbox === '') {
+        return $list;
+    }
+
+    $emails = mail_user_emails($linkedId);
+    if ($emails === []) {
+        return $list;
+    }
+
+    $fingerprints = [];
+    foreach ($list['messages'] as $msg) {
+        if (is_array($msg)) {
+            $fingerprints[mail_list_message_fingerprint($msg)] = true;
+        }
+    }
+
+    try {
+        $sharedRows = App\Database::query(
+            "SELECT f.imap_path
+             FROM folders f
+             WHERE f.active = 1 AND f.folder_type = 'employee' AND f.linked_user_id IS NULL"
+        )->fetchAll();
+    } catch (\Throwable) {
+        return $list;
+    }
+
+    $toClauses = [];
+    $toParams = [];
+    foreach ($emails as $email) {
+        $toClauses[] = 'LOWER(COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs)) LIKE ?';
+        $toParams[] = '%' . strtolower($email) . '%';
+    }
+
+    $extra = [];
+    foreach ($sharedRows as $sharedRow) {
+        $sharedPath = \App\Services\FolderCache::resolvePath(
+            employee_messages_imap_path((string) ($sharedRow['imap_path'] ?? ''))
+        );
+        if ($sharedPath === '' || !\App\Services\MailCacheService::isSharedEmployeeMailbox($sharedPath)) {
+            continue;
+        }
+
+        $aliasEmail = alias_email_for_folder($sharedPath);
+        if ($aliasEmail === null || trim($aliasEmail) === '') {
+            $root = employee_mailbox_root_prefix($sharedPath);
+            if ($root !== '') {
+                $aliasEmail = alias_email_for_folder($root);
+            }
+        }
+        if ($aliasEmail === null || trim($aliasEmail) === '') {
+            continue;
+        }
+
+        $params = array_merge([$sharedPath, '%' . strtolower(trim($aliasEmail)) . '%'], $toParams);
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
+                        b.plain_body, b.html_body, b.message_id,
+                        COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
+                        COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs
+                 FROM mail_index i
+                 LEFT JOIN mail_bodies b
+                    ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+                 WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?
+                   AND (' . implode(' OR ', $toClauses) . ')
+                 ORDER BY i.msg_date DESC, i.imap_uid DESC
+                 LIMIT 40',
+                $params
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            $msg = \App\Services\MailCacheService::messageFromIndexRow($row, $sharedPath);
+            $msg['seen'] = true;
+            $msg['list_folder'] = $sharedPath;
+            if (!empty($row['message_id'])) {
+                $msg['message_id'] = (string) $row['message_id'];
+            }
+            $fp = mail_list_message_fingerprint($msg);
+            if (isset($fingerprints[$fp])) {
+                continue;
+            }
+            $fingerprints[$fp] = true;
+            $extra[] = $msg;
+        }
+    }
+
+    if ($extra === []) {
+        return $list;
+    }
+
+    $merged = array_merge($list['messages'], $extra);
+    usort($merged, static function (array $a, array $b): int {
+        $aTs = strtotime((string) ($a['date'] ?? '')) ?: 0;
+        $bTs = strtotime((string) ($b['date'] ?? '')) ?: 0;
+        if ($aTs === $bTs) {
+            return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
+        }
+
+        return $bTs <=> $aTs;
+    });
+
+    return mail_filter_removed_messages($employeeInbox, [
+        'messages' => $merged,
+        'total' => count($merged),
+        'page' => (int) ($list['page'] ?? 1),
+        'per_page' => (int) ($list['per_page'] ?? mail_per_page()),
+        'total_pages' => (int) ($list['total_pages'] ?? 1),
+    ]);
+}
+
+/**
  * One list row per conversation thread (latest message only).
  */
 function mail_should_group_list_by_thread(string $folderPath): bool
@@ -3688,12 +4778,21 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
         $existingTs = isset($groups[$key])
             ? (strtotime((string) ($groups[$key]['date'] ?? '')) ?: 0)
             : -1;
-        if (
-            !isset($groups[$key])
-            || $msgTs > $existingTs
-            || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0))
-        ) {
+        $incomingUnread = empty($msg['seen']);
+        if (!isset($groups[$key])) {
             $groups[$key] = $msg;
+
+            continue;
+        }
+
+        $existingUnread = empty($groups[$key]['seen']);
+        $replace = $msgTs > $existingTs
+            || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0));
+        if ($replace) {
+            $groups[$key] = $msg;
+        }
+        if ($incomingUnread || $existingUnread) {
+            $groups[$key]['seen'] = false;
         }
     }
 
@@ -3800,7 +4899,11 @@ function employee_outbound_correspondent_folder(string $folderPath, ?array $user
  */
 function sender_suppresses_dest_folder_badge(string $folderPath, ?array $user = null): bool
 {
-    return employee_outbound_correspondent_folder($folderPath, $user);
+    if (employee_outbound_correspondent_folder($folderPath, $user)) {
+        return true;
+    }
+
+    return mail_admin_outbound_suppresses_sidebar_badge($folderPath);
 }
 
 function employee_correspondent_folder_name(string $folderPath): ?string
@@ -4073,6 +5176,8 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
     if ($displayUid > 0 && mail_linked_user_id_for_inbox($folderPath) !== null) {
         $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $displayUid);
     }
+
+    mail_apply_correspondent_inbox_unread_to_list_row($folderPath, $msg);
 }
 
 /**
@@ -4247,7 +5352,9 @@ function deliver_outbound_copies_to_folders(string $mime, array $destPaths, stri
 
     foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
         $destPath = employee_messages_imap_path((string) $destPath);
-        $destPath = \App\Services\FolderCache::resolvePath($destPath);
+        $destPath = ensure_employee_messages_folder_exists(
+            \App\Services\FolderCache::resolvePath($destPath)
+        );
         if ($destPath === '') {
             continue;
         }
@@ -4270,7 +5377,71 @@ function deliver_outbound_copies_to_folders(string $mime, array $destPaths, stri
         }
     }
 
+    deliver_outbound_shared_sender_copy($imap, $mime, $destPaths, $fromEmail);
     deliver_outbound_sender_inbox_copy($imap, $mime, $destPaths, $fromEmail);
+}
+
+/**
+ * Seen copy in the shared sender folder (e.g. Support) when admin sends into employee inboxes.
+ *
+ * @param list<string> $destPaths
+ */
+function deliver_outbound_shared_sender_copy(
+    App\Services\ImapService $imap,
+    string $mime,
+    array $destPaths,
+    string $fromEmail,
+): void {
+    if ($mime === '' || $destPaths === []) {
+        return;
+    }
+
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'admin') {
+        return;
+    }
+
+    $senderFolder = folder_for_alias_email($fromEmail);
+    if ($senderFolder === null || $senderFolder === '') {
+        return;
+    }
+
+    $senderPath = \App\Services\FolderCache::resolvePath(
+        employee_messages_imap_path($senderFolder)
+    );
+    if ($senderPath === '' || !\App\Services\MailCacheService::isSharedEmployeeMailbox($senderPath)) {
+        return;
+    }
+
+    $targetsEmployeeInbox = false;
+    foreach ($destPaths as $destPath) {
+        $resolved = \App\Services\FolderCache::resolvePath(
+            employee_messages_imap_path((string) $destPath)
+        );
+        if ($resolved !== '' && admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
+            $targetsEmployeeInbox = true;
+            break;
+        }
+    }
+    if (!$targetsEmployeeInbox) {
+        return;
+    }
+
+    if (outbound_imap_append_redundant($senderPath, $mime)) {
+        return;
+    }
+
+    if (!$imap->appendMessage($senderPath, $mime, '\\Seen')) {
+        app_log('Outbound shared sender copy failed for ' . $senderPath . ': ' . $imap->getLastError());
+
+        return;
+    }
+
+    try {
+        \App\Services\MailCacheService::syncFolderHeaders($imap, $senderPath, 15);
+    } catch (\Throwable $e) {
+        app_log('Outbound shared sender index sync for ' . $senderPath . ' failed: ' . $e->getMessage());
+    }
 }
 
 /**
@@ -4343,9 +5514,15 @@ function deliver_outbound_sender_inbox_copy(
  *
  * @param list<string> $destPaths
  */
-function reconcile_outbound_routing(array $destPaths, string $fromEmail, ?string $sentMessageId = null): void
-{
-    App\Services\FilterService::runBackground(true, 10);
+function reconcile_outbound_routing(
+    array $destPaths,
+    string $fromEmail,
+    ?string $sentMessageId = null,
+    bool $runFilter = true,
+): void {
+    if ($runFilter) {
+        App\Services\FilterService::runBackground(true, 10);
+    }
 
     $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
     if (!outbound_send_skips_inbox_badge($destPaths, $inbox)) {
@@ -4411,6 +5588,29 @@ function employee_mailbox_root_prefix(string $path): string
 }
 
 /**
+ * Resolve folder registry paths to canonical IMAP/index paths for sync.
+ *
+ * @param list<string> $paths
+ * @return list<string>
+ */
+function mail_normalize_sync_paths(array $paths): array
+{
+    $out = [];
+    foreach ($paths as $path) {
+        $path = trim((string) $path);
+        if ($path === '') {
+            continue;
+        }
+        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($path));
+        if ($resolved !== '') {
+            $out[$resolved] = true;
+        }
+    }
+
+    return array_keys($out);
+}
+
+/**
  * Selectable folder that stores employee mail on hosts where INBOX.Name becomes a
  * non-appendable container once Sent/Drafts/etc. subfolders exist underneath.
  *
@@ -4449,6 +5649,107 @@ function employee_messages_imap_path(string $folderPath): string
     }
 
     return $resolved;
+}
+
+/**
+ * All mail_index paths that may store an employee's personal inbound mail.
+ *
+ * @return list<string>
+ */
+function employee_inbox_index_paths(?array $user = null): array
+{
+    $root = employee_linked_inbox_path($user);
+    if ($root === null || $root === '') {
+        return [];
+    }
+
+    $paths = [];
+    foreach ([$root, employee_messages_imap_path($root)] as $candidate) {
+        $resolved = \App\Services\FolderCache::resolvePath($candidate);
+        if ($resolved === '') {
+            continue;
+        }
+        $indexed = \App\Services\MailCacheService::indexFolderPath($resolved);
+        if ($indexed !== '') {
+            $paths[strtolower($indexed)] = $indexed;
+        }
+    }
+
+    return array_values($paths);
+}
+
+/**
+ * Employee inbox index paths merged into a shared mailbox list (e.g. Support).
+ *
+ * @return list<string>
+ */
+function shared_mailbox_employee_inbox_index_paths(): array
+{
+    try {
+        $inboxRows = App\Database::query(
+            "SELECT imap_path FROM folders
+             WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL"
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $paths = [];
+    foreach ($inboxRows as $inboxRow) {
+        $employeeInbox = \App\Services\FolderCache::resolvePath(
+            employee_messages_imap_path((string) ($inboxRow['imap_path'] ?? ''))
+        );
+        if ($employeeInbox === '') {
+            continue;
+        }
+        $indexed = \App\Services\MailCacheService::indexFolderPath($employeeInbox);
+        if ($indexed !== '') {
+            $paths[strtolower($indexed)] = $indexed;
+        }
+    }
+
+    return array_values($paths);
+}
+
+/**
+ * Minimal message fields for read/mark-read when the body cache is empty.
+ *
+ * @return array{from: string, subject: string, date: string, to?: string}
+ */
+function mail_message_index_stub(string $folderPath, int $uid): array
+{
+    $cached = \App\Services\MailCacheService::getBody($folderPath, $uid);
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $folderPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
+    if ($folderPath === '' || $uid <= 0) {
+        return ['from' => '', 'subject' => '', 'date' => ''];
+    }
+
+    try {
+        $row = App\Database::fetchOne(
+            'SELECT from_addr, subject, msg_date, COALESCE(to_addrs, \'\') AS to_addrs
+             FROM mail_index WHERE folder_path = ? AND imap_uid = ? LIMIT 1',
+            [$folderPath, $uid]
+        );
+    } catch (\Throwable) {
+        return ['from' => '', 'subject' => '', 'date' => ''];
+    }
+
+    if ($row === null) {
+        return ['from' => '', 'subject' => '', 'date' => ''];
+    }
+
+    return [
+        'from' => (string) ($row['from_addr'] ?? ''),
+        'subject' => (string) ($row['subject'] ?? ''),
+        'date' => (string) ($row['msg_date'] ?? ''),
+        'to' => (string) ($row['to_addrs'] ?? ''),
+    ];
 }
 
 /**
@@ -4491,10 +5792,8 @@ function ensure_employee_messages_folder_exists(string $messagesPath): string
         return $messagesPath;
     }
 
-    $created = false;
     if (!$imap->folderExistsOnServer($messagesPath)) {
-        $created = $imap->createFolder($messagesPath);
-        if (!$created) {
+        if (!$imap->ensureFolderPath($messagesPath)) {
             app_log('Could not create employee messages folder ' . $messagesPath . ': ' . $imap->getLastError());
         }
     }
@@ -4604,22 +5903,35 @@ function reconcile_alias_self_sent_echoes(App\Services\ImapService $imap, array 
  */
 function compose_context_folder(string $returnFolder, string $messageFolder, string $fromEmail = ''): string
 {
+    $normalize = static function (string $path): string {
+        if ($path === '' || !App\Services\FolderCache::canAccess($path)) {
+            return '';
+        }
+        $nav = sidebar_folder_nav_path($path);
+
+        return $nav !== '' ? $nav : $path;
+    };
+
     foreach ([$returnFolder, $messageFolder] as $path) {
-        if ($path !== '' && App\Services\FolderCache::canAccess($path)) {
-            return $path;
+        $nav = $normalize($path);
+        if ($nav !== '') {
+            return $nav;
         }
     }
 
     if ($fromEmail !== '') {
         $aliasFolder = folder_for_alias_email($fromEmail);
-        if ($aliasFolder !== null && App\Services\FolderCache::canAccess($aliasFolder)) {
-            return $aliasFolder;
+        if ($aliasFolder !== null) {
+            $nav = $normalize($aliasFolder);
+            if ($nav !== '') {
+                return $nav;
+            }
         }
     }
 
     $default = default_mail_folder();
     if ($default !== 'INBOX' && App\Services\FolderCache::canAccess($default)) {
-        return $default;
+        return $normalize($default);
     }
 
     return '';
@@ -6158,6 +7470,17 @@ function extract_recipients_from_mime(string $mime): array
     return array_keys($emails);
 }
 
+function extract_from_address_from_mime(string $mime): string
+{
+    if (!preg_match('/^From:\s*(.+)$/im', $mime, $matches)) {
+        return '';
+    }
+
+    $parsed = mail_parse_address((string) ($matches[1] ?? ''));
+
+    return strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($matches[1] ?? '')));
+}
+
 /**
  * True when SMTP already delivers this MIME to the destination folder (skip IMAP append).
  */
@@ -6168,6 +7491,10 @@ function outbound_imap_append_redundant(string $destPath, string $mime): bool
         return false;
     }
 
+    $fromEmail = extract_from_address_from_mime($mime);
+    $adminSharedToEmployee = $fromEmail !== ''
+        && admin_sent_to_employee_inbox_from_shared_mailbox($destPath, $fromEmail);
+
     foreach (extract_recipients_from_mime($mime) as $email) {
         $aliasFolder = folder_for_alias_email($email);
         if ($aliasFolder === null) {
@@ -6175,6 +7502,10 @@ function outbound_imap_append_redundant(string $destPath, string $mime): bool
         }
         $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($aliasFolder));
         if ($resolved !== '' && strcasecmp($resolved, $destPath) === 0) {
+            if ($adminSharedToEmployee) {
+                continue;
+            }
+
             return true;
         }
     }
@@ -6826,6 +8157,146 @@ function mail_split_conversation_plain(string $plain): array
     ]];
 
     return array_merge($segments, mail_parse_quoted_block($remainder, $header));
+}
+
+/**
+ * Apply the same list shaping used by folder sync / mail column views.
+ *
+ * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
+ * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int}
+ */
+function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, bool $fast = false): array
+{
+    if (!$fast) {
+        $fast = mail_in_post_send_fast_window() || mail_get_post_send_preview($folderPath) !== null;
+    }
+
+    $list = employee_filter_correspondent_list($folderPath, $list);
+    $list = employee_filter_own_inbox_list($folderPath, $list);
+    $list = admin_filter_employee_inbox_correspondent_list($folderPath, $list);
+
+    if ($fast) {
+        $list = mail_merge_post_send_preview_into_list($folderPath, $list);
+        $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
+        $list = mail_group_list_by_thread($folderPath, $list);
+        $list['messages'] = \App\Services\MailCacheService::enrichListMessages($folderPath, $list['messages'], true);
+        $list['messages'] = mail_finalize_correspondent_list_seen($folderPath, $list['messages']);
+        $list['messages'] = mail_finalize_shared_mailbox_list_seen($folderPath, $list['messages']);
+        $list['messages'] = mail_dedupe_list_by_uid($list['messages']);
+        $list['messages'] = mail_resort_list_by_message_date($list['messages']);
+        $list['total'] = count($list['messages']);
+
+        return $list;
+    }
+
+    $list = employee_merge_personal_sent_list($folderPath, $list);
+    $list = employee_merge_shared_mailbox_outbound_list($folderPath, $list);
+    $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
+    $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
+    $list = admin_merge_linked_inbox_from_shared_mailboxes($folderPath, $list);
+    $list = mail_merge_post_send_preview_into_list($folderPath, $list);
+    $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
+    $list = mail_group_list_by_thread($folderPath, $list);
+    $list['messages'] = \App\Services\MailCacheService::enrichListMessages($folderPath, $list['messages'], true);
+    $list['messages'] = mail_finalize_correspondent_list_seen($folderPath, $list['messages']);
+    $list['messages'] = mail_finalize_shared_mailbox_list_seen($folderPath, $list['messages']);
+    $list['messages'] = mail_dedupe_list_by_uid($list['messages']);
+    $list['messages'] = mail_resort_list_by_message_date($list['messages']);
+    $list['total'] = count($list['messages']);
+
+    return $list;
+}
+
+/**
+ * Messages visible in the current folder view (matches list/sync JSON).
+ *
+ * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int}
+ */
+function mail_visible_folder_list(string $folderPath, string $searchQuery = '', int $page = 1, int $perPage = 0): array
+{
+    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $perPage = $perPage > 0 ? $perPage : max(mail_per_page(), 500);
+    $page = max(1, $page);
+
+    $list = \App\Services\MailCacheService::listFromCache($folderPath, $page, $perPage);
+    if ($list === null) {
+        $list = [
+            'messages' => [],
+            'total' => 0,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => 0,
+        ];
+    }
+
+    $list = mail_filter_removed_messages($folderPath, $list);
+
+    return mail_apply_folder_list_view_pipeline($folderPath, $list);
+}
+
+/**
+ * Resolve concrete index locations for bulk move/delete actions.
+ *
+ * @param array<int, string> $uidFolderMap imap_uid => folder path or b64
+ * @return list<array{folder_path: string, imap_uid: int}>
+ */
+function mail_resolve_bulk_message_locations(string $viewFolderPath, array $uids, array $uidFolderMap = []): array
+{
+    $viewFolderPath = \App\Services\FolderCache::resolvePath($viewFolderPath);
+    if ($viewFolderPath === '' || $uids === []) {
+        return [];
+    }
+
+    $locations = [];
+    $seen = [];
+
+    foreach ($uids as $uid) {
+        $uid = (int) $uid;
+        if ($uid <= 0 || isset($seen[$uid])) {
+            continue;
+        }
+
+        $candidates = [];
+        if (isset($uidFolderMap[$uid]) && $uidFolderMap[$uid] !== '') {
+            $mapped = mail_folder_path((string) $uidFolderMap[$uid]);
+            if ($mapped === '') {
+                $mapped = \App\Services\FolderCache::resolvePath((string) $uidFolderMap[$uid]);
+            }
+            if ($mapped !== '') {
+                $candidates[] = $mapped;
+            }
+        }
+
+        $candidates[] = $viewFolderPath;
+        $candidates[] = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($viewFolderPath));
+        $candidates[] = \App\Services\MailCacheService::indexFolderPath($viewFolderPath);
+
+        if (employee_is_correspondent_folder($viewFolderPath)) {
+            foreach (employee_inbox_index_paths() as $inboxPath) {
+                $candidates[] = $inboxPath;
+            }
+        }
+
+        if (\App\Services\MailCacheService::isSharedEmployeeMailbox($viewFolderPath)) {
+            foreach (shared_mailbox_employee_inbox_index_paths() as $inboxPath) {
+                $candidates[] = $inboxPath;
+            }
+        }
+
+        foreach (array_values(array_unique(array_filter($candidates))) as $candidate) {
+            $indexed = \App\Services\MailCacheService::indexFolderPath($candidate);
+            if ($indexed === '' || mail_is_uid_removed($indexed, $uid)) {
+                continue;
+            }
+            if (\App\Services\MailCacheService::messageInIndex($indexed, $uid)) {
+                $seen[$uid] = true;
+                $locations[] = ['folder_path' => $indexed, 'imap_uid' => $uid];
+                break;
+            }
+        }
+    }
+
+    return $locations;
 }
 
 /**
@@ -8043,7 +9514,17 @@ function mail_local_thread_has_unread(string $folderPath, int $uid, array $messa
     }
 
     if (!mail_should_group_list_by_thread($folderPath)) {
-        return !\App\Services\MailCacheService::effectiveSeen($folderPath, $uid);
+        if (!\App\Services\MailCacheService::effectiveSeen($folderPath, $uid)) {
+            return true;
+        }
+        if (employee_is_correspondent_folder($folderPath)) {
+            $base = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+            if ($base !== '' && mail_correspondent_inbox_has_unread_for_thread($folderPath, $base)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     $probe = [
@@ -8059,7 +9540,9 @@ function mail_local_thread_has_unread(string $folderPath, int $uid, array $messa
         return empty($probe['seen']);
     }
 
-    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $folderPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
     $baseSubject = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
     if ($folderPath === '' || $baseSubject === '') {
         return !\App\Services\MailCacheService::effectiveSeen($folderPath, $uid);
@@ -8098,7 +9581,9 @@ function mail_local_thread_has_unread(string $folderPath, int $uid, array $messa
  */
 function mail_mark_local_thread_read(string $folderPath, int $uid, array $message): array
 {
-    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
+    $folderPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
     if ($folderPath === '' || $uid <= 0) {
         return [];
     }
@@ -8160,20 +9645,364 @@ function mail_mark_local_thread_read(string $folderPath, int $uid, array $messag
 }
 
 /**
- * Mark correspondent-thread inbound replies read in the viewer's own mailbox.
+ * Inbound copies from a correspondent alias in the employee's own mailbox for one thread.
  *
- * @param list<array<string, mixed>> $inboundReplies
+ * @return list<int>
+ */
+/**
+ * Inbound copies from a correspondent alias in the employee's own mailbox for one thread.
+ *
+ * @return list<array{folder_path: string, imap_uid: int}>
+ */
+function mail_find_correspondent_inbox_targets_for_subject(
+    string $ownInbox,
+    string $corrEmail,
+    string $baseSubject,
+): array {
+    $corrEmail = strtolower(trim($corrEmail));
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    if ($corrEmail === '' || $baseSubject === '') {
+        return [];
+    }
+
+    $inboxPaths = employee_inbox_index_paths();
+    if ($inboxPaths === []) {
+        $resolved = \App\Services\MailCacheService::indexFolderPath(
+            \App\Services\FolderCache::resolvePath($ownInbox)
+        );
+        if ($resolved !== '') {
+            $inboxPaths = [$resolved];
+        }
+    }
+
+    $like = '%' . $corrEmail . '%';
+    $targets = [];
+    foreach ($inboxPaths as $inboxPath) {
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject
+                 FROM mail_index i
+                 WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?',
+                [$inboxPath, $like]
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+
+            $fromRaw = strtolower((string) ($row['from_addr'] ?? ''));
+            $fromEmail = strtolower(normalize_email_token((string) ($row['from_addr'] ?? '')));
+            if ($fromEmail !== $corrEmail && !str_contains($fromRaw, $corrEmail)) {
+                continue;
+            }
+
+            if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+                continue;
+            }
+
+            $key = strtolower($inboxPath) . '|' . $uid;
+            $targets[$key] = ['folder_path' => $inboxPath, 'imap_uid' => $uid];
+        }
+    }
+
+    return array_values($targets);
+}
+
+/**
+ * Mark every unread hidden inbox delivery from a correspondent alias as read.
+ * Used after bulk read in a correspondent folder (e.g. Support).
+ */
+function mail_mark_remaining_correspondent_inbox_unread_read(string $corrFolderPath): void
+{
+    if (!employee_is_correspondent_folder($corrFolderPath)) {
+        return;
+    }
+
+    $context = mail_resolve_correspondent_thread_context($corrFolderPath, null);
+    if ($context === null) {
+        return;
+    }
+
+    $corrEmail = (string) ($context['corr_email'] ?? '');
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    if ($corrEmail === '' || $viewerId <= 0) {
+        return;
+    }
+
+    $userEmails = mail_user_emails($viewerId);
+    $like = '%' . $corrEmail . '%';
+    $inboxPaths = employee_inbox_index_paths();
+    if ($inboxPaths === []) {
+        $fallback = \App\Services\MailCacheService::indexFolderPath(
+            \App\Services\FolderCache::resolvePath((string) $context['employee_inbox'])
+        );
+        if ($fallback !== '') {
+            $inboxPaths = [$fallback];
+        }
+    }
+
+    foreach ($inboxPaths as $ownInbox) {
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject,
+                        COALESCE(i.to_addrs, \'\') AS to_addrs,
+                        COALESCE(i.cc_addrs, \'\') AS cc_addrs
+                 FROM mail_index i
+                 WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?',
+                [$ownInbox, $like]
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid <= 0 || \App\Services\MailCacheService::effectiveSeen($ownInbox, $uid, $viewerId)) {
+                continue;
+            }
+
+            $msg = [
+                'from' => (string) ($row['from_addr'] ?? ''),
+                'to' => (string) ($row['to_addrs'] ?? ''),
+                'cc' => (string) ($row['cc_addrs'] ?? ''),
+            ];
+            if (!mail_counts_as_correspondent_inbox_inbound($msg, $userEmails)) {
+                continue;
+            }
+            if (!employee_should_hide_inbox_correspondent_message($msg)) {
+                continue;
+            }
+
+            \App\Services\MailCacheService::markReadForUser($ownInbox, $uid, $viewerId);
+            if (\App\Services\MailCacheService::readUpdatesImapState($ownInbox)) {
+                \App\Services\MailCacheService::updateIndexSeen($ownInbox, $uid, true);
+                $imap = new App\Services\ImapService();
+                if ($imap->connect()) {
+                    $imap->markSeen($ownInbox, $uid);
+                }
+            }
+        }
+    }
+
+    \App\Services\MailCacheService::reconcileBadgeFromIndex($corrFolderPath);
+    $ownInbox = employee_linked_inbox_path();
+    if ($ownInbox !== null && $ownInbox !== '') {
+        \App\Services\MailCacheService::reconcileBadgeFromIndex($ownInbox);
+    }
+}
+
+/**
+ * Clear hidden inbox unread state after bulk read in a correspondent folder.
+ *
+ * @param list<int> $uids
+ */
+function mail_mark_correspondent_folder_bulk_read(string $corrFolderPath, array $uids): void
+{
+    if (!employee_is_correspondent_folder($corrFolderPath)) {
+        return;
+    }
+
+    $corrFolderPath = \App\Services\FolderCache::resolvePath($corrFolderPath);
+    $seenSubjects = [];
+
+    foreach ($uids as $uid) {
+        $uid = (int) $uid;
+        if ($uid <= 0) {
+            continue;
+        }
+
+        $message = mail_message_index_stub($corrFolderPath, $uid);
+        $base = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+        if ($base === '' || isset($seenSubjects[$base])) {
+            continue;
+        }
+        $seenSubjects[$base] = true;
+        mail_mark_correspondent_inbound_read($corrFolderPath, $uid, $message);
+    }
+
+    mail_mark_remaining_correspondent_inbox_unread_read($corrFolderPath);
+}
+
+/**
+ * Correspondent folder for a hidden inbox copy (e.g. Support → Jean in INBOX.Jean).
+ *
+ * @param array<string, mixed> $message
+ */
+function mail_correspondent_folder_for_employee_inbound(array $message): ?string
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return null;
+    }
+
+    $parsed = mail_parse_address((string) ($message['from'] ?? ''));
+    $fromEmail = strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($message['from'] ?? '')));
+    if ($fromEmail === '') {
+        return null;
+    }
+
+    $corrFolder = folder_for_alias_email($fromEmail);
+    if ($corrFolder === null || $corrFolder === '') {
+        return null;
+    }
+
+    $corrFolder = \App\Services\FolderCache::resolvePath($corrFolder);
+    if (!employee_is_correspondent_folder($corrFolder) || !employee_should_hide_inbox_correspondent_message($message)) {
+        return null;
+    }
+
+    return $corrFolder;
+}
+
+/**
+ * Mark per-user read on shared-mailbox copies for one correspondent thread.
+ */
+function mail_mark_correspondent_echo_read_in_shared_mailbox(string $corrFolderPath, string $baseSubject): void
+{
+    $corrFolderPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($corrFolderPath)
+    );
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    if ($corrFolderPath === '' || $baseSubject === '') {
+        return;
+    }
+
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    if ($viewerId <= 0) {
+        return;
+    }
+
+    try {
+        $rows = App\Database::query(
+            'SELECT imap_uid, subject FROM mail_index WHERE folder_path = ?',
+            [$corrFolderPath]
+        )->fetchAll();
+    } catch (\Throwable) {
+        return;
+    }
+
+    foreach ($rows as $row) {
+        $rowUid = (int) ($row['imap_uid'] ?? 0);
+        if ($rowUid <= 0) {
+            continue;
+        }
+        if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+            continue;
+        }
+        if (\App\Services\MailCacheService::effectiveSeen($corrFolderPath, $rowUid, $viewerId)) {
+            continue;
+        }
+        \App\Services\MailCacheService::markReadForUser($corrFolderPath, $rowUid, $viewerId);
+    }
+}
+
+/**
+ * Mark every hidden inbox copy for a correspondent thread (best-effort).
+ */
+function mail_mark_correspondent_inbox_thread_read(string $corrFolderPath, string $baseSubject): void
+{
+    $baseSubject = mail_normalize_thread_subject($baseSubject);
+    if ($baseSubject === '' || !employee_is_correspondent_folder($corrFolderPath)) {
+        return;
+    }
+
+    $context = mail_resolve_correspondent_thread_context($corrFolderPath, null);
+    if ($context === null) {
+        return;
+    }
+
+    $viewerId = (int) (App\Auth::user()['id'] ?? 0);
+    $corrEmail = strtolower(trim((string) ($context['corr_email'] ?? '')));
+    if ($viewerId <= 0 || $corrEmail === '') {
+        return;
+    }
+
+    $userEmails = mail_user_emails($viewerId);
+    $like = '%' . $corrEmail . '%';
+    $inboxPaths = employee_inbox_index_paths();
+    if ($inboxPaths === []) {
+        $fallback = \App\Services\MailCacheService::indexFolderPath(
+            \App\Services\FolderCache::resolvePath((string) ($context['employee_inbox'] ?? ''))
+        );
+        if ($fallback !== '') {
+            $inboxPaths = [$fallback];
+        }
+    }
+
+    foreach ($inboxPaths as $inboxPath) {
+        try {
+            $rows = App\Database::query(
+                'SELECT i.imap_uid, i.from_addr, i.subject,
+                        COALESCE(i.to_addrs, \'\') AS to_addrs,
+                        COALESCE(i.cc_addrs, \'\') AS cc_addrs
+                 FROM mail_index i
+                 WHERE i.folder_path = ? AND LOWER(i.from_addr) LIKE ?',
+                [$inboxPath, $like]
+            )->fetchAll();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        foreach ($rows as $row) {
+            if (mail_normalize_thread_subject((string) ($row['subject'] ?? '')) !== $baseSubject) {
+                continue;
+            }
+
+            $msg = [
+                'from' => (string) ($row['from_addr'] ?? ''),
+                'to' => (string) ($row['to_addrs'] ?? ''),
+                'cc' => (string) ($row['cc_addrs'] ?? ''),
+            ];
+            if (!mail_counts_as_correspondent_inbox_inbound($msg, $userEmails)) {
+                continue;
+            }
+            if (mail_is_sent_by_user((string) ($msg['from'] ?? ''), $viewerId)) {
+                continue;
+            }
+
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid > 0) {
+                \App\Services\MailCacheService::markReadForUser($inboxPath, $uid, $viewerId);
+            }
+        }
+    }
+}
+
+/**
+ * Mark correspondent-thread inbound mail read in the viewer's own mailbox.
  */
 function mail_mark_correspondent_inbound_read(string $corrFolderPath, int $uid, array $message): void
 {
-    foreach (mail_find_correspondent_inbound_replies($corrFolderPath, $uid, $message) as $reply) {
-        $replyFolder = (string) ($reply['folder_path'] ?? '');
-        $replyUid = (int) ($reply['imap_uid'] ?? 0);
+    if (mail_normalize_thread_subject((string) ($message['subject'] ?? '')) === '') {
+        $message = array_merge($message, mail_message_index_stub($corrFolderPath, $uid));
+    }
+
+    $baseSubject = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
+    if ($baseSubject !== '') {
+        mail_mark_correspondent_echo_read_in_shared_mailbox($corrFolderPath, $baseSubject);
+        mail_mark_correspondent_inbox_thread_read($corrFolderPath, $baseSubject);
+    }
+
+    $markedKeys = [];
+    $markInboxUid = static function (string $replyFolder, int $replyUid) use (&$markedKeys): void {
         if ($replyFolder === '' || $replyUid <= 0) {
-            continue;
+            return;
         }
+        $replyFolder = \App\Services\MailCacheService::indexFolderPath(
+            \App\Services\FolderCache::resolvePath($replyFolder)
+        );
+        $key = strtolower($replyFolder) . '|' . $replyUid;
+        if (isset($markedKeys[$key])) {
+            return;
+        }
+        $markedKeys[$key] = true;
         if (\App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid)) {
-            continue;
+            return;
         }
         \App\Services\MailCacheService::markReadForUser($replyFolder, $replyUid);
         if (\App\Services\MailCacheService::readUpdatesImapState($replyFolder)) {
@@ -8184,6 +10013,28 @@ function mail_mark_correspondent_inbound_read(string $corrFolderPath, int $uid, 
                 $imap->markSeen($replyFolder, $replyUid);
             }
         }
+    };
+
+    $context = mail_resolve_correspondent_thread_context($corrFolderPath, $message);
+    if ($context !== null && $baseSubject !== '') {
+        foreach (mail_find_correspondent_inbox_targets_for_subject(
+            (string) $context['employee_inbox'],
+            (string) $context['corr_email'],
+            $baseSubject,
+        ) as $target) {
+            $markInboxUid((string) $target['folder_path'], (int) $target['imap_uid']);
+        }
+
+        foreach (mail_find_correspondent_inbox_unread_targets_for_thread($corrFolderPath, $baseSubject) as $target) {
+            $markInboxUid((string) $target['folder_path'], (int) $target['imap_uid']);
+        }
+    }
+
+    foreach (mail_find_correspondent_inbound_replies($corrFolderPath, $uid, $message) as $reply) {
+        $markInboxUid(
+            (string) ($reply['folder_path'] ?? ''),
+            (int) ($reply['imap_uid'] ?? 0),
+        );
     }
 
     \App\Services\MailCacheService::reconcileBadgeFromIndex($corrFolderPath);

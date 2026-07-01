@@ -88,6 +88,20 @@ class FilterService
         }
 
         $result = array_keys($paths);
+        if ($result === []) {
+            foreach (array_keys($emails) as $email) {
+                $aliasFolder = folder_for_alias_email($email);
+                if ($aliasFolder === null || $aliasFolder === '') {
+                    continue;
+                }
+                $resolved = FolderCache::resolvePath(employee_messages_imap_path($aliasFolder));
+                if ($resolved !== '') {
+                    $result[] = $resolved;
+                }
+            }
+            $result = array_values(array_unique($result));
+        }
+
         $senderFolder = folder_for_alias_email($fromEmail);
         if ($senderFolder === null) {
             return $result;
