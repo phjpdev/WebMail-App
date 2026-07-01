@@ -372,6 +372,64 @@ function finish_background(callable $after): void
 }
 
 /**
+ * Session id for post-send background work (works after releaseSessionLock()).
+ */
+function post_send_session_name(): string
+{
+    $name = session_name();
+
+    return $name !== '' ? $name : 'dj_webmail_session';
+}
+
+function post_send_session_id(): string
+{
+    if (session_status() === PHP_SESSION_ACTIVE && session_id() !== '') {
+        return session_id();
+    }
+
+    return (string) ($_COOKIE[post_send_session_name()] ?? '');
+}
+
+function post_send_session_cookie_header(): string
+{
+    $sessionId = post_send_session_id();
+    if ($sessionId === '') {
+        return '';
+    }
+
+    return post_send_session_name() . '=' . $sessionId;
+}
+
+/**
+ * Resolve a PHP CLI binary — never use Apache httpd as PHP_BINARY under mod_php.
+ */
+function resolve_php_cli_binary(): string
+{
+    $configured = trim((string) env('PHP_CLI_PATH', ''));
+    if ($configured !== '' && is_file($configured)) {
+        return $configured;
+    }
+
+    $candidates = [];
+    if (defined('PHP_BINARY') && is_file(PHP_BINARY)) {
+        $candidates[] = PHP_BINARY;
+    }
+    $candidates[] = 'C:\\xampp\\php\\php.exe';
+    $candidates[] = 'C:\\php\\php.exe';
+
+    foreach ($candidates as $candidate) {
+        if (!is_file($candidate)) {
+            continue;
+        }
+        if (preg_match('/php(?:-cgi)?(?:\.exe)?$/i', $candidate)) {
+            return $candidate;
+        }
+    }
+
+    return '';
+}
+
+/**
  * Fire-and-forget HTTP GET to this app (carries the current session cookie).
  * On Apache mod_php the client connection stays open until the script ends, so
  * heavy IMAP work must run in a separate request instead of finish_background().
@@ -397,10 +455,7 @@ function dispatch_async_request(string $path, array $query = []): void
     $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
     $pathAndQuery = ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
 
-    $cookie = '';
-    if (session_status() === PHP_SESSION_ACTIVE && session_id() !== '') {
-        $cookie = session_name() . '=' . session_id();
-    }
+    $cookie = post_send_session_cookie_header();
 
     $errno = 0;
     $errstr = '';
@@ -446,16 +501,7 @@ function dispatch_post_send(string $token): void
     }
 
     $script = base_path('scripts/run-post-send.php');
-    $phpBin = trim((string) env('PHP_CLI_PATH', ''));
-    if ($phpBin === '' && defined('PHP_BINARY') && is_file(PHP_BINARY)) {
-        $phpBin = PHP_BINARY;
-    }
-    if ($phpBin === '') {
-        $xamppPhp = 'C:\\xampp\\php\\php.exe';
-        if (is_file($xamppPhp)) {
-            $phpBin = $xamppPhp;
-        }
-    }
+    $phpBin = resolve_php_cli_binary();
 
     if ($phpBin !== '' && is_file($script) && function_exists('proc_open')) {
         $cmd = escapeshellarg($phpBin) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($token);
@@ -473,6 +519,7 @@ function dispatch_post_send(string $token): void
 
             return;
         }
+        app_log('dispatch_post_send proc_open failed for token ' . $token);
     }
 
     dispatch_async_request('compose/post-send-deferred', ['token' => $token]);
@@ -527,8 +574,14 @@ function releaseSessionLock(): void
  */
 function ensure_session_writable(): void
 {
-    if (session_status() === PHP_SESSION_NONE) {
-        session_start([
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        return;
+    }
+    if (PHP_SAPI === 'cli') {
+        return;
+    }
+
+    session_start([
             'cookie_httponly' => true,
             'cookie_samesite' => 'Lax',
             'cookie_secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
@@ -536,7 +589,6 @@ function ensure_session_writable(): void
                 || (($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '') === 'on')
                 || ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443),
         ]);
-    }
 }
 
 /**
@@ -1079,6 +1131,11 @@ function employee_correspondent_folder_paths_invalidate(?int $userId = null): vo
  */
 function employee_other_mailboxes(int $userId, string $ownPrefix): array
 {
+    $ownRoot = employee_mailbox_root_prefix($ownPrefix);
+    if ($ownRoot === '') {
+        $ownRoot = $ownPrefix;
+    }
+
     try {
         $rows = App\Database::query(
             "SELECT f.imap_path, f.display_name, LOWER(a.email) AS email
@@ -1086,7 +1143,7 @@ function employee_other_mailboxes(int $userId, string $ownPrefix): array
              INNER JOIN aliases a ON a.default_folder_id = f.id AND a.active = 1
              WHERE f.folder_type = 'employee' AND f.active = 1
                AND LOWER(f.imap_path) <> LOWER(?)",
-            [$ownPrefix]
+            [$ownRoot]
         )->fetchAll();
     } catch (\Throwable) {
         return [];
@@ -1095,7 +1152,7 @@ function employee_other_mailboxes(int $userId, string $ownPrefix): array
     $mailboxes = [];
     foreach ($rows as $row) {
         $path = (string) ($row['imap_path'] ?? '');
-        if ($path === '' || strcasecmp($path, $ownPrefix) === 0) {
+        if ($path === '' || employee_path_under_mailbox_root($path, $ownRoot)) {
             continue;
         }
 
@@ -1603,11 +1660,25 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
 
         $plain = trim((string) ($body['plain'] ?? ''));
         if ($plain === '') {
+            $messages[] = [
+                'from' => (string) ($body['from'] ?? ($row['from_addr'] ?? '')),
+                'to' => (string) ($body['to'] ?? ''),
+                'cc' => (string) ($body['cc'] ?? ''),
+                'date' => (string) ($body['date'] ?? ($row['msg_date'] ?? '')),
+                'body' => mail_conversation_snippet((string) ($body['html'] ?? '')),
+                'body_html' => '',
+                'folder_path' => $indexPath,
+                'imap_uid' => $rowUid,
+                'attachments' => mail_attachments_from_body($body),
+            ];
             continue;
         }
 
         $split = compose_split_reply_body($plain);
         $composePlain = mail_unquote_plain($split['compose'] !== '' ? $split['compose'] : $plain);
+        if ($composePlain === '') {
+            $composePlain = mail_conversation_snippet($plain);
+        }
         if ($composePlain === '') {
             continue;
         }
@@ -2318,6 +2389,7 @@ function mail_apply_post_send_session_state(
     if ($destPaths !== [] && $sentMessageId !== null && $sentMessageId !== '') {
         \App\Services\FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
     }
+    unset($_SESSION['_compose_draft'], $_SESSION['_forward_attachments']);
 }
 
 /**
@@ -3420,6 +3492,19 @@ function mail_counts_as_correspondent_inbox_inbound(array $message, array $userE
         return true;
     }
 
+    $parsed = mail_parse_address((string) ($message['from'] ?? ''));
+    $fromEmail = strtolower($parsed['email'] !== '' ? $parsed['email'] : normalize_email_token((string) ($message['from'] ?? '')));
+    if ($fromEmail !== '') {
+        $corrFolder = folder_for_alias_email($fromEmail);
+        if (
+            $corrFolder !== null
+            && $corrFolder !== ''
+            && \App\Services\MailCacheService::isSharedEmployeeMailbox($corrFolder)
+        ) {
+            return true;
+        }
+    }
+
     return employee_should_hide_inbox_correspondent_message($message);
 }
 
@@ -3513,7 +3598,9 @@ function employee_is_personal_sent_folder(string $folderPath): bool
 }
 
 /**
- * Hide inbox copies of threads that already live in a correspondent folder (e.g. Support).
+ * Hide inbox copies of peer-employee correspondent threads (e.g. Jean → Erik)
+ * that the user opens via the other employee's folder. Shared mailboxes such as
+ * Support are kept visible in the employee's own inbox — that is their inbound mail.
  *
  * @param array<string, mixed> $msg
  */
@@ -3531,7 +3618,7 @@ function employee_should_hide_inbox_correspondent_message(array $msg): bool
     }
 
     if (\App\Services\MailCacheService::isSharedEmployeeMailbox($corrFolder)) {
-        return true;
+        return false;
     }
 
     return employee_can_access_correspondent_folder($corrFolder);
@@ -5294,36 +5381,74 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
         }
     }
 
-    // List row must open/read the newest segment stored in this folder.
+    // Pane anchor: open the employee-inbox inbound copy so correspondent thread
+    // resolution works (replies live in Sent, not in Support).
     $folderResolved = \App\Services\FolderCache::resolvePath($folderPath);
-    $bestUid = 0;
-    $bestTs = -1;
-    foreach ($threadEntries as $entry) {
-        $entryFolder = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
-        $entryUid = (int) ($entry['imap_uid'] ?? 0);
-        if ($entryUid <= 0 || strcasecmp($entryFolder, $folderResolved) !== 0) {
-            continue;
-        }
-        $entryTs = mail_message_timestamp($entry['date'] ?? '');
-        if ($entryTs > $bestTs || ($entryTs === $bestTs && $entryUid > $bestUid)) {
-            $bestTs = $entryTs;
-            $bestUid = $entryUid;
+    $ownInbox = employee_linked_inbox_path();
+    $ownMessagesInbox = ($ownInbox !== null && $ownInbox !== '')
+        ? \App\Services\FolderCache::resolvePath(employee_messages_imap_path($ownInbox))
+        : '';
+    $anchorFolder = '';
+    $anchorUid = 0;
+    if (
+        employee_is_correspondent_folder($folderPath)
+        && \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
+        && $ownMessagesInbox !== ''
+    ) {
+        foreach ($threadEntries as $entry) {
+            if (empty($entry['is_inbound_reply'])) {
+                continue;
+            }
+            $entryFolder = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
+            $entryUid = (int) ($entry['imap_uid'] ?? 0);
+            if ($entryUid <= 0 || $entryFolder === '') {
+                continue;
+            }
+            if (
+                strcasecmp($entryFolder, $ownMessagesInbox) === 0
+                || employee_path_under_mailbox_root($entryFolder, $ownInbox)
+            ) {
+                $anchorFolder = $entryFolder;
+                $anchorUid = $entryUid;
+                break;
+            }
         }
     }
-    $threadAwareSeen = array_key_exists('seen', $msg) ? (bool) $msg['seen'] : null;
-    if ($bestUid > 0 && \App\Services\MailCacheService::messageInIndex($folderResolved, $bestUid)) {
-        $msg['uid'] = $bestUid;
-        if (
-            employee_is_correspondent_folder($folderPath)
-            && !empty($latest['is_inbound_reply'])
-        ) {
-            $replyFolder = \App\Services\FolderCache::resolvePath((string) ($latest['folder_path'] ?? $folderResolved));
-            $replyUid = (int) ($latest['imap_uid'] ?? 0);
-            if ($replyUid > 0) {
-                $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid, $employeeUserId);
+
+    if ($anchorFolder !== '' && $anchorUid > 0) {
+        $msg['list_folder'] = $anchorFolder;
+        $msg['uid'] = $anchorUid;
+    } else {
+        // Newest segment stored in this folder (peer correspondent mailboxes).
+        $bestUid = 0;
+        $bestTs = -1;
+        foreach ($threadEntries as $entry) {
+            $entryFolder = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
+            $entryUid = (int) ($entry['imap_uid'] ?? 0);
+            if ($entryUid <= 0 || strcasecmp($entryFolder, $folderResolved) !== 0) {
+                continue;
             }
-        } elseif ($threadAwareSeen === null) {
-            $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid, $employeeUserId);
+            $entryTs = mail_message_timestamp($entry['date'] ?? '');
+            if ($entryTs > $bestTs || ($entryTs === $bestTs && $entryUid > $bestUid)) {
+                $bestTs = $entryTs;
+                $bestUid = $entryUid;
+            }
+        }
+        $threadAwareSeen = array_key_exists('seen', $msg) ? (bool) $msg['seen'] : null;
+        if ($bestUid > 0 && \App\Services\MailCacheService::messageInIndex($folderResolved, $bestUid)) {
+            $msg['uid'] = $bestUid;
+            if (
+                employee_is_correspondent_folder($folderPath)
+                && !empty($latest['is_inbound_reply'])
+            ) {
+                $replyFolder = \App\Services\FolderCache::resolvePath((string) ($latest['folder_path'] ?? $folderResolved));
+                $replyUid = (int) ($latest['imap_uid'] ?? 0);
+                if ($replyUid > 0) {
+                    $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid, $employeeUserId);
+                }
+            } elseif ($threadAwareSeen === null) {
+                $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($folderResolved, $bestUid, $employeeUserId);
+            }
         }
     }
 
@@ -5751,7 +5876,18 @@ function employee_mailbox_root_prefix(string $path): string
 function mail_normalize_sync_paths(array $paths): array
 {
     $out = [];
+    $queue = [];
     foreach ($paths as $path) {
+        if (is_array($path)) {
+            foreach ($path as $nested) {
+                $queue[] = $nested;
+            }
+            continue;
+        }
+        $queue[] = $path;
+    }
+
+    foreach ($queue as $path) {
         $path = trim((string) $path);
         if ($path === '') {
             continue;
@@ -5973,6 +6109,14 @@ function migrate_employee_folder_to_messages_inbox(string $rootPath, int $folder
     }
 
     try {
+        $existing = App\Database::fetchOne(
+            'SELECT id FROM folders WHERE imap_path = ? AND id != ? AND active = 1 LIMIT 1',
+            [$messagesPath, $folderId]
+        );
+        if ($existing !== null) {
+            return;
+        }
+
         App\Database::query(
             'UPDATE folders SET imap_path = ? WHERE id = ? AND folder_type = ?',
             [$messagesPath, $folderId, 'employee']

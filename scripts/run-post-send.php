@@ -25,7 +25,7 @@ if (is_file($jobPath)) {
     $peek = json_decode((string) file_get_contents($jobPath), true);
     $sessionId = is_array($peek) ? trim((string) ($peek['session_id'] ?? '')) : '';
     if ($sessionId !== '') {
-        session_name('dj_webmail_session');
+        session_name(post_send_session_name());
         session_id($sessionId);
         session_start();
     }

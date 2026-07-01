@@ -231,8 +231,11 @@ class ComposeController
         // Re-attach the original attachments when forwarding.
         if ($mode === 'forward') {
             $forwarded = $this->collectForwardAttachments();
-            if ($forwarded !== []) {
-                $options['raw_attachments'] = $forwarded;
+            if ($forwarded['error'] !== null) {
+                $this->composeFail($forwarded['error'], $draft, $mode, $folderPath, $uid);
+            }
+            if ($forwarded['files'] !== []) {
+                $options['raw_attachments'] = $forwarded['files'];
             }
         }
 
@@ -355,11 +358,6 @@ class ComposeController
                 json_response($jsonPayload);
             } else {
                 dispatch_post_send($postSendToken);
-
-                if ($destPaths !== [] && $sentMime !== '') {
-                    deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
-                    reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId);
-                }
             }
 
             flash('success', 'Email sent successfully.');
@@ -397,10 +395,18 @@ class ComposeController
             return;
         }
 
+        $processingPath = $this->postSendProcessingPath($token);
+
         try {
             $this->runPostSendWork($job);
+            if (is_file($processingPath)) {
+                @unlink($processingPath);
+            }
         } catch (\Throwable $e) {
             app_log('Post-send job failed: ' . $e->getMessage());
+            if (is_file($processingPath)) {
+                @rename($processingPath, $this->postSendJobPath($token));
+            }
         }
     }
 
@@ -415,7 +421,7 @@ class ComposeController
         }
 
         $threadReply = is_array($job['thread_reply'] ?? null) ? $job['thread_reply'] : null;
-        if ($threadReply !== null) {
+        if ($threadReply !== null && empty($job['session_hints_applied'])) {
             with_session_write(function () use ($threadReply): void {
                 mail_store_thread_reply(
                     (string) ($threadReply['folder_path'] ?? ''),
@@ -454,19 +460,6 @@ class ComposeController
             $sentMime,
             (string) ($job['mode'] ?? ''),
             (int) ($job['uid'] ?? 0),
-            true,
-        );
-
-        $syncResult = $this->syncMailboxAfterSend(
-            $fromEmail,
-            (string) ($job['return_folder'] ?? ''),
-            (string) ($job['folder_path'] ?? ''),
-            $sentFolder,
-            $destPaths,
-            $sentMime,
-            (string) ($job['mode'] ?? ''),
-            (int) ($job['uid'] ?? 0),
-            false,
         );
 
         with_session_write(function (): void {
@@ -482,20 +475,49 @@ class ComposeController
      */
     private function claimPostSendJob(string $token): ?array
     {
-        $jobPath = base_path('storage/post_send/' . $token . '.json');
+        $jobPath = $this->postSendJobPath($token);
+        $processingPath = $this->postSendProcessingPath($token);
+        $staleAfter = 300;
+
+        if (!is_file($jobPath)) {
+            if (!is_file($processingPath)) {
+                return null;
+            }
+            $mtime = @filemtime($processingPath);
+            if ($mtime === false || (time() - $mtime) < $staleAfter) {
+                return null;
+            }
+            @rename($processingPath, $jobPath);
+        }
+
         if (!is_file($jobPath)) {
             return null;
         }
 
-        $raw = file_get_contents($jobPath);
-        @unlink($jobPath);
+        if (!@rename($jobPath, $processingPath)) {
+            return null;
+        }
+
+        $raw = file_get_contents($processingPath);
         if ($raw === false || $raw === '') {
+            @unlink($processingPath);
+
             return null;
         }
 
         $job = json_decode($raw, true);
 
         return is_array($job) ? $job : null;
+    }
+
+    private function postSendJobPath(string $token): string
+    {
+        return base_path('storage/post_send/' . $token . '.json');
+    }
+
+    private function postSendProcessingPath(string $token): string
+    {
+        return base_path('storage/post_send/' . $token . '.processing');
     }
 
     /**
@@ -580,7 +602,7 @@ class ComposeController
             'draft_uid' => $draftUid,
             'thread_reply' => $threadReply,
             'session_hints_applied' => $sessionHintsApplied,
-            'session_id' => session_status() === PHP_SESSION_ACTIVE ? session_id() : '',
+            'session_id' => post_send_session_id(),
         ];
 
         file_put_contents($dir . '/' . $token . '.json', json_encode_safe($job));
@@ -770,18 +792,22 @@ class ComposeController
     /**
      * Fetch any remembered forwarded attachments from IMAP for re-sending.
      *
-     * @return list<array{content: string, name: string, mime: string}>
+     * @return array{files: list<array{content: string, name: string, mime: string}>, error: string|null}
      */
     private function collectForwardAttachments(): array
     {
-        $ref = $_SESSION[self::FORWARD_KEY] ?? null;
-        if (!is_array($ref) || empty($ref['parts'])) {
-            return [];
+        $ref = $this->resolveForwardAttachmentRef();
+        if ($ref === null || empty($ref['parts'])) {
+            return ['files' => [], 'error' => null];
         }
 
+        $expected = count($ref['parts']);
         $imap = new ImapService();
         if (!$imap->connect()) {
-            return [];
+            return [
+                'files' => [],
+                'error' => 'Could not connect to mail server to attach forwarded files. Please try again.',
+            ];
         }
 
         $out = [];
@@ -797,7 +823,47 @@ class ComposeController
             ];
         }
 
-        return $out;
+        if (count($out) < $expected) {
+            return [
+                'files' => [],
+                'error' => 'One or more forwarded attachments could not be loaded. Re-open the message and try forwarding again.',
+            ];
+        }
+
+        return ['files' => $out, 'error' => null];
+    }
+
+    /**
+     * @return array{folder: string, uid: int, parts: list<array{id: string, filename?: string, mime?: string}>}|null
+     */
+    private function resolveForwardAttachmentRef(): ?array
+    {
+        $ref = $_SESSION[self::FORWARD_KEY] ?? null;
+        if (is_array($ref) && !empty($ref['parts'])) {
+            return [
+                'folder' => (string) ($ref['folder'] ?? ''),
+                'uid' => (int) ($ref['uid'] ?? 0),
+                'parts' => $ref['parts'],
+            ];
+        }
+
+        $folder = decode_folder_path((string) ($_POST['forward_folder'] ?? ''));
+        $uid = (int) ($_POST['forward_uid'] ?? 0);
+        $partsRaw = trim((string) ($_POST['forward_parts'] ?? ''));
+        if ($folder === '' || $uid <= 0 || $partsRaw === '') {
+            return null;
+        }
+
+        $parts = json_decode($partsRaw, true);
+        if (!is_array($parts) || $parts === []) {
+            return null;
+        }
+
+        return [
+            'folder' => $folder,
+            'uid' => $uid,
+            'parts' => $parts,
+        ];
     }
 
     /**
@@ -974,26 +1040,6 @@ class ComposeController
         redirect('compose');
     }
 
-    /**
-     * @param array<string, mixed> $message
-     */
-    private function buildQuotedBody(array $message): string
-    {
-        $plain = rtrim($message['plain'] ?? strip_tags($message['html'] ?? ''));
-        $lines = explode("\n", $plain);
-        $quoted = array_map(fn ($line) => '> ' . $line, $lines);
-        while ($quoted !== [] && trim($quoted[array_key_last($quoted)], '> ') === '') {
-            array_pop($quoted);
-        }
-
-        return sprintf(
-            "On %s, %s wrote:\n%s",
-            $message['date'] ?? '',
-            $message['from'] ?? '',
-            implode("\n", $quoted)
-        );
-    }
-
     private function appendSignature(string $body): string
     {
         $user = Auth::user();
@@ -1022,6 +1068,17 @@ class ComposeController
     private function attachReplyHeaders(array &$options, string $folderPath, int $uid): void
     {
         $messageId = MailCacheService::messageIdForUid($folderPath, $uid);
+
+        if ($messageId === null || $messageId === '') {
+            $imap = new ImapService();
+            if ($imap->connect()) {
+                $message = $imap->getMessageByUid($folderPath, $uid);
+                if ($message !== null) {
+                    $messageId = trim((string) ($message['message_id'] ?? ''));
+                }
+            }
+        }
+
         if ($messageId === null || $messageId === '') {
             return;
         }
@@ -1242,11 +1299,6 @@ class ComposeController
         return resolve_system_folder(['sent'], 'INBOX.Sent');
     }
 
-    private function resolveSentFolder(): string
-    {
-        return resolve_system_folder(['sent'], 'INBOX.Sent');
-    }
-
     /**
      * Save a copy of an outgoing message to the Sent folder (best effort).
      */
@@ -1280,51 +1332,38 @@ class ComposeController
         string $sentMime = '',
         string $mode = '',
         int $replyUid = 0,
-        bool $quick = false,
     ): array {
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
-        $headerLimit = $quick
-            ? 15
-            : (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
+        $quickHeaderLimit = 15;
+        $fullHeaderLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
         $sentMessageId = $sentMime !== '' ? extract_message_id_from_mime($sentMime) : null;
 
-        // Do not hold the session lock across filter/IMAP work — other compose
-        // requests would block until this background pass finishes.
         $imap = new ImapService();
         if ($imap->connect()) {
             foreach (mail_normalize_sync_paths($destPaths) as $destPath) {
                 try {
-                    MailCacheService::syncFolderHeaders($imap, $destPath, $headerLimit);
+                    MailCacheService::syncFolderHeaders($imap, $destPath, $quickHeaderLimit);
                 } catch (\Throwable $e) {
                     app_log('Post-send priority sync failed for ' . $destPath . ': ' . $e->getMessage());
                 }
             }
-            if (!$quick) {
-                reconcile_correspondent_outbound_echoes($imap, $destPaths, $fromEmail, $sentMessageId);
-                reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
-            }
+            reconcile_correspondent_outbound_echoes($imap, $destPaths, $fromEmail, $sentMessageId);
+            reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
         }
 
-        $routedPaths = [];
-        if (!$quick) {
-            $filterResult = FilterService::runBackground(true, 10);
-            $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
-                ? $filterResult['refresh_paths']
-                : [];
-        }
+        $filterResult = FilterService::runBackground(true, 10);
+        $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
+            ? $filterResult['refresh_paths']
+            : [];
 
         if ($imap->connect()) {
-            if (!$quick) {
-                if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
-                    $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
-                } else {
-                    $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
-                }
+            if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
+                $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+            } else {
+                $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
             }
 
-            $replyUid = $replyUid > 0 ? $replyUid : (int) ($_POST['uid'] ?? 0);
-            $mode = $mode !== '' ? $mode : (string) ($_POST['mode'] ?? '');
             if (
                 in_array($mode, ['reply', 'reply-all'], true)
                 && $folderPath !== ''
@@ -1338,9 +1377,8 @@ class ComposeController
             $senderFolder = folder_for_alias_email($fromEmail);
             $pathsToSync = mail_normalize_sync_paths(array_merge(
                 $destPaths,
-                $quick
-                    ? [$contextFolder, $sentFolder]
-                    : [$inbox, $contextFolder, $sentFolder, $routedPaths],
+                [$inbox, $contextFolder, $sentFolder],
+                $routedPaths,
                 $senderFolder !== null && $senderFolder !== '' ? [$senderFolder] : [],
             ));
 
@@ -1357,33 +1395,38 @@ class ComposeController
                     $pathsToSync[] = $senderPath;
                 }
             }
+            if (in_array($mode, ['reply', 'reply-all'], true) && $folderPath !== '') {
+                foreach (mail_normalize_sync_paths([$folderPath]) as $replyContextPath) {
+                    $pathsToSync[] = $replyContextPath;
+                }
+                $employeeSent = employee_personal_sent_folder_path();
+                if ($employeeSent !== null && $employeeSent !== '') {
+                    $pathsToSync[] = $employeeSent;
+                }
+            }
             $pathsToSync = array_values(array_unique(array_filter($pathsToSync)));
 
             foreach ($pathsToSync as $path) {
-                if ($path !== '' && !$quick) {
+                if ($path !== '') {
                     $imap->removeDuplicateDeliveries($path, 12);
                 }
                 try {
-                    MailCacheService::syncFolderHeaders($imap, $path, $headerLimit);
+                    MailCacheService::syncFolderHeaders($imap, $path, $fullHeaderLimit);
                 } catch (\Throwable $e) {
                     app_log('Post-send cache sync failed for ' . $path . ': ' . $e->getMessage());
                 }
             }
 
-            if (!$quick) {
-                reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
-
-                $senderFolder = folder_for_alias_email($fromEmail);
-                reconcile_alias_self_sent_echoes(
-                    $imap,
-                    array_values(array_unique(array_filter(
-                        $senderFolder !== null ? [$senderFolder] : []
-                    )))
-                );
-            }
+            $senderFolder = folder_for_alias_email($fromEmail);
+            reconcile_alias_self_sent_echoes(
+                $imap,
+                array_values(array_unique(array_filter(
+                    $senderFolder !== null ? [$senderFolder] : []
+                )))
+            );
         }
 
-        with_session_write(function () use ($routedPaths, $fromEmail, $destPaths, $inbox): void {
+        with_session_write(function () use ($routedPaths, $fromEmail, $destPaths, $inbox, $contextFolder, $sentFolder): void {
             $user = Auth::user();
             $senderInbox = employee_linked_inbox_path($user);
             if ($senderInbox !== null && $senderInbox !== '') {
@@ -1408,32 +1451,29 @@ class ComposeController
                     $badgePaths[] = $resolved;
                 }
             }
+            foreach ([$contextFolder, $sentFolder, $inbox] as $extraPath) {
+                if ($extraPath !== '' && folder_shows_unread_badge($extraPath)) {
+                    $badgePaths[] = $extraPath;
+                }
+            }
             $badgePaths = array_values(array_unique(array_filter($badgePaths)));
-            if ($badgePaths !== []) {
-                $imapRefreshPaths = [];
-                foreach ($badgePaths as $path) {
-                    if (
-                        FolderCache::isPendingBadgePath($path)
-                        || mail_get_post_send_preview($path) !== null
-                        || MailCacheService::badgeAheadOfIndex($path)
-                    ) {
-                        continue;
-                    }
-                    $badgeCount = MailCacheService::reconcileBadgeFromIndex($path);
-                    if ($badgeCount > 0 && MailCacheService::hasFolderData($path)) {
-                        FolderCache::clearPendingBadgePath($path);
-                    }
-                    if (!folder_badge_uses_index_truth($path)) {
-                        $imapRefreshPaths[] = $path;
-                    }
+
+            $imapRefreshPaths = [];
+            foreach ($badgePaths as $path) {
+                MailCacheService::reconcileBadgeFromIndex($path);
+                FolderCache::clearPendingBadgePath($path);
+                mail_clear_post_send_preview($path);
+                if (!folder_badge_uses_index_truth($path)) {
+                    $imapRefreshPaths[] = $path;
                 }
-                if ($imapRefreshPaths !== []) {
-                    FolderCache::refreshPaths($imapRefreshPaths);
-                }
+            }
+            if ($imapRefreshPaths !== []) {
+                FolderCache::refreshPaths($imapRefreshPaths);
             }
 
             if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
                 MailCacheService::reconcileBadgeFromIndex($inbox);
+                FolderCache::clearPendingBadgePath($inbox);
                 if (!folder_badge_uses_index_truth($inbox)) {
                     FolderCache::refreshPaths([$inbox]);
                 }
@@ -1446,6 +1486,7 @@ class ComposeController
                 }
                 FolderCache::setUnreadCount($resolved, 0);
                 MailCacheService::reconcileBadgeFromIndex($resolved);
+                FolderCache::clearPendingBadgePath($resolved);
             }
 
             $senderFolder = folder_for_alias_email($fromEmail);
@@ -1453,6 +1494,7 @@ class ComposeController
                 foreach (mail_normalize_sync_paths([$senderFolder]) as $senderPath) {
                     FolderCache::setUnreadCount($senderPath, 0);
                     MailCacheService::reconcileBadgeFromIndex($senderPath);
+                    FolderCache::clearPendingBadgePath($senderPath);
                 }
             }
         });

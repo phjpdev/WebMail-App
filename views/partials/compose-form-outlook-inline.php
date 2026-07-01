@@ -26,11 +26,6 @@ $isReplyMode = in_array($mode, ['reply', 'reply-all'], true);
 
 $toValue = trim($to);
 $ccValue = trim((string) ($cc ?? ''));
-if ($mode === 'reply-all' && $ccValue !== '') {
-    $parts = array_filter(array_map('trim', preg_split('/\s*,\s*/', $toValue . ',' . $ccValue) ?: []));
-    $toValue = implode(', ', array_unique($parts));
-    $ccValue = '';
-}
 
 $bodyParts = compose_split_reply_body($body ?? '');
 $composeBody = $bodyParts['compose'];
@@ -171,6 +166,9 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
                     <li><?= e($fa['filename'] ?? 'attachment') ?></li>
                 <?php endforeach; ?>
             </ul>
+            <input type="hidden" name="forward_folder" value="<?= e(encode_folder_path((string) ($folderPath ?? ''))) ?>">
+            <input type="hidden" name="forward_uid" value="<?= (int) ($uid ?? 0) ?>">
+            <input type="hidden" name="forward_parts" value="<?= e(json_encode($forwardedAttachments, JSON_UNESCAPED_UNICODE) ?: '[]') ?>">
         </div>
         <?php endif; ?>
 

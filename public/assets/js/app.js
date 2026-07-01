@@ -130,13 +130,12 @@
     var postSendQuietUntil = 0;
     var paneMessageSyncTimer = null;
     var paneMessageSyncInFlight = false;
-    var afterSendBadgePollInFlight = false;
-    var postSendFolderPollTimers = [];
     var postSendRefreshFolders = [];
     var postSendSelectionThreadKey = '';
     var mailListLoadingGuard = null;
     var attachmentHintsTimer = null;
     var listSnippetsTimer = null;
+    var mailBootstrapAbort = null;
     var panePrefetchInFlight = {};
     var paneHoverPrefetchTimer = null;
     var paneHoverPrefetchUid = null;
@@ -732,7 +731,11 @@
         fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
             .then(function (res) {
                 return res.json().then(function (data) {
-                    if (!res.ok) throw new Error((data && data.error) || 'Could not load message.');
+                    if (!res.ok) {
+                        var err = new Error((data && data.error) || 'Could not load message.');
+                        err.gone = !!(data && data.gone);
+                        throw err;
+                    }
                     return data;
                 });
             })
@@ -745,9 +748,16 @@
             })
             .catch(function (err) {
                 if (seq !== paneLoadSeq) return;
+                if (err && err.gone) {
+                    removeRowByUid(uid);
+                    syncListEmptyState();
+                    scheduleMailPoll(true, false);
+                }
                 setPaneView('empty');
                 announceLive('Could not load message.');
-                showToast('error', err.message || 'Could not load message.');
+                if (!err || !err.gone) {
+                    showToast('error', err.message || 'Could not load message.');
+                }
             });
     }
 
@@ -988,6 +998,24 @@
         }).catch(function () {});
     }
 
+    function abortDeferredListEnhancements() {
+        if (attachmentHintsTimer) {
+            window.clearTimeout(attachmentHintsTimer);
+            attachmentHintsTimer = null;
+        }
+        if (listSnippetsTimer) {
+            window.clearTimeout(listSnippetsTimer);
+            listSnippetsTimer = null;
+        }
+    }
+
+    function abortMailBootstrap() {
+        if (mailBootstrapAbort) {
+            try { mailBootstrapAbort.abort(); } catch (e) { /* ignore */ }
+            mailBootstrapAbort = null;
+        }
+    }
+
     function scheduleListSnippets(root) {
         if (isPostSendQuiet()) {
             window.setTimeout(function () { loadListSnippets(root || document); }, Math.max(0, postSendQuietUntil - Date.now()) + 500);
@@ -1103,7 +1131,7 @@
         var loadingEl = document.getElementById('mail-list-loading');
         if (loadingEl && !loadingEl.hidden) {
             armMailListLoadingGuard();
-            window.setTimeout(function () { scheduleMailPoll(true, true); }, 0);
+            window.setTimeout(function () { scheduleMailPoll(true, false); }, 0);
         }
     }
 
@@ -1125,7 +1153,7 @@
     }
 
     function cancelPostSendBackgroundWork() {
-        afterSendBadgePolls = afterSendBadgeDelays.length;
+        afterSendBadgePolls = postSendReconcileDelays.length;
         clearPostSendFolderPolls();
         setMailListLoading(false);
         if (mailPollAbort) {
@@ -1136,6 +1164,8 @@
     }
 
     function abortInFlightFolderFetch() {
+        abortDeferredListEnhancements();
+        abortMailBootstrap();
         if (folderFetchTimeoutId) {
             window.clearTimeout(folderFetchTimeoutId);
             folderFetchTimeoutId = null;
@@ -1247,14 +1277,14 @@
                 var syncCard = getListCard();
                 if (syncCard) syncCard.classList.add('is-syncing');
                 window.setTimeout(function () { scheduleMailPoll(true, false); }, 800);
-                startPostSendFolderPolls([folderB64]);
+                startPostSendReconcile([folderB64]);
             } else {
                 var loadedCard = getListCard();
                 var needsForceSync = loadedCard
                     && (loadedCard.getAttribute('data-cache-stale') === '1'
                         || postSendRefreshFolders.indexOf(folderB64) >= 0);
                 window.setTimeout(function () {
-                    scheduleMailPoll(needsForceSync, needsForceSync);
+                    scheduleMailPoll(needsForceSync, false);
                 }, needsForceSync ? 0 : 250);
             }
             announceLive('Folder loaded: ' + (data.title || 'Mail'));
@@ -4173,21 +4203,42 @@
         });
     }
 
-    function clearPostSendFolderPolls() {
-        postSendFolderPollTimers.forEach(function (id) { window.clearTimeout(id); });
-        postSendFolderPollTimers = [];
+    function clearPostSendReconcile() {
+        postSendReconcileTimers.forEach(function (id) { window.clearTimeout(id); });
+        postSendReconcileTimers = [];
     }
 
-    function startPostSendFolderPolls(folderB64List) {
-        if (!folderB64List || !folderB64List.length) return;
-        clearPostSendFolderPolls();
-        var delays = [500, 1500, 3500];
-        delays.forEach(function (delay, index) {
-            postSendFolderPollTimers.push(window.setTimeout(function () {
-                var card = getListCard();
-                var currentB64 = card ? card.getAttribute('data-folder-b64') : '';
-                if (!currentB64 || folderB64List.indexOf(currentB64) < 0) return;
-                scheduleMailPoll(true, index === delays.length - 1);
+    function clearPostSendFolderPolls() {
+        clearPostSendReconcile();
+    }
+
+    function runPostSendReconcile(step, pollFolders) {
+        if (step >= postSendReconcileDelays.length) {
+            return;
+        }
+
+        fetch(apiUrl('folders/unread?light=1'), {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        }).then(function (r) { return r.json(); })
+            .then(function (badgeData) {
+                if (badgeData && badgeData.unread_counts) {
+                    applyPostSendUnreadCounts(badgeData.unread_counts);
+                }
+                var listCard = getListCard();
+                var currentB64 = listCard ? listCard.getAttribute('data-folder-b64') : '';
+                if (currentB64 && pollFolders.indexOf(currentB64) >= 0) {
+                    scheduleMailPoll(true, step === postSendReconcileDelays.length - 1);
+                }
+            }).catch(function () {});
+    }
+
+    function startPostSendReconcile(pollFolders) {
+        clearPostSendReconcile();
+        pollFolders = pollFolders || [];
+        postSendReconcileDelays.forEach(function (delay, step) {
+            postSendReconcileTimers.push(window.setTimeout(function () {
+                runPostSendReconcile(step, pollFolders);
             }, delay));
         });
     }
@@ -4297,7 +4348,8 @@
     }
 
     var afterSendBadgePolls = 0;
-    var afterSendBadgeDelays = [1500, 5000, 12000];
+    var postSendReconcileDelays = [500, 2000, 6000];
+    var postSendReconcileTimers = [];
 
     function collectPostSendPollFolders(data, form) {
         var folders = [];
@@ -4409,9 +4461,8 @@
         }
 
         afterSendBadgePolls = 0;
-        window.setTimeout(pollBadgesAfterSend, afterSendBadgeDelays[0]);
+        startPostSendReconcile(collectPostSendPollFolders(data, form));
 
-        var pollFolders = collectPostSendPollFolders(data, form);
         var listCard = getListCard();
         var currentB64 = listCard ? listCard.getAttribute('data-folder-b64') : '';
         var returnFolder = data && data.return_folder ? String(data.return_folder) : '';
@@ -4444,12 +4495,6 @@
             window.setTimeout(function () { scheduleMailPoll(true, false); }, 350);
         }
 
-        if (pollFolders.length) {
-            window.setTimeout(function () {
-                startPostSendFolderPolls(pollFolders);
-            }, 800);
-        }
-
         if (data && data.reply_uid && form) {
             window.setTimeout(function () {
                 schedulePaneReloadAfterReplySend(data, form);
@@ -4476,39 +4521,6 @@
                 var total = label ? parseInt(label.getAttribute('data-total') || '0', 10) : 0;
                 updateMailCount(total, lookup || 0);
             }
-        }
-    }
-
-    function pollBadgesAfterSend() {
-        if (afterSendBadgePolls >= afterSendBadgeDelays.length) {
-            return;
-        }
-        if (afterSendBadgePollInFlight) {
-            return;
-        }
-        afterSendBadgePolls++;
-        afterSendBadgePollInFlight = true;
-
-        fetch(apiUrl('folders/unread?light=1'), {
-            credentials: 'same-origin',
-            headers: { Accept: 'application/json' }
-        }).then(function (r) { return r.json(); })
-            .then(function (data) {
-                if (!data || !data.unread_counts) return;
-                applyPostSendUnreadCounts(data.unread_counts);
-                var listCard = getListCard();
-                var folderB64 = listCard ? listCard.getAttribute('data-folder-b64') : '';
-                if (folderB64 && postSendRefreshFolders.indexOf(folderB64) >= 0) {
-                    scheduleMailPoll(true, false);
-                }
-            }).catch(function () {})
-            .finally(function () {
-                afterSendBadgePollInFlight = false;
-            });
-
-        if (afterSendBadgePolls < afterSendBadgeDelays.length) {
-            var nextDelay = afterSendBadgeDelays[afterSendBadgePolls] - afterSendBadgeDelays[afterSendBadgePolls - 1];
-            window.setTimeout(pollBadgesAfterSend, nextDelay);
         }
     }
 
@@ -7442,17 +7454,29 @@
 
     function initMailBootstrap() {
         if (!document.getElementById('mail-workspace')) return;
+        var card = getListCard();
+        var stale = card && card.getAttribute('data-cache-stale') === '1';
+        var delay = stale ? 600 : 3500;
         window.setTimeout(function () {
             if (isPostSendQuiet()) return;
-            var card = getListCard();
             var folderEnc = card ? card.getAttribute('data-folder-path') : '';
             var url = apiUrl('mail/bootstrap');
             if (folderEnc) {
                 url += (url.indexOf('?') >= 0 ? '&' : '?') + 'folder=' + encodeURIComponent(folderEnc);
             }
-            fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+            if (typeof AbortController !== 'undefined') {
+                mailBootstrapAbort = new AbortController();
+            } else {
+                mailBootstrapAbort = null;
+            }
+            fetch(url, {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' },
+                signal: mailBootstrapAbort ? mailBootstrapAbort.signal : undefined
+            })
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
+                    mailBootstrapAbort = null;
                     if (data && data.folders_changed) {
                         window.location.reload();
                         return;
@@ -7461,8 +7485,10 @@
                         applyUnreadCounts(data.unread_counts);
                     }
                 })
-                .catch(function () {});
-        }, 800);
+                .catch(function () {
+                    mailBootstrapAbort = null;
+                });
+        }, delay);
     }
 
     function initStatusPage() {

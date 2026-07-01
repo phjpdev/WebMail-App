@@ -1325,40 +1325,6 @@ class MailCacheService
     }
 
     /**
-     * Sidebar badge is lower than the indexed unseen count.
-     */
-    public static function badgeBehindIndex(string $folderPath): bool
-    {
-        $folderPath = FolderCache::resolvePath($folderPath);
-        if ($folderPath === '' || !folder_shows_unread_badge($folderPath)) {
-            return false;
-        }
-
-        $session = FolderCache::sessionUnreadCountRaw($folderPath);
-        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
-        if ($privacyEmails !== null) {
-            return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails) > $session;
-        }
-
-        if (self::usesPerUserRead($folderPath)) {
-            $linkedId = self::linkedUserId($folderPath);
-            $viewerId = (int) (Auth::user()['id'] ?? 0);
-            if ($linkedId !== null && $viewerId === $linkedId) {
-                return self::countUnseenForUser($linkedId, $folderPath) > $session;
-            }
-            if ($linkedId !== null && self::viewerIsAdmin()) {
-                return self::countAdminEmployeeInboxBadge($folderPath) > $session;
-            }
-        }
-
-        if (!self::hasFolderData($folderPath)) {
-            return false;
-        }
-
-        return self::countBadgeFromIndex($folderPath) > $session;
-    }
-
-    /**
      * Authoritative sidebar badge for a folder (privacy-aware, index + IMAP).
      */
     public static function sidebarBadgeCount(string $folderPath, ?int $sessionCount = null): int
@@ -1491,13 +1457,34 @@ class MailCacheService
      */
     public static function syncFolderHeaders(ImapService $imap, string $folderPath, ?int $limit = null): int
     {
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '') {
+            return 0;
+        }
+
         $limit = $limit ?? (int) (config('app')['mail_cache_header_limit'] ?? 200);
         $list = $imap->listMessages($folderPath, 1, $limit);
-        self::upsertIndexMessages($folderPath, $list['messages'], (int) $list['total']);
+        $imapTotal = (int) ($list['total'] ?? 0);
+        $messages = $list['messages'];
+
+        self::upsertIndexMessages($folderPath, $messages, $imapTotal);
+
+        if ($imapTotal > 0 && $imapTotal <= $limit && $messages !== []) {
+            $serverUids = [];
+            foreach ($messages as $msg) {
+                $uid = (int) ($msg['uid'] ?? 0);
+                if ($uid > 0) {
+                    $serverUids[] = $uid;
+                }
+            }
+            if ($serverUids !== []) {
+                self::pruneIndexUidsNotIn($folderPath, $serverUids);
+            }
+        }
 
         mail_reconcile_correspondent_badges_for_linked_inbox($folderPath);
 
-        return count($list['messages']);
+        return count($messages);
     }
 
     /**
@@ -1554,8 +1541,17 @@ class MailCacheService
      */
     public static function upsertIndexMessages(string $folderPath, array $messages, int $imapTotal): void
     {
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '') {
+            return;
+        }
+
         if ($messages === []) {
-            self::touchSyncState($folderPath, $imapTotal, 0);
+            if ($imapTotal <= 0) {
+                Database::query('DELETE FROM mail_index WHERE folder_path = ?', [$folderPath]);
+                Database::query('DELETE FROM mail_bodies WHERE folder_path = ?', [$folderPath]);
+            }
+            self::touchSyncState($folderPath, max(0, $imapTotal), 0);
 
             return;
         }
@@ -1623,6 +1619,11 @@ class MailCacheService
      */
     public static function getBody(string $folderPath, int $uid): ?array
     {
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '' || $uid <= 0) {
+            return null;
+        }
+
         $row = Database::fetchOne(
             'SELECT * FROM mail_bodies WHERE folder_path = ? AND imap_uid = ?',
             [$folderPath, $uid]
@@ -1663,6 +1664,11 @@ class MailCacheService
     {
         $uid = (int) ($message['uid'] ?? 0);
         if ($uid <= 0) {
+            return;
+        }
+
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '') {
             return;
         }
 
@@ -2426,20 +2432,6 @@ class MailCacheService
     }
 
     /**
-     * Clear phantom sidebar badges for every folder we have indexed locally.
-     */
-    public static function reconcileAllIndexedBadges(): void
-    {
-        foreach (FolderCache::load(skipUnreadRefresh: true)['folders'] as $folder) {
-            $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || !self::hasFolderData($path)) {
-                continue;
-            }
-            self::reconcileBadgeFromIndex($path);
-        }
-    }
-
-    /**
      * When the folder is fully indexed, align the sidebar badge with the list
      * (avoids stale IMAP counts when cache and server flags disagree).
      */
@@ -2506,18 +2498,43 @@ class MailCacheService
         return (int) ($counts[$folderPath] ?? 0);
     }
 
-    /** @deprecated Use reconcileFolderBadge() */
-    public static function alignFolderSeenFromImap(ImapService $imap, string $folderPath): int
-    {
-        return self::reconcileFolderBadge($imap, $folderPath);
-    }
-
     public static function removeMessage(string $folderPath, int $uid): void
     {
         $folderPath = self::indexFolderPath($folderPath);
         Database::query('DELETE FROM mail_index WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
         Database::query('DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
         self::reconcileSyncStateFromIndex($folderPath);
+    }
+
+    /**
+     * Drop indexed rows whose UIDs are no longer on the server (after a full header sync).
+     *
+     * @param list<int> $serverUids
+     */
+    public static function pruneIndexUidsNotIn(string $folderPath, array $serverUids): void
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '' || $serverUids === []) {
+            return;
+        }
+
+        $rows = Database::query(
+            'SELECT imap_uid FROM mail_index WHERE folder_path = ?',
+            [$folderPath]
+        )->fetchAll();
+
+        $keep = array_fill_keys($serverUids, true);
+        $drop = [];
+        foreach ($rows as $row) {
+            $uid = (int) ($row['imap_uid'] ?? 0);
+            if ($uid > 0 && !isset($keep[$uid])) {
+                $drop[] = $uid;
+            }
+        }
+
+        if ($drop !== []) {
+            self::removeMessages($folderPath, $drop);
+        }
     }
 
     /**

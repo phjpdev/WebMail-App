@@ -111,6 +111,9 @@ if ($outlookInline) {
                 <?php endforeach; ?>
             </ul>
             <p class="file-upload-hint">These will be included with your forward.</p>
+            <input type="hidden" name="forward_folder" value="<?= e(encode_folder_path((string) ($folderPath ?? ''))) ?>">
+            <input type="hidden" name="forward_uid" value="<?= (int) ($uid ?? 0) ?>">
+            <input type="hidden" name="forward_parts" value="<?= e(json_encode($forwardedAttachments, JSON_UNESCAPED_UNICODE) ?: '[]') ?>">
         </div>
     <?php endif; ?>
 

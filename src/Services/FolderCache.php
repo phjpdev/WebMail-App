@@ -535,35 +535,7 @@ class FolderCache
      */
     public static function sidebarUnreadCounts(): array
     {
-        $folderData = self::load(skipUnreadRefresh: true);
-        $session = $folderData['unread_counts'] ?? [];
-        $result = [];
-
-        foreach ($folderData['folders'] ?? [] as $folder) {
-            $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || !folder_shows_unread_badge($path)) {
-                continue;
-            }
-
-            $sessionCount = self::sessionUnreadForSidebarPath($path, $session);
-            $messagesPath = employee_messages_imap_path($path);
-            if (strcasecmp($messagesPath, $path) !== 0) {
-                $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
-            }
-
-            $count = folder_badge_uses_index_truth($path)
-                ? \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount)
-                : ($sessionCount > 0
-                    ? $sessionCount
-                    : \App\Services\MailCacheService::sidebarBadgeCount($path, $sessionCount));
-
-            $result[$path] = $count;
-            if (strcasecmp($messagesPath, $path) !== 0) {
-                $result[$messagesPath] = $count;
-            }
-        }
-
-        return $result;
+        return self::sidebarUnreadCountsByMode('full');
     }
 
     /**
@@ -573,44 +545,33 @@ class FolderCache
      */
     public static function sidebarUnreadCountsSessionOnly(): array
     {
-        $folderData = self::load(skipUnreadRefresh: true);
-        $session = self::normalizeUnreadCounts($folderData['unread_counts'] ?? []);
-        $result = [];
-
-        foreach ($folderData['folders'] ?? [] as $folder) {
-            $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || !folder_shows_unread_badge($path)) {
-                continue;
-            }
-
-            $count = self::sessionUnreadForSidebarPath($path, $session);
-            $messagesPath = employee_messages_imap_path($path);
-            if (strcasecmp($messagesPath, $path) !== 0) {
-                $count = max($count, self::sessionUnreadForSidebarPath($messagesPath, $session));
-            }
-            if (mail_admin_outbound_suppresses_sidebar_badge($path)) {
-                $count = 0;
-            }
-
-            $result[$path] = $count;
-            if (strcasecmp($messagesPath, $path) !== 0) {
-                $result[$messagesPath] = $count;
-            }
-        }
-
-        return $result;
+        return self::sidebarUnreadCountsByMode('session');
     }
 
     /**
-     * Fast sidebar badges for polling — session only, no per-folder DB/IMAP work.
+     * Fast sidebar badges for polling — session + index truth where required.
      *
      * @return array<string, int>
      */
     public static function sidebarUnreadCountsFromSession(): array
     {
+        return self::sidebarUnreadCountsByMode('hybrid');
+    }
+
+    /**
+     * Unified sidebar badge reader.
+     *
+     * @param 'session'|'hybrid'|'full' $mode
+     * @return array<string, int>
+     */
+    public static function sidebarUnreadCountsByMode(string $mode = 'full'): array
+    {
         $folderData = self::load(skipUnreadRefresh: true);
-        $session = self::normalizeUnreadCounts($folderData['unread_counts'] ?? []);
+        $session = $mode === 'session'
+            ? self::normalizeUnreadCounts($folderData['unread_counts'] ?? [])
+            : ($folderData['unread_counts'] ?? []);
         $result = [];
+        $applyAdminSuppress = $mode !== 'full';
 
         foreach ($folderData['folders'] ?? [] as $folder) {
             $path = (string) ($folder['path'] ?? '');
@@ -624,11 +585,19 @@ class FolderCache
                 $sessionCount = max($sessionCount, self::sessionUnreadForSidebarPath($messagesPath, $session));
             }
 
-            $count = folder_badge_uses_index_truth($path)
-                ? MailCacheService::sidebarBadgeCount($path, $sessionCount)
-                : $sessionCount;
+            if ($mode === 'session') {
+                $count = $sessionCount;
+            } elseif (folder_badge_uses_index_truth($path)) {
+                $count = MailCacheService::sidebarBadgeCount($path, $sessionCount);
+            } elseif ($mode === 'hybrid') {
+                $count = $sessionCount;
+            } else {
+                $count = $sessionCount > 0
+                    ? $sessionCount
+                    : MailCacheService::sidebarBadgeCount($path, $sessionCount);
+            }
 
-            if (mail_admin_outbound_suppresses_sidebar_badge($path)) {
+            if ($applyAdminSuppress && mail_admin_outbound_suppresses_sidebar_badge($path)) {
                 $count = 0;
             }
 
