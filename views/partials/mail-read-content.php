@@ -20,6 +20,7 @@ $thread = is_array($conversationThread ?? null) && ($conversationThread ?? []) !
 $threadDisplay = $thread;
 $threadCount = count($threadDisplay);
 $threadSubject = mail_display_subject($message, $folderPath);
+$threadKey = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
 $expandAllThread = $threadCount > 1;
 $messageAttachments = $message['attachments'] ?? [];
 ?>

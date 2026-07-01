@@ -361,8 +361,9 @@
         return !!(row && row.getAttribute('data-seen') === '0');
     }
 
-    function paneFetchUrl(uid) {
+    function paneFetchUrl(uid, bustCache) {
         var row = rowsForUid(uid)[0];
+        var url = null;
         if (row) {
             var href = row.getAttribute('data-href');
             if (href) {
@@ -372,18 +373,27 @@
                 } catch (e) { /* relative path */ }
                 var m = path.match(/\/folder\/([^/]+)\/message\/(\d+)/);
                 if (m) {
-                    return apiUrl('folder/' + m[1] + '/message/' + m[2] + '/pane');
+                    url = apiUrl('folder/' + m[1] + '/message/' + m[2] + '/pane');
                 }
             }
-            var rowFolderB64 = row.getAttribute('data-folder-b64');
-            if (rowFolderB64) {
-                return apiUrl('folder/' + rowFolderB64 + '/message/' + uid + '/pane');
+            if (!url) {
+                var rowFolderB64 = row.getAttribute('data-folder-b64');
+                if (rowFolderB64) {
+                    url = apiUrl('folder/' + rowFolderB64 + '/message/' + uid + '/pane');
+                }
             }
         }
-        var card = getListCard();
-        if (!card) return null;
-        var b64 = card.getAttribute('data-folder-b64');
-        return apiUrl('folder/' + b64 + '/message/' + uid + '/pane');
+        if (!url) {
+            var card = getListCard();
+            if (!card) return null;
+            var b64 = card.getAttribute('data-folder-b64');
+            url = apiUrl('folder/' + b64 + '/message/' + uid + '/pane');
+        }
+        if (bustCache) {
+            url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
+        }
+
+        return url;
     }
 
     function announceLive(message) {
@@ -675,7 +685,7 @@
         announceLive('Loaded: ' + subject);
     }
 
-    function openMessageInPaneNow(uid, pushHistory) {
+    function openMessageInPaneNow(uid, pushHistory, bustCache) {
         if (!uid) return;
         cancelPostSendBackgroundWork();
         if (!useReadingPane()) {
@@ -688,22 +698,24 @@
         }
 
         var isUnread = isRowUnread(uid);
-        var cached = getPaneCache(uid);
-        if (cached && cached.html && (!isUnread || cached.prefetched)) {
-            var rowCached = rowsForUid(uid)[0];
-            var hrefCached = rowCached ? rowCached.getAttribute('data-href') : null;
-            if (pushHistory && hrefCached && window.history && window.history.pushState) {
-                window.history.pushState({ paneUid: uid }, '', hrefCached);
+        if (!bustCache) {
+            var cached = getPaneCache(uid);
+            if (cached && cached.html && (!isUnread || cached.prefetched)) {
+                var rowCached = rowsForUid(uid)[0];
+                var hrefCached = rowCached ? rowCached.getAttribute('data-href') : null;
+                if (pushHistory && hrefCached && window.history && window.history.pushState) {
+                    window.history.pushState({ paneUid: uid }, '', hrefCached);
+                }
+                setSelectedRow(uid);
+                applyPaneHtml(uid, cached, pushHistory);
+                if (cached.prefetched && isUnread) {
+                    confirmPrefetchedPane(uid);
+                }
+                return;
             }
-            setSelectedRow(uid);
-            applyPaneHtml(uid, cached, pushHistory);
-            if (cached.prefetched && isUnread) {
-                confirmPrefetchedPane(uid);
-            }
-            return;
         }
 
-        var url = paneFetchUrl(uid);
+        var url = paneFetchUrl(uid, bustCache);
         if (!url) return;
 
         var seq = ++paneLoadSeq;
@@ -2156,14 +2168,16 @@
     }
 
     function restorePaneAfterReplySend(data, form) {
-        var composeMode = (form.querySelector('input[name="mode"]') || {}).value || '';
-        if (composeMode !== 'reply' && composeMode !== 'reply-all') {
+        var composeMode = (form && form.querySelector)
+            ? ((form.querySelector('input[name="mode"]') || {}).value || '')
+            : '';
+        if (composeMode !== 'reply' && composeMode !== 'reply-all' && !(data && data.reply_uid)) {
             return false;
         }
 
-        var restoreUid = composePanelRestoreUid
-            || (data && data.reply_uid ? parseInt(data.reply_uid, 10) : 0)
-            || parseInt((form.querySelector('input[name="uid"]') || {}).value || '0', 10);
+        var restoreUid = (data && data.reply_uid ? parseInt(data.reply_uid, 10) : 0)
+            || composePanelRestoreUid
+            || (form && form.querySelector ? parseInt((form.querySelector('input[name="uid"]') || {}).value || '0', 10) : 0);
         if (!restoreUid) {
             return false;
         }
@@ -2185,11 +2199,52 @@
         }
         mailSyncPaused = false;
         postSendQuietUntil = 0;
-        resetComposeUiState();
-        window.setTimeout(function () {
-            openMessageInPaneNow(restoreUid, false);
-        }, 0);
+        if (form) {
+            resetComposeUiState();
+        }
+        openMessageInPaneNow(restoreUid, false, true);
         return true;
+    }
+
+    function schedulePaneReloadAfterReplySend(data, form) {
+        if (!data || !data.reply_uid) return;
+        restorePaneAfterReplySend(data, form);
+        window.setTimeout(function () {
+            restorePaneAfterReplySend(data, form);
+        }, 1800);
+    }
+
+    function refreshPaneIfThreadListChanged(messages) {
+        if (!messages || !messages.length || !useReadingPane()) return;
+        var paneCard = document.querySelector('#reading-pane-body .mail-read-card');
+        if (!paneCard) return;
+
+        var paneUid = paneCard.getAttribute('data-uid');
+        if (!paneUid) return;
+
+        var paneThreadKey = paneCard.getAttribute('data-thread-key');
+        if (!paneThreadKey) {
+            var subjEl = document.querySelector('.mail-read-subject');
+            paneThreadKey = normalizeThreadSubject(subjEl ? subjEl.textContent : '');
+        }
+        if (!paneThreadKey) return;
+
+        var tkLower = paneThreadKey.toLowerCase();
+        var threadMsgs = messages.filter(function (m) {
+            return (m.thread_key || normalizeThreadSubject(m.subject)).toLowerCase() === tkLower;
+        });
+        if (!threadMsgs.length) return;
+
+        var newestUid = String(threadMsgs[0].uid);
+        var shouldReload = newestUid !== paneUid
+            || isPostSendQuiet()
+            || postSendRefreshFolders.length > 0;
+
+        if (!shouldReload) return;
+
+        invalidatePaneCache(paneUid);
+        invalidatePaneCache(newestUid);
+        openMessageInPaneNow(parseInt(newestUid, 10) || parseInt(paneUid, 10), false, true);
     }
 
     function bindComposeFormAjax(form) {
@@ -2342,9 +2397,6 @@
                         var isReplySend = composeMode === 'reply' || composeMode === 'reply-all';
                         closeInlineCompose(false, { keepUiState: false, skipRestore: true });
                         afterComposeSendRefresh(data, form, { isReply: isReplySend });
-                        if (isReplySend) {
-                            restorePaneAfterReplySend(data, form);
-                        }
                         return;
                     }
                     if (form.closest('#compose-panel')) {
@@ -2352,9 +2404,7 @@
                         var panelReplySend = panelComposeMode === 'reply' || panelComposeMode === 'reply-all';
                         closeComposePanel(false, { skipRestore: true });
                         afterComposeSendRefresh(data, form, { isReply: panelReplySend });
-                        if (panelReplySend) {
-                            restorePaneAfterReplySend(data, form);
-                        } else {
+                        if (!panelReplySend) {
                             stopPaneMessageSync();
                             setPaneView('empty');
                         }
@@ -4249,6 +4299,12 @@
                 startPostSendFolderPolls(pollFolders);
             }, 800);
         }
+
+        if (data && data.reply_uid && form) {
+            window.setTimeout(function () {
+                schedulePaneReloadAfterReplySend(data, form);
+            }, 0);
+        }
     }
 
     function applyPostSendUnreadCounts(counts) {
@@ -4483,6 +4539,8 @@
                     if (data.list_grouped) {
                         pruneThreadCollapsedRows(freshUids, data.messages);
                     }
+
+                    refreshPaneIfThreadListChanged(data.messages);
 
                     reorderMailListFromPoll(data.messages);
                     syncListEmptyState();
