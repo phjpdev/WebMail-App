@@ -2243,8 +2243,16 @@ function mail_apply_post_send_session_state(
     ?array $threadReply = null,
 ): void {
     mail_note_admin_outbound_send($fromEmail, $destPaths);
+    $user = App\Auth::user();
     foreach ($destPaths as $destPath) {
         mail_note_employee_correspondent((string) $destPath);
+        $resolved = \App\Services\FolderCache::resolvePath(
+            employee_messages_imap_path((string) $destPath)
+        );
+        if ($resolved !== '' && sender_suppresses_dest_folder_badge($resolved, $user)) {
+            \App\Services\FolderCache::setUnreadCount($resolved, 0);
+            \App\Services\FolderCache::clearPendingBadgePath($resolved);
+        }
     }
     mail_note_correspondents_from_addresses($toHeader, $ccHeader, $bccHeader);
     if ($threadReply !== null) {
@@ -2454,6 +2462,10 @@ function mail_post_send_preview_inflates_sidebar_badge(string $folderPath): bool
         return false;
     }
 
+    if (sender_suppresses_dest_folder_badge($folderPath)) {
+        return false;
+    }
+
     return admin_employee_inbox_preview_inflates_badge($folderPath);
 }
 
@@ -2618,6 +2630,7 @@ function mail_store_post_send_previews(
         $adminFromShared = $senderResolved !== ''
             && strcasecmp($resolved, $senderResolved) === 0
             && \App\Services\MailCacheService::viewerIsAdmin();
+        $employeeOwnOutbound = sender_suppresses_dest_folder_badge($resolved);
         if ($adminToEmployee) {
             continue;
         }
@@ -2632,7 +2645,7 @@ function mail_store_post_send_previews(
             'subject' => $subject !== '' ? $subject : '(no subject)',
             'date' => date('r'),
             'sort_date' => date('r'),
-            'seen' => $adminFromShared,
+            'seen' => $adminFromShared || $employeeOwnOutbound,
             'flagged' => false,
             'has_attachment' => false,
             'size' => 0,
@@ -3797,6 +3810,12 @@ function mail_correspondent_list_row_shows_unread(string $folderPath, int $uid, 
 function mail_apply_correspondent_inbox_unread_to_list_row(string $folderPath, array &$msg): void
 {
     if (!employee_is_correspondent_folder($folderPath)) {
+        return;
+    }
+
+    if (mail_employee_own_correspondent_outbound_row_is_read($folderPath, $msg)) {
+        $msg['seen'] = true;
+
         return;
     }
 
@@ -5128,6 +5147,11 @@ function mail_enrich_correspondent_folder_list_row(string $folderPath, array &$m
             $latestUid = (int) ($latest['imap_uid'] ?? 0);
             if (!empty($latest['is_pending_reply'])) {
                 $msg['seen'] = false;
+            } elseif (
+                !\App\Services\MailCacheService::viewerIsAdmin()
+                && employee_is_correspondent_folder($folderPath)
+            ) {
+                $msg['seen'] = mail_employee_own_correspondent_outbound_row_is_read($folderPath, $msg);
             } elseif ($latestUid > 0) {
                 $msg['seen'] = \App\Services\MailCacheService::effectiveSeen($latestFolder, $latestUid);
             }
@@ -7931,6 +7955,52 @@ function mail_is_sent_by_user(?string $from, ?int $userId = null): bool
     }
 
     return in_array($fromEmail, mail_user_emails($userId), true);
+}
+
+/**
+ * Employee's own outbound in a correspondent folder (e.g. Jean → Support).
+ * Read for the sender unless an inbound reply is still unread.
+ *
+ * @param array<string, mixed> $msg
+ */
+function mail_employee_own_correspondent_outbound_row_is_read(string $folderPath, array $msg): bool
+{
+    $user = App\Auth::user();
+    if ($user === null || ($user['role'] ?? '') !== 'employee') {
+        return false;
+    }
+
+    $viewerId = (int) ($user['id'] ?? 0);
+    if ($viewerId <= 0 || !employee_is_correspondent_folder($folderPath)) {
+        return false;
+    }
+
+    if (!employee_outbound_correspondent_folder($folderPath, $user)) {
+        return false;
+    }
+
+    if (!mail_is_sent_by_user((string) ($msg['from'] ?? ''), $viewerId)) {
+        return false;
+    }
+
+    $uid = (int) ($msg['uid'] ?? 0);
+    if ($uid <= 0) {
+        return true;
+    }
+
+    $inbound = mail_find_correspondent_inbound_replies($folderPath, $uid, $msg);
+    if ($inbound === []) {
+        return true;
+    }
+
+    $latest = $inbound[count($inbound) - 1];
+    $replyFolder = (string) ($latest['folder_path'] ?? '');
+    $replyUid = (int) ($latest['imap_uid'] ?? 0);
+    if ($replyFolder === '' || $replyUid <= 0) {
+        return true;
+    }
+
+    return \App\Services\MailCacheService::effectiveSeen($replyFolder, $replyUid, $viewerId);
 }
 
 /**
