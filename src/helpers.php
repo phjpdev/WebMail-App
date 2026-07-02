@@ -5348,6 +5348,9 @@ function deliver_outbound_shared_sender_copy(
     } catch (\Throwable $e) {
         app_log('Outbound shared sender index sync for ' . $senderPath . ' failed: ' . $e->getMessage());
     }
+    // syncFolderHeaders reconciled badges (a session write); release the lock so
+    // this background copy does not serialise concurrent UI requests.
+    releaseSessionLock();
 }
 
 /**
@@ -5413,6 +5416,9 @@ function deliver_outbound_sender_inbox_copy(
     } catch (\Throwable $e) {
         app_log('Outbound sender inbox sync for ' . $senderInbox . ' failed: ' . $e->getMessage());
     }
+    // Badge writes above re-acquired the session lock; release it so this
+    // background copy does not serialise concurrent UI requests.
+    releaseSessionLock();
 }
 
 /**
