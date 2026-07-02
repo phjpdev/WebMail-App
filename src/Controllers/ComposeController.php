@@ -250,6 +250,11 @@ class ComposeController
             $destPaths = [];
             $sentMessageId = extract_message_id_from_mime($sentMime);
 
+            // Save + index the Sent copy synchronously (not in the deferred job) so
+            // it appears in the Sent folder immediately once the send returns.
+            $this->saveToSent($sentFolder, $sentMime);
+            releaseSessionLock();
+
             $threadReply = null;
             if (
                 in_array($mode, ['reply', 'reply-all'], true)
@@ -443,8 +448,8 @@ class ComposeController
         // and concurrent sidebar polls / folder loads serialise behind it (a ~30s
         // UI freeze). Session data written here is authoritative on the next read.
         $sentFolder = (string) ($job['sent_folder'] ?? '');
-        $this->saveToSent($sentFolder, $sentMime);
-        releaseSessionLock();
+        // The Sent copy is now saved + indexed synchronously in send() so it shows
+        // immediately; the deferred job only does draft cleanup, filtering and badges.
         $this->deleteSourceDraft(
             (string) ($job['draft_folder'] ?? ''),
             (int) ($job['draft_uid'] ?? 0),
@@ -1308,7 +1313,7 @@ class ComposeController
      */
     private function saveToSent(string $sentFolder, string $mime): void
     {
-        if ($mime === '') {
+        if ($mime === '' || $sentFolder === '') {
             return;
         }
 
@@ -1319,6 +1324,18 @@ class ComposeController
 
         if (!$imap->appendMessage($sentFolder, $mime, '\\Seen')) {
             app_log('Could not save sent copy: ' . $imap->getLastError());
+
+            return;
+        }
+
+        // Index the Sent folder right away so the copy shows the instant the user
+        // opens Sent (listFromCache reads mail_index). Only the newest few headers
+        // are needed (the copy is newest); the deferred job does the full sync. The
+        // append is \Seen, so it never affects an unread badge.
+        try {
+            MailCacheService::syncFolderHeaders($imap, $sentFolder, 5);
+        } catch (\Throwable $e) {
+            app_log('Immediate Sent index failed for ' . $sentFolder . ': ' . $e->getMessage());
         }
     }
 
