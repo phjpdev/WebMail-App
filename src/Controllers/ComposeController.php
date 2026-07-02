@@ -244,7 +244,10 @@ class ComposeController
             $sentFolder = $this->resolveSentFolderFast();
             $sentMime = $smtp->getLastMime();
             $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
-            $destPaths = FilterService::predictDestinationPaths($toHeader, $ccHeader, $bccHeader, $fromEmail);
+            // Sent-only model: the SMTP server delivers to recipients and the
+            // filter engine routes inbound copies to their real folders, so we no
+            // longer predict destinations or copy the message into them.
+            $destPaths = [];
             $sentMessageId = extract_message_id_from_mime($sentMime);
 
             $threadReply = null;
@@ -450,12 +453,6 @@ class ComposeController
         $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
         $fromEmail = (string) ($job['from_email'] ?? '');
         $sentMessageId = isset($job['sent_message_id']) ? (string) $job['sent_message_id'] : null;
-        if ($destPaths !== [] && $sentMime !== '') {
-            deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
-            releaseSessionLock();
-            reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId, false);
-            releaseSessionLock();
-        }
 
         $syncResult = $this->syncMailboxAfterSend(
             $fromEmail,
@@ -1342,7 +1339,6 @@ class ComposeController
     ): array {
         $contextFolder = compose_context_folder($returnFolder, $folderPath, $fromEmail);
         $inbox = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
-        $quickHeaderLimit = 15;
         $fullHeaderLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
         $sentMessageId = $sentMime !== '' ? extract_message_id_from_mime($sentMime) : null;
 
@@ -1353,19 +1349,10 @@ class ComposeController
         // each IMAP batch; the final badge block re-acquires for its writes.
         releaseSessionLock();
 
+        // Sent-only model: nothing is copied into recipient folders. The SMTP
+        // server delivers to recipients; the filter engine (below) routes any
+        // inbound copy into its real folder, which we then sync into mail_index.
         $imap = new ImapService();
-        if ($imap->connect()) {
-            foreach (mail_normalize_sync_paths($destPaths) as $destPath) {
-                try {
-                    MailCacheService::syncFolderHeaders($imap, $destPath, $quickHeaderLimit);
-                } catch (\Throwable $e) {
-                    app_log('Post-send priority sync failed for ' . $destPath . ': ' . $e->getMessage());
-                }
-            }
-            reconcile_correspondent_outbound_echoes($imap, $destPaths, $fromEmail, $sentMessageId);
-            reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
-        }
-        releaseSessionLock();
 
         $filterResult = FilterService::runBackground(true, 10);
         $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
@@ -1436,14 +1423,6 @@ class ComposeController
                 // folder's IMAP fetch — and any concurrent UI poll — is not blocked.
                 releaseSessionLock();
             }
-
-            $senderFolder = folder_for_alias_email($fromEmail);
-            reconcile_alias_self_sent_echoes(
-                $imap,
-                array_values(array_unique(array_filter(
-                    $senderFolder !== null ? [$senderFolder] : []
-                )))
-            );
         }
 
         with_session_write(function () use ($routedPaths, $fromEmail, $destPaths, $inbox, $contextFolder, $sentFolder): void {
