@@ -639,29 +639,9 @@ class MailCacheService
 
     public static function effectiveSeen(string $folderPath, int $uid, ?int $userId = null): bool
     {
-        $userId = $userId ?? (int) (Auth::user()['id'] ?? 0);
-        $folderPath = self::indexFolderPath($folderPath);
-
-        if (self::usesPerUserRead($folderPath) && $userId > 0) {
-            $linkedId = self::linkedUserId($folderPath);
-            if ($linkedId !== null && $userId !== $linkedId && self::viewerIsAdmin()) {
-                if (self::userHasRead($userId, $folderPath, $uid)) {
-                    return true;
-                }
-
-                $indexSeen = self::indexSeenState($folderPath, $uid);
-
-                return $indexSeen === null ? false : $indexSeen;
-            }
-
-            return self::userHasRead($userId, $folderPath, $uid);
-        }
-
-        if ($userId > 0 && self::sharedMailboxUsesPerUserSeen($folderPath, $userId)) {
-            return self::userHasRead($userId, $folderPath, $uid);
-        }
-
-        return (bool) self::indexSeenState($folderPath, $uid);
+        // Plain per-folder model: read state is the message's own IMAP \Seen flag
+        // (mirrored in mail_index.seen). No per-user read tracking.
+        return (bool) self::indexSeenState(self::indexFolderPath($folderPath), $uid);
     }
 
     /**
@@ -1343,52 +1323,19 @@ class MailCacheService
             return 0;
         }
 
-        if (mail_admin_outbound_suppresses_sidebar_badge($folderPath)) {
-            return 0;
-        }
-
         if ($sessionCount === null) {
             $sessionCount = FolderCache::sessionUnreadCountRaw($folderPath);
         }
 
-        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
-        if ($privacyEmails !== null) {
-            if (!self::viewerIsAdmin() && employee_is_correspondent_folder($folderPath)) {
-                return mail_correspondent_folder_badge_count($folderPath);
-            }
-
-            return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
-        }
-
-        if (self::usesPerUserRead($folderPath)) {
-            $linkedId = self::linkedUserId($folderPath);
-            $viewerId = (int) (Auth::user()['id'] ?? 0);
-            if ($linkedId !== null && $viewerId === $linkedId) {
-                return self::countUnseenForUser($linkedId, $folderPath);
-            }
-            if ($linkedId !== null && self::viewerIsAdmin()) {
-                $indexed = self::countAdminEmployeeInboxBadge($folderPath);
-                if (
-                    FolderCache::isPendingBadgePath($folderPath)
-                    || admin_employee_inbox_preview_inflates_badge($folderPath)
-                ) {
-                    return max($indexed, $sessionCount);
-                }
-
-                return $indexed;
-            }
-        }
-
+        // Plain per-folder model: unread badge = the folder's own unseen count
+        // (Drafts show total drafts). When the folder is not indexed yet, trust the
+        // session value (populated from the IMAP STATUS UNSEEN refresh).
         if (folder_uses_draft_badge($folderPath) && self::hasFolderData($folderPath)) {
             return self::countBadgeFromIndex($folderPath);
         }
 
         if (self::hasFolderData($folderPath)) {
-            return self::mergeBadgeWithSession(
-                $folderPath,
-                self::countBadgeFromIndex($folderPath),
-                $sessionCount
-            );
+            return self::countUnseenInIndex($folderPath);
         }
 
         return $sessionCount;
@@ -1602,8 +1549,8 @@ class MailCacheService
                 cc_addrs = COALESCE(NULLIF(VALUES(cc_addrs), \'\'), cc_addrs),
                 subject = VALUES(subject),
                 msg_date = VALUES(msg_date),
-                seen = GREATEST(seen, VALUES(seen)),
-                flagged = GREATEST(flagged, VALUES(flagged)),
+                seen = VALUES(seen),
+                flagged = VALUES(flagged),
                 has_attachment = VALUES(has_attachment),
                 size = VALUES(size),
                 synced_at = NOW()',
@@ -1995,27 +1942,11 @@ class MailCacheService
      */
     public static function countUnseenInIndex(string $folderPath): int
     {
+        // Plain per-folder model: a folder's unread badge is simply the number of
+        // its own unseen messages (IMAP \Seen mirrored in mail_index.seen). No
+        // cross-folder merge, no per-user read, no thread-based seen — so the
+        // badge always equals the unread blue bars in the folder's list.
         $folderPath = self::indexFolderPath($folderPath);
-        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
-        if ($privacyEmails !== null) {
-            return self::countCorrespondentUnseenWithReplies($folderPath, $privacyEmails);
-        }
-
-        if (self::viewerIsAdmin() && self::isSharedEmployeeMailbox($folderPath)) {
-            return self::countSharedEmployeeMailboxUnseen($folderPath);
-        }
-
-        if (self::usesPerUserRead($folderPath)) {
-            $linkedId = self::linkedUserId($folderPath);
-            $viewerId = (int) (Auth::user()['id'] ?? 0);
-            if ($linkedId !== null && $viewerId === $linkedId) {
-                return self::countUnseenForUser($linkedId, $folderPath);
-            }
-            if ($linkedId !== null && self::viewerIsAdmin()) {
-                return self::countAdminEmployeeInboxBadge($folderPath);
-            }
-        }
-
         $row = Database::fetchOne(
             'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 0',
             [$folderPath]
@@ -2305,134 +2236,32 @@ class MailCacheService
             return 0;
         }
 
-        // Correspondent folders: the badge must reflect only mail the viewer is a
-        // party to, never the whole-folder IMAP unseen count. Set it exactly.
-        $privacyEmails = employee_correspondent_privacy_emails($folderPath);
-        if ($privacyEmails !== null) {
-            $truth = self::countCorrespondentUnseenWithReplies(
-                mail_correspondent_messages_folder_path($folderPath),
-                $privacyEmails
-            );
+        // Plain per-folder model: the badge is the folder's own unseen count
+        // (Drafts: total drafts). Once the folder is indexed that is the exact
+        // truth; before it is indexed, fall back to the current page's unseen rows
+        // or the session value (from the IMAP STATUS refresh).
+        if (self::hasFolderData($folderPath)) {
+            if (folder_uses_draft_badge($folderPath)) {
+                self::reconcileSyncStateFromIndex($folderPath);
+            }
+            $truth = self::countBadgeFromIndex($folderPath);
             FolderCache::setUnreadCount($folderPath, $truth);
 
             return $truth;
         }
 
-        if (self::usesPerUserRead($folderPath)) {
-            $linkedId = self::linkedUserId($folderPath);
-            $viewerId = (int) (Auth::user()['id'] ?? 0);
-            if ($linkedId !== null && $viewerId === $linkedId) {
-                $truth = self::countUnseenForUser($linkedId, $folderPath);
-                FolderCache::setUnreadCount($folderPath, $truth);
-
-                return $truth;
-            }
-            if ($linkedId !== null && self::viewerIsAdmin()) {
-                $session = FolderCache::sessionUnreadCountRaw($folderPath);
-                $truth = self::countAdminEmployeeInboxBadge($folderPath);
-
-                $pageUnread = null;
-                if ($pageMessages !== null && !folder_uses_draft_badge($folderPath)) {
-                    $pageUnread = 0;
-                    foreach ($pageMessages as $msg) {
-                        if (!is_array($msg) || !empty($msg['seen'])) {
-                            continue;
-                        }
-                        if (admin_should_hide_employee_inbox_correspondent_message($msg)) {
-                            continue;
-                        }
-                        $pageUnread++;
-                    }
-                }
-
-                $allowSessionInflate = FolderCache::isPendingBadgePath($folderPath)
-                    || admin_employee_inbox_preview_inflates_badge($folderPath);
-                if ($pageUnread !== null && $pageUnread === 0 && $truth === 0) {
-                    $allowSessionInflate = false;
-                }
-
-                if ($allowSessionInflate) {
-                    $truth = max($truth, $session);
-                }
-
-                FolderCache::setUnreadCount($folderPath, $truth);
-
-                return $truth;
-            }
-        }
-
         $session = FolderCache::sessionUnreadCountRaw($folderPath);
-
-        $pageUnread = 0;
         if ($pageMessages !== null && !folder_uses_draft_badge($folderPath)) {
+            $pageUnread = 0;
             foreach ($pageMessages as $msg) {
-                if (!is_array($msg) || !empty($msg['seen'])) {
-                    continue;
+                if (is_array($msg) && empty($msg['seen'])) {
+                    $pageUnread++;
                 }
-                if (
-                    self::viewerIsAdmin()
-                    && self::isSharedEmployeeMailbox($folderPath)
-                    && mail_is_shared_mailbox_alias_sent_echo($folderPath, $msg)
-                ) {
-                    continue;
-                }
-                if (
-                    self::viewerIsAdmin()
-                    && mail_linked_user_id_for_inbox($folderPath) !== null
-                    && admin_should_hide_employee_inbox_correspondent_message($msg)
-                ) {
-                    continue;
-                }
-                $pageUnread++;
             }
-        }
-
-        if (!self::hasFolderData($folderPath)) {
-            if ($pageMessages !== null && $pageUnread > 0 && !folder_uses_draft_badge($folderPath)) {
-                $truth = max($session, $pageUnread);
-                if ($truth !== $session) {
-                    FolderCache::setUnreadCount($folderPath, $truth);
-                }
-
-                return $truth;
-            }
-
-            if ($pageMessages !== null && $pageUnread === 0 && $session > 0 && !folder_uses_draft_badge($folderPath)) {
-                if (self::hasFolderData($folderPath) && self::countBadgeFromIndex($folderPath) === 0) {
-                    FolderCache::setUnreadCount($folderPath, 0);
-
-                    return 0;
-                }
-
-                // Keep the session badge until the folder is indexed — do not
-                // clear optimistic/post-delivery counts while cache is empty.
-                return $session;
-            }
-
-            return $session;
-        }
-
-        if (folder_uses_draft_badge($folderPath)) {
-            self::reconcileSyncStateFromIndex($folderPath);
-            $truth = self::countBadgeFromIndex($folderPath);
+            $truth = max($session, $pageUnread);
             if ($truth !== $session) {
                 FolderCache::setUnreadCount($folderPath, $truth);
-
-                return $truth;
             }
-
-            return $session;
-        }
-
-        if (self::syncBadgeFromIndex($folderPath)) {
-            return FolderCache::sessionUnreadCountRaw($folderPath);
-        }
-
-        $indexUnread = self::countBadgeFromIndex($folderPath);
-        $truth = self::mergeBadgeWithSession($folderPath, max($indexUnread, $pageUnread), $session);
-
-        if ($truth !== $session) {
-            FolderCache::setUnreadCount($folderPath, $truth);
 
             return $truth;
         }
