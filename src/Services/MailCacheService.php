@@ -29,30 +29,31 @@ class MailCacheService
             return self::$indexFolderPathCache[$lookup];
         }
 
-        foreach (['mail_sync_state', 'mail_index'] as $table) {
-            $row = Database::fetchOne(
-                "SELECT folder_path FROM {$table} WHERE LOWER(folder_path) = LOWER(?) LIMIT 1",
-                [$lookup]
-            );
-            if ($row !== null && ($row['folder_path'] ?? '') !== '') {
-                self::$indexFolderPathCache[$lookup] = (string) $row['folder_path'];
-
-                return self::$indexFolderPathCache[$lookup];
-            }
-        }
-
         $resolved = FolderCache::resolvePath($folderPath);
         $messagesPath = employee_messages_imap_path($resolved);
+
+        // For a shared/linked mailbox ROOT (e.g. INBOX.support, INBOX.Jean) the mail
+        // lives in its messages subfolder (…​.Inbox), so canonicalise to that first.
+        // Otherwise a spurious/empty parent sync_state row would win and the badge,
+        // list and read state would all read an empty index. (Linked inboxes already
+        // worked because their parent had no own row; this makes shared mailboxes
+        // behave the same.) Normal folders map to themselves.
+        $candidates = [];
         if ($messagesPath !== '' && strcasecmp($messagesPath, $resolved) !== 0) {
+            $candidates[] = $messagesPath;
+        }
+        $candidates[] = $folderPath;
+        $candidates[] = $resolved;
+
+        foreach ($candidates as $candidate) {
             foreach (['mail_sync_state', 'mail_index'] as $table) {
                 $row = Database::fetchOne(
                     "SELECT folder_path FROM {$table} WHERE LOWER(folder_path) = LOWER(?) LIMIT 1",
-                    [$messagesPath]
+                    [$candidate]
                 );
                 if ($row !== null && ($row['folder_path'] ?? '') !== '') {
                     $canonical = (string) $row['folder_path'];
                     self::$indexFolderPathCache[$lookup] = $canonical;
-                    self::$indexFolderPathCache[strtolower($messagesPath)] = $canonical;
 
                     return $canonical;
                 }
@@ -1442,6 +1443,10 @@ class MailCacheService
                 continue;
             }
 
+            // Plain per-folder model: only fill display snippet (and draft "to").
+            // NO correspondent/thread-preview enrichment — that overrode a row's
+            // `seen` with per-viewer correspondent read-state, making a viewer's
+            // own-alias message look read while the index says unseen.
             if (empty($msg['snippet'])) {
                 $body = $bodies[$uid] ?? null;
                 if ($body !== null) {
@@ -1452,22 +1457,8 @@ class MailCacheService
                     }
                 }
             }
-
-            if (!$light
-                || employee_is_correspondent_folder($folderPath)
-                || self::isSharedEmployeeMailbox($folderPath)
-                || mail_linked_user_id_for_inbox($folderPath) !== null) {
-                mail_enrich_list_with_thread_preview($folderPath, $msg);
-            }
-            mail_note_correspondent_from_list_message($msg);
         }
         unset($msg);
-
-        if (mail_linked_user_id_for_inbox($folderPath) !== null
-            || employee_is_correspondent_folder($folderPath)
-            || \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
-            $messages = mail_resort_list_by_message_date($messages);
-        }
 
         return $messages;
     }
