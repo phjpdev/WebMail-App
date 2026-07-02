@@ -1396,11 +1396,12 @@ class ComposeController
         releaseSessionLock();
 
         if ($imap->connect()) {
-            if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
-                $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
-            } else {
-                $imap->clearRecentSelfSentCopies([$inbox], $fromEmail, 6);
-            }
+            // Sent-only model: we create no inbox "echo" to suppress (the only copy
+            // we make is the \Seen Sent copy). Anything the mail server delivers to a
+            // mailbox — including a message sent TO the shared support@ inbox — is a
+            // real delivery and must stay unread so the team gets a badge. (The old
+            // self-echo suppression marked messages from the sender read, which wrongly
+            // read an employee's message to Support.)
 
             if (
                 in_array($mode, ['reply', 'reply-all'], true)

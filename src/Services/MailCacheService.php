@@ -997,12 +997,16 @@ class MailCacheService
 
         // Plain per-folder model: unread badge = the folder's own unseen count
         // (Drafts show total drafts). When the folder is not indexed yet, trust the
-        // session value (populated from the IMAP STATUS UNSEEN refresh).
-        if (folder_uses_draft_badge($folderPath) && self::hasFolderData($folderPath)) {
+        // session value (populated from the IMAP STATUS UNSEEN refresh). Check the
+        // index path, not the raw sidebar node: a shared/linked ROOT (INBOX.Jean,
+        // INBOX.support) has no sync_state of its own — its mail lives in the .Inbox
+        // subfolder — so checking the parent would fall back to a stale session value.
+        $indexPath = self::indexFolderPath($folderPath);
+        if (folder_uses_draft_badge($folderPath) && self::hasFolderData($indexPath)) {
             return self::countBadgeFromIndex($folderPath);
         }
 
-        if (self::hasFolderData($folderPath)) {
+        if (self::hasFolderData($indexPath)) {
             return self::countUnseenInIndex($folderPath);
         }
 
@@ -1904,8 +1908,11 @@ class MailCacheService
         // Plain per-folder model: the badge is the folder's own unseen count
         // (Drafts: total drafts). Once the folder is indexed that is the exact
         // truth; before it is indexed, fall back to the current page's unseen rows
-        // or the session value (from the IMAP STATUS refresh).
-        if (self::hasFolderData($folderPath)) {
+        // or the session value (from the IMAP STATUS refresh). Check the index path,
+        // not the raw sidebar node: a shared/linked ROOT (INBOX.Jean, INBOX.support)
+        // has no sync_state of its own, so checking the parent would wrongly fall to
+        // the max(session,page) branch and keep a stale value.
+        if (self::hasFolderData(self::indexFolderPath($folderPath))) {
             if (folder_uses_draft_badge($folderPath)) {
                 self::reconcileSyncStateFromIndex($folderPath);
             }
