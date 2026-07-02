@@ -466,6 +466,13 @@ class FilterService
             $pendingPaths = FolderCache::claimPendingFilterRoute($headers['message_id'] ?? null);
             $targetPaths = $this->resolveTargetPaths($matchedRules, $pendingPaths);
 
+            // Mail the host already flagged as spam (SpamAssassin X-Spam-Flag /
+            // ***SPAM*** subject) goes straight to Junk instead of an inbox — the
+            // recipient's own Junk when we know who it's for, otherwise shared Junk.
+            if (mail_headers_indicate_spam($headers)) {
+                $targetPaths = $this->spamTargetPaths($targetPaths);
+            }
+
             if ($targetPaths !== []) {
                 $primaryRule = $targetPaths[0];
                 $primaryPath = employee_messages_imap_path((string) $primaryRule['imap_path']);
@@ -535,6 +542,33 @@ class FilterService
      * @param list<string>|null $pendingPaths
      * @return list<array<string, mixed>>
      */
+    /**
+     * Remap normal delivery targets to the matching Junk folder for spam. With no
+     * known recipient (catch-all) the message goes to the shared Junk.
+     *
+     * @param list<array<string, mixed>> $targetPaths
+     * @return list<array<string, mixed>>
+     */
+    private function spamTargetPaths(array $targetPaths): array
+    {
+        if ($targetPaths === []) {
+            $junk = mail_spam_folder_for_delivery((string) (config('app')['filter_source_folder'] ?? 'INBOX'));
+
+            return $junk !== '' ? [['imap_path' => $junk, 'name' => 'spam']] : [];
+        }
+
+        $out = [];
+        foreach ($targetPaths as $rule) {
+            $delivery = employee_messages_imap_path((string) ($rule['imap_path'] ?? ''));
+            $junk = mail_spam_folder_for_delivery($delivery);
+            if ($junk !== '') {
+                $out[$junk] = ['imap_path' => $junk, 'name' => 'spam'];
+            }
+        }
+
+        return array_values($out);
+    }
+
     private function resolveTargetPaths(array $matchedRules, ?array $pendingPaths): array
     {
         // Dedupe by the resolved messages folder (employee_messages_imap_path), not

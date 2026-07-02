@@ -1589,6 +1589,10 @@ class ImapService
             'x_original_to' => $this->extractHeaderValue($rawHeader, 'X-Original-To'),
             'envelope_recipients' => $this->collectEnvelopeRecipients($rawHeader),
             'message_id' => $this->extractHeaderValue($rawHeader, 'Message-ID'),
+            // SpamAssassin (and most mail hosts) flag spam via these headers; the
+            // filter uses them to auto-move spam to Junk.
+            'x_spam_flag' => $this->extractHeaderValue($rawHeader, 'X-Spam-Flag'),
+            'x_spam_status' => $this->extractHeaderValue($rawHeader, 'X-Spam-Status'),
         ];
     }
 

@@ -5161,6 +5161,58 @@ function spam_folder_path(): string
 }
 
 /**
+ * True when a message's headers say the mail host already classified it as spam.
+ * Covers SpamAssassin's X-Spam-Flag / X-Spam-Status and the rewritten "***SPAM***"
+ * subject that most hosts (incl. this one) add.
+ *
+ * @param array<string, mixed> $headers
+ */
+function mail_headers_indicate_spam(array $headers): bool
+{
+    if (strcasecmp(trim((string) ($headers['x_spam_flag'] ?? '')), 'YES') === 0) {
+        return true;
+    }
+
+    $status = ltrim(strtolower((string) ($headers['x_spam_status'] ?? '')));
+    if ($status !== '' && str_starts_with($status, 'yes')) {
+        return true;
+    }
+
+    return stripos((string) ($headers['subject'] ?? ''), '***SPAM***') !== false;
+}
+
+/**
+ * The Junk folder that spam for a given delivery folder should land in — the
+ * recipient's own Junk (INBOX.Erik.Inbox -> INBOX.Erik.Junk), or the shared
+ * INBOX.Junk for catch-all/shared inbox mail. Falls back to the canonical Junk
+ * folder if the sibling doesn't exist.
+ */
+function mail_spam_folder_for_delivery(string $deliveryPath): string
+{
+    $root = employee_mailbox_root_prefix($deliveryPath);
+    if ($root === '') {
+        $root = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+    }
+
+    $candidate = \App\Services\FolderCache::resolvePath(rtrim($root, '.') . '.Junk');
+    if ($candidate !== '') {
+        try {
+            $exists = \App\Database::fetchOne(
+                'SELECT 1 AS x FROM folders WHERE LOWER(imap_path) = LOWER(?) AND active = 1 LIMIT 1',
+                [$candidate]
+            );
+            if ($exists !== null) {
+                return $candidate;
+            }
+        } catch (\Throwable $e) {
+            // fall through to the shared Junk
+        }
+    }
+
+    return \App\Services\FolderCache::resolvePath('INBOX.Junk');
+}
+
+/**
  * Resolve a well-known system folder leaf (Junk, Trash, Sent, …) by exact name
  * under INBOX or the logged-in employee inbox — avoids substring false matches
  * such as INBOX.Jean.Junk winning over INBOX.Junk.
