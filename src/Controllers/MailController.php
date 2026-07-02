@@ -980,13 +980,11 @@ class MailController
             return;
         }
 
+        // Don't connect to IMAP up front: resolveSnippetsForUids() serves cached
+        // snippets from mail_bodies and only opens the folder (which connects lazily)
+        // for uids it still has to fetch. On a repeat open — where every snippet is
+        // cached — this avoids a wasted ~1.5s IMAP connect against a remote server.
         $imap = new ImapService();
-        if (!$imap->connect()) {
-            http_response_code(503);
-            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
-            return;
-        }
-
         $snippets = MailCacheService::resolveSnippetsForUids($imap, $folderPath, $uids);
 
         echo json_encode(['ok' => true, 'snippets' => $snippets]);
