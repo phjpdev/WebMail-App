@@ -7552,6 +7552,84 @@ function mail_save_removed_uids_store(array $data): void
 }
 
 /**
+ * Per-folder cache of "has attachment" flags (folder => {uid: 0|1}). A message's
+ * attachment status never changes, so once computed (a slow IMAP body-structure
+ * fetch) it is cached here — the attachments endpoint then serves repeat folder
+ * opens from the cache instead of re-fetching from IMAP every time.
+ */
+function mail_attachment_flags_store_path(): string
+{
+    return base_path('storage/attachment_flags.json');
+}
+
+/**
+ * @return array<string, array<string, int>>
+ */
+function mail_load_attachment_flags(): array
+{
+    $path = mail_attachment_flags_store_path();
+    if (!is_readable($path)) {
+        return [];
+    }
+    $decoded = json_decode((string) file_get_contents($path), true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+/**
+ * Cached flags for the requested uids only (uid => bool); uids not yet checked
+ * are simply absent, so the caller knows which ones still need an IMAP fetch.
+ *
+ * @param list<int> $uids
+ * @return array<int, bool>
+ */
+function mail_cached_attachment_flags(string $folderPath, array $uids): array
+{
+    $key = strtoupper(\App\Services\FolderCache::resolvePath($folderPath));
+    if ($key === '') {
+        return [];
+    }
+    $folder = mail_load_attachment_flags()[$key] ?? [];
+    if (!is_array($folder)) {
+        return [];
+    }
+    $out = [];
+    foreach ($uids as $uid) {
+        $uid = (int) $uid;
+        if (array_key_exists((string) $uid, $folder)) {
+            $out[$uid] = (bool) $folder[(string) $uid];
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * @param array<int, bool> $flags uid => has-attachment
+ */
+function mail_store_attachment_flags(string $folderPath, array $flags): void
+{
+    $key = strtoupper(\App\Services\FolderCache::resolvePath($folderPath));
+    if ($key === '' || $flags === []) {
+        return;
+    }
+    $store = mail_load_attachment_flags();
+    if (!isset($store[$key]) || !is_array($store[$key])) {
+        $store[$key] = [];
+    }
+    foreach ($flags as $uid => $has) {
+        $store[$key][(string) (int) $uid] = $has ? 1 : 0;
+    }
+
+    $path = mail_attachment_flags_store_path();
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0755, true);
+    }
+    file_put_contents($path, json_encode($store, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+
+/**
  * @return array<int, true> uid => true
  */
 function mail_removed_uids_for_folder(string $folderPath): array

@@ -920,16 +920,31 @@ class MailController
             return;
         }
 
-        $imap = new ImapService();
-        if (!$imap->connect() || !$imap->openFolder($folderPath)) {
-            http_response_code(503);
-            echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
-            return;
+        // Serve cached attachment flags; a message's attachment status never
+        // changes, so we only pay the slow IMAP body-structure fetch once per
+        // message. This is the difference between an instant folder open and a
+        // multi-second one against a remote IMAP server.
+        $result = mail_cached_attachment_flags($folderPath, $uids);
+        $missing = array_values(array_diff($uids, array_keys($result)));
+
+        if ($missing !== []) {
+            $imap = new ImapService();
+            if ($imap->connect() && $imap->openFolder($folderPath)) {
+                $fetched = $imap->batchHasAttachments($missing);
+                mail_store_attachment_flags($folderPath, $fetched);
+                foreach ($fetched as $uid => $has) {
+                    $result[(int) $uid] = (bool) $has;
+                }
+            } elseif ($result === []) {
+                http_response_code(503);
+                echo json_encode(['ok' => false, 'error' => $imap->getLastError()]);
+                return;
+            }
         }
 
         echo json_encode([
             'ok' => true,
-            'has_attachment' => $imap->batchHasAttachments($uids),
+            'has_attachment' => $result,
         ]);
     }
 
