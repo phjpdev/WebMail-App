@@ -258,6 +258,10 @@ class FilterService
                         } catch (\Throwable $e) {
                             app_log('Mail cache sync after filter failed for ' . $path . ': ' . $e->getMessage());
                         }
+                        // reconcileBadgeFromIndex re-acquires the session lock; release
+                        // it so the next folder's IMAP fetch (and any concurrent UI
+                        // poll) is not serialised behind this background sync.
+                        releaseSessionLock();
                     }
                     reconcile_alias_self_sent_echoes($imap, $pathList);
                 }

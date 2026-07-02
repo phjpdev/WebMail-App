@@ -433,18 +433,28 @@ class ComposeController
             @unlink($mimePath);
         }
 
+        // The whole post-send job runs after json_response_then() has flushed the
+        // response and released the session lock. Every phase below does slow IMAP
+        // and ends with a badge write that re-acquires the lock, so we release
+        // after each phase — otherwise the lock is held unbroken for the whole job
+        // and concurrent sidebar polls / folder loads serialise behind it (a ~30s
+        // UI freeze). Session data written here is authoritative on the next read.
         $sentFolder = (string) ($job['sent_folder'] ?? '');
         $this->saveToSent($sentFolder, $sentMime);
+        releaseSessionLock();
         $this->deleteSourceDraft(
             (string) ($job['draft_folder'] ?? ''),
             (int) ($job['draft_uid'] ?? 0),
         );
+        releaseSessionLock();
         $destPaths = is_array($job['dest_paths'] ?? null) ? $job['dest_paths'] : [];
         $fromEmail = (string) ($job['from_email'] ?? '');
         $sentMessageId = isset($job['sent_message_id']) ? (string) $job['sent_message_id'] : null;
         if ($destPaths !== [] && $sentMime !== '') {
             deliver_outbound_copies_to_folders($sentMime, $destPaths, $fromEmail);
+            releaseSessionLock();
             reconcile_outbound_routing($destPaths, $fromEmail, $sentMessageId, false);
+            releaseSessionLock();
         }
 
         $syncResult = $this->syncMailboxAfterSend(
@@ -1336,6 +1346,13 @@ class ComposeController
         $fullHeaderLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
         $sentMessageId = $sentMime !== '' ? extract_message_id_from_mime($sentMime) : null;
 
+        // The heavy post-send IMAP below must NOT run while holding the main
+        // session lock, or concurrent sidebar polls (folders/unread) and folder
+        // loads serialise behind it for the whole job. Badge writers re-acquire
+        // the lock briefly (ensure_session_writable) so we release again after
+        // each IMAP batch; the final badge block re-acquires for its writes.
+        releaseSessionLock();
+
         $imap = new ImapService();
         if ($imap->connect()) {
             foreach (mail_normalize_sync_paths($destPaths) as $destPath) {
@@ -1348,11 +1365,13 @@ class ComposeController
             reconcile_correspondent_outbound_echoes($imap, $destPaths, $fromEmail, $sentMessageId);
             reconcile_admin_outbound_to_employee_inboxes($destPaths, $fromEmail, $sentMessageId);
         }
+        releaseSessionLock();
 
         $filterResult = FilterService::runBackground(true, 10);
         $routedPaths = is_array($filterResult['refresh_paths'] ?? null)
             ? $filterResult['refresh_paths']
             : [];
+        releaseSessionLock();
 
         if ($imap->connect()) {
             if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
@@ -1412,6 +1431,10 @@ class ComposeController
                 } catch (\Throwable $e) {
                     app_log('Post-send cache sync failed for ' . $path . ': ' . $e->getMessage());
                 }
+                // syncFolderHeaders reconciles badges (a session write that
+                // re-acquires the lock). Release after each folder so the next
+                // folder's IMAP fetch — and any concurrent UI poll — is not blocked.
+                releaseSessionLock();
             }
 
             $senderFolder = folder_for_alias_email($fromEmail);
@@ -1427,10 +1450,10 @@ class ComposeController
             $senderInbox = employee_linked_inbox_path(Auth::user());
             $senderFolder = folder_for_alias_email($fromEmail);
 
-            // Server is the single source of truth: recompute every affected badge
-            // from IMAP UNSEEN + mail_index. Our own outbound copies were appended
-            // \Seen, so they are already excluded — no prediction, bump, or
-            // suppression is applied here.
+            // Server is the single source of truth. The affected folders were just
+            // re-synced into mail_index above, so recompute each badge from that
+            // fresh index. Our own outbound copies were appended \Seen, so they are
+            // already excluded — no prediction, bump, or suppression.
             $affected = array_values(array_unique(array_filter(array_merge(
                 mail_normalize_sync_paths($destPaths),
                 mail_normalize_sync_paths(array_filter([$inbox, $contextFolder, $sentFolder])),
@@ -1443,11 +1466,23 @@ class ComposeController
             // than a predicted or suppressed session value.
             FolderCache::clearPendingBadgePaths();
             mail_clear_admin_outbound_badge_suppression();
+
+            // Recompute from the fresh index (DB only). Correspondent / shared /
+            // per-user folders are index-authoritative, so we must NOT hit them
+            // with another round of slow IMAP STATUS here — that serialised the
+            // post-send job against the sidebar polls. Only ordinary folders (a
+            // small subset) fall back to an IMAP refresh.
+            $imapRefreshPaths = [];
             foreach ($affected as $path) {
                 mail_clear_post_send_preview($path);
+                MailCacheService::reconcileBadgeFromIndex($path);
+                if (!folder_badge_uses_index_truth($path)) {
+                    $imapRefreshPaths[] = $path;
+                }
             }
-
-            FolderCache::refreshPaths($affected);
+            if ($imapRefreshPaths !== []) {
+                FolderCache::refreshPaths($imapRefreshPaths);
+            }
         });
 
         return [

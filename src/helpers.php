@@ -5278,6 +5278,9 @@ function deliver_outbound_copies_to_folders(string $mime, array $destPaths, stri
         } catch (\Throwable $e) {
             app_log('Outbound index sync for ' . $destPath . ' failed: ' . $e->getMessage());
         }
+        // syncFolderHeaders reconciles badges (a session write); release so this
+        // background delivery does not serialise concurrent sidebar polls.
+        releaseSessionLock();
     }
 
     deliver_outbound_shared_sender_copy($imap, $mime, $destPaths, $fromEmail);
@@ -5437,7 +5440,12 @@ function reconcile_outbound_routing(
         return;
     }
 
+    // Run the IMAP echo suppression + folder syncs without holding the main
+    // session lock (a badge write may re-acquire it); release after each so
+    // concurrent sidebar polls are not serialised behind this background work.
+    releaseSessionLock();
     $imap->suppressInboundEchoOfSentMessage($inbox, $fromEmail, 20, $sentMessageId);
+    releaseSessionLock();
 
     foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
         $destPath = employee_messages_imap_path((string) $destPath);
@@ -5450,6 +5458,7 @@ function reconcile_outbound_routing(
             } catch (\Throwable $e) {
                 app_log('Post-outbound sync failed for ' . $destPath . ': ' . $e->getMessage());
             }
+            releaseSessionLock();
         }
     }
 
