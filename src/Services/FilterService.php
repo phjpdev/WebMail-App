@@ -537,12 +537,26 @@ class FilterService
      */
     private function resolveTargetPaths(array $matchedRules, ?array $pendingPaths): array
     {
+        // Dedupe by the resolved messages folder (employee_messages_imap_path), not
+        // the raw target: a shared-mailbox rule can target the ROOT (INBOX.support)
+        // while the alias route targets its messages subfolder (INBOX.support.Inbox).
+        // Both deliver to the same folder, so keying by the raw path treated them as
+        // two destinations and appended the message twice (a duplicate). Linked
+        // inboxes never hit this because their rule already targets the .Inbox.
+        $deliveryKey = static function (string $path): string {
+            return FolderCache::resolvePath(employee_messages_imap_path($path));
+        };
+
         if ($pendingPaths !== null && $pendingPaths !== []) {
             $paths = [];
             foreach ($pendingPaths as $path) {
                 $path = (string) $path;
-                if ($path !== '') {
-                    $paths[$path] = ['imap_path' => $path, 'name' => 'compose-route'];
+                if ($path === '') {
+                    continue;
+                }
+                $key = $deliveryKey($path);
+                if ($key !== '' && !isset($paths[$key])) {
+                    $paths[$key] = ['imap_path' => $path, 'name' => 'compose-route'];
                 }
             }
 
@@ -556,8 +570,12 @@ class FilterService
         $targetPaths = [];
         foreach ($matchedRules as $rule) {
             $path = (string) ($rule['imap_path'] ?? '');
-            if ($path !== '') {
-                $targetPaths[$path] = $rule;
+            if ($path === '') {
+                continue;
+            }
+            $key = $deliveryKey($path);
+            if ($key !== '' && !isset($targetPaths[$key])) {
+                $targetPaths[$key] = $rule;
             }
         }
 
