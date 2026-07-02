@@ -1360,68 +1360,19 @@ class MailController
 
         mail_note_correspondents_from_message($message);
 
-        $viewerId = (int) (Auth::user()['id'] ?? 0);
-        $wasUnread = mail_local_thread_has_unread($folderPath, $uid, $message);
-        if (
-            !$wasUnread
-            && $markRead
-            && $viewerId > 0
-            && MailCacheService::sharedMailboxUsesPerUserSeen($folderPath, $viewerId)
-            && !MailCacheService::userHasRead($viewerId, $folderPath, $uid)
-        ) {
-            $wasUnread = true;
-        }
-
-        $correspondentInboxUnread = false;
-        if ($markRead && employee_is_correspondent_folder($folderPath)) {
-            $base = mail_normalize_thread_subject((string) ($message['subject'] ?? ''));
-            if ($base !== '') {
-                $correspondentInboxUnread = mail_correspondent_inbox_has_unread_for_thread($folderPath, $base);
-            }
-        }
-
-        $listShowsUnread = $markRead
-            && mail_correspondent_list_row_shows_unread($folderPath, $uid, $message);
-        $shouldMarkRead = $markRead && ($wasUnread || $correspondentInboxUnread || $listShowsUnread);
-
+        // Plain per-folder model: opening an unseen message marks it read on IMAP
+        // + index (one shared read state). No per-user read, no thread/correspondent
+        // cross-folder marking. The index is the truth for "was it unread".
+        $shouldMarkRead = $markRead && !MailCacheService::effectiveSeen($folderPath, $uid);
         if ($shouldMarkRead) {
             $message['seen'] = true;
-            if ($wasUnread || $listShowsUnread) {
-                if (mail_should_group_list_by_thread($folderPath)) {
-                    $markedUids = mail_mark_local_thread_read($folderPath, $uid, $message);
-                } else {
-                    MailCacheService::markReadForUser($folderPath, $uid);
-                    $markedUids = [$uid];
+            MailCacheService::updateIndexSeen($folderPath, $uid, true);
+            $deferred = static function () use ($folderPath, $uid): void {
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    $imap->markSeen($folderPath, $uid);
                 }
-
-                if (MailCacheService::readUpdatesImapState($folderPath)) {
-                    if (!mail_should_group_list_by_thread($folderPath)) {
-                        MailCacheService::updateIndexSeen($folderPath, $uid, true);
-                    }
-                    $deferred = static function () use ($folderPath, $markedUids): void {
-                        $imap = new ImapService();
-                        if (!$imap->connect()) {
-                            return;
-                        }
-                        foreach ($markedUids as $markedUid) {
-                            $imap->markSeen($folderPath, $markedUid);
-                        }
-                    };
-                } elseif (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
-                    foreach ($markedUids as $markedUid) {
-                        MailCacheService::updateIndexSeen($folderPath, $markedUid, true);
-                    }
-                }
-            }
-        }
-
-        if ($markRead && employee_is_correspondent_folder($folderPath) && $shouldMarkRead) {
-            mail_mark_correspondent_inbound_read($folderPath, $uid, $message);
-        } elseif ($markRead && $shouldMarkRead && employee_is_own_inbox_folder($folderPath)) {
-            $corrFolder = mail_correspondent_folder_for_employee_inbound($message);
-            if ($corrFolder !== null) {
-                mail_mark_correspondent_inbound_read($corrFolder, $uid, $message);
-            }
+            };
         }
 
         $markedRead = $shouldMarkRead;
@@ -2565,91 +2516,12 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        $messageStub = mail_message_index_stub($folderPath, $uid);
-        $alreadySeen = !mail_local_thread_has_unread($folderPath, $uid, $messageStub);
-        $viewerId = (int) (Auth::user()['id'] ?? 0);
-        if (
-            $seen
-            && $viewerId > 0
-            && MailCacheService::sharedMailboxUsesPerUserSeen($folderPath, $viewerId)
-            && !MailCacheService::userHasRead($viewerId, $folderPath, $uid)
-        ) {
-            $alreadySeen = false;
-        }
-
-        $correspondentInboxUnread = false;
-        if ($seen && employee_is_correspondent_folder($folderPath)) {
-            $base = mail_normalize_thread_subject((string) ($messageStub['subject'] ?? ''));
-            if ($base !== '') {
-                $correspondentInboxUnread = mail_correspondent_inbox_has_unread_for_thread($folderPath, $base);
-            }
-        }
-
-        $listShowsUnread = $seen
-            && mail_correspondent_list_row_shows_unread($folderPath, $uid, $messageStub);
-        if ($seen && $listShowsUnread) {
-            $alreadySeen = false;
-        }
-
-        $markedUids = [$uid];
-
-        if ($seen) {
-            if (!$alreadySeen || $listShowsUnread) {
-                if (mail_should_group_list_by_thread($folderPath)) {
-                    $markedUids = mail_mark_local_thread_read(
-                        $folderPath,
-                        $uid,
-                        $messageStub
-                    );
-                } else {
-                    MailCacheService::markReadForUser($folderPath, $uid);
-                    if (MailCacheService::readUpdatesImapState($folderPath)) {
-                        MailCacheService::updateIndexSeen($folderPath, $uid, true);
-                    } elseif (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
-                        MailCacheService::updateIndexSeen($folderPath, $uid, true);
-                    }
-                }
-            }
-            if (employee_is_correspondent_folder($folderPath) && (!$alreadySeen || $correspondentInboxUnread || $listShowsUnread)) {
-                mail_mark_correspondent_inbound_read($folderPath, $uid, $messageStub);
-            } elseif (
-                $seen
-                && (!$alreadySeen || $listShowsUnread)
-                && employee_is_own_inbox_folder($folderPath)
-            ) {
-                $corrFolder = mail_correspondent_folder_for_employee_inbound($messageStub);
-                if ($corrFolder !== null) {
-                    mail_mark_correspondent_inbound_read($corrFolder, $uid, $messageStub);
-                }
-            }
-        } else {
-            MailCacheService::markUnreadForUser($folderPath, $uid);
-            if (MailCacheService::readUpdatesImapState($folderPath)) {
-                MailCacheService::updateIndexSeen($folderPath, $uid, false);
-            } elseif (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
-                MailCacheService::updateIndexSeen($folderPath, $uid, false);
-            }
-        }
-
-        $delta = 0;
-        if ($seen && !$alreadySeen && MailCacheService::readUpdatesImapState($folderPath)) {
-            $delta = -1;
-        } elseif (!$seen && $alreadySeen && MailCacheService::readUpdatesImapState($folderPath)) {
-            $delta = 1;
-        }
-
-        if ($seen && (!$alreadySeen || $correspondentInboxUnread || $listShowsUnread)) {
-            $counts = mail_unread_counts_after_read($folderPath);
-        } elseif (!$seen && $alreadySeen) {
-            MailCacheService::reconcileBadgeFromIndex($folderPath);
-            mail_reconcile_linked_correspondent_badges($folderPath);
-            $counts = FolderCache::sidebarUnreadCountsFromSession();
-        } elseif ($delta !== 0) {
-            FolderCache::bumpUnread($folderPath, $delta);
-            $counts = FolderCache::sidebarUnreadCountsFromSession();
-        } else {
-            $counts = FolderCache::sidebarUnreadCountsFromSession();
-        }
+        // Plain per-folder model: set the message's IMAP \Seen + mirror it in the
+        // index, then recompute this folder's badge. No per-user read, no
+        // thread/correspondent cross-folder marking.
+        MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
+        MailCacheService::reconcileBadgeFromIndex($folderPath);
+        $counts = FolderCache::sidebarUnreadCountsFromSession();
 
         if (wants_json()) {
             json_response_then([
@@ -2658,10 +2530,7 @@ class MailController
                 'uid' => $uid,
                 'unread_counts' => $counts,
                 'folder_unread' => mail_folder_unread_count($counts, $folderPath),
-            ], function () use ($folderPath, $uid, $seen, $markedUids): void {
-                if (!MailCacheService::readUpdatesImapState($folderPath)) {
-                    return;
-                }
+            ], function () use ($folderPath, $uid, $seen): void {
                 $imap = new ImapService();
                 if (!$imap->connect()) {
                     app_log('Background mark seen failed: ' . $imap->getLastError());
@@ -2669,25 +2538,19 @@ class MailController
                     return;
                 }
                 if ($seen) {
-                    foreach ($markedUids as $markedUid) {
-                        $imap->markSeen($folderPath, $markedUid);
-                    }
+                    $imap->markSeen($folderPath, $uid);
                 } else {
                     $imap->markUnseen($folderPath, $uid);
                 }
             });
         }
 
-        if (MailCacheService::readUpdatesImapState($folderPath)) {
-            $imap = new ImapService();
-            if ($imap->connect()) {
-                if ($seen) {
-                    foreach ($markedUids as $markedUid) {
-                        $imap->markSeen($folderPath, $markedUid);
-                    }
-                } else {
-                    $imap->markUnseen($folderPath, $uid);
-                }
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            if ($seen) {
+                $imap->markSeen($folderPath, $uid);
+            } else {
+                $imap->markUnseen($folderPath, $uid);
             }
         }
 
@@ -2753,31 +2616,11 @@ class MailController
         }
         assert_folder_access($folderPath);
 
-        foreach ($uids as $uid) {
-            if ($seen) {
-                MailCacheService::markReadForUser($folderPath, $uid);
-            } else {
-                MailCacheService::markUnreadForUser($folderPath, $uid);
-            }
-        }
-
-        if ($seen && employee_is_correspondent_folder($folderPath)) {
-            mail_mark_correspondent_folder_bulk_read($folderPath, $uids);
-        }
-
-        if (MailCacheService::readUpdatesImapState($folderPath)) {
-            MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
-        } elseif (MailCacheService::viewerIsAdmin() && MailCacheService::usesPerUserRead($folderPath)) {
-            MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
-        }
-
-        if ($seen) {
-            $counts = mail_unread_counts_after_read($folderPath);
-        } else {
-            MailCacheService::reconcileBadgeFromIndex($folderPath);
-            mail_reconcile_linked_correspondent_badges($folderPath);
-            $counts = FolderCache::sidebarUnreadCountsFromSession();
-        }
+        // Plain per-folder model: mirror IMAP \Seen in the index for all uids,
+        // recompute the badge, then apply on IMAP.
+        MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
+        MailCacheService::reconcileBadgeFromIndex($folderPath);
+        $counts = FolderCache::sidebarUnreadCountsFromSession();
 
         if (wants_json()) {
             json_response_then([
@@ -2787,9 +2630,6 @@ class MailController
                 'unread_counts' => $counts,
                 'folder_unread' => mail_folder_unread_count($counts, $folderPath),
             ], function () use ($folderPath, $uids, $seen): void {
-                if (!MailCacheService::readUpdatesImapState($folderPath)) {
-                    return;
-                }
                 $imap = new ImapService();
                 if (!$imap->connect()) {
                     app_log('Background bulk seen failed: ' . $imap->getLastError());
@@ -2804,14 +2644,12 @@ class MailController
             });
         }
 
-        if (MailCacheService::readUpdatesImapState($folderPath)) {
-            $imap = new ImapService();
-            if ($imap->connect()) {
-                if ($seen) {
-                    $imap->markSeenBulk($folderPath, $uids);
-                } else {
-                    $imap->markUnseenBulk($folderPath, $uids);
-                }
+        $imap = new ImapService();
+        if ($imap->connect()) {
+            if ($seen) {
+                $imap->markSeenBulk($folderPath, $uids);
+            } else {
+                $imap->markUnseenBulk($folderPath, $uids);
             }
         }
 
