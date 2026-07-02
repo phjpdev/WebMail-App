@@ -462,7 +462,7 @@ class MailCacheService
 
         try {
             $rows = Database::query(
-                'SELECT i.imap_uid, b.message_id
+                'SELECT i.imap_uid, i.seen, b.message_id
                  FROM mail_index i
                  LEFT JOIN mail_bodies b
                     ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
@@ -484,7 +484,16 @@ class MailCacheService
             }
             if ($normalizedId !== '') {
                 $msgId = normalize_message_id((string) ($row['message_id'] ?? ''));
-                if ($msgId === '' || $msgId !== $normalizedId) {
+                if ($msgId !== '') {
+                    // Body cached: require an exact message-id match.
+                    if ($msgId !== $normalizedId) {
+                        continue;
+                    }
+                } elseif ((int) ($row['seen'] ?? 0) !== 1) {
+                    // Body not fetched yet (common right after append): treat a
+                    // \Seen message from the sender's own address as the just-
+                    // delivered outbound copy, so it is marked read for the sender
+                    // and does not linger as unread in their own inbox.
                     continue;
                 }
             }

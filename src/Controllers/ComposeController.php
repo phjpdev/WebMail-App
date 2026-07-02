@@ -323,14 +323,15 @@ class ComposeController
             );
 
             if (wants_json()) {
-                $postSendState = mail_build_post_send_client_state($fromEmail, $contextFolder, $destPaths);
+                // No optimistic unread_counts / list previews: the client polls
+                // folders/unread for server-truth badges. Keep the reply-thread and
+                // correspondent-sidebar payload (features, not badge predictions).
                 $jsonPayload = [
                     'ok' => true,
                     'message' => 'Email sent successfully.',
-                    'return_folder' => $postSendState['return_folder_b64'],
+                    'return_folder' => $contextFolder !== '' ? encode_folder_path($contextFolder) : '',
                     'draft_uid' => $draftUid > 0 ? $draftUid : null,
                     'post_send_token' => $postSendToken,
-                    'unread_counts' => $postSendState['unread_counts'],
                     'reply_uid' => $threadReply !== null ? (int) $threadReply['uid'] : null,
                     'reply_folder' => $threadReply !== null
                         ? encode_folder_path((string) $threadReply['folder_path'])
@@ -343,11 +344,6 @@ class ComposeController
                     $jsonPayload['correspondent_folders'] = mail_correspondent_folders_sidebar_payload(
                         (int) ($user['id'] ?? 0)
                     );
-                }
-                $jsonPayload['dest_folders'] = $postSendState['dest_folders'];
-                $jsonPayload['list_previews'] = $postSendState['list_previews'];
-                if ($postSendState['sent_list_preview'] !== null) {
-                    $jsonPayload['sent_list_preview'] = $postSendState['sent_list_preview'];
                 }
                 if ($threadReply !== null) {
                     $jsonPayload['reply_date'] = (string) ($threadReply['reply']['date'] ?? '');
@@ -536,8 +532,9 @@ class ComposeController
             $_SESSION['_post_send_dest_paths'] = $destPaths;
             $_SESSION['_post_send_from'] = $fromEmail;
             $_SESSION['_post_send_message_id'] = $sentMessageId;
-            mail_note_admin_outbound_send($fromEmail, $destPaths);
 
+            // Correspondent-folder sidebar notes only — no optimistic badge
+            // suppression; syncMailboxAfterSend recomputes badges from server truth.
             foreach ($destPaths as $path) {
                 mail_note_employee_correspondent((string) $path);
             }
@@ -1427,76 +1424,30 @@ class ComposeController
         }
 
         with_session_write(function () use ($routedPaths, $fromEmail, $destPaths, $inbox, $contextFolder, $sentFolder): void {
-            $user = Auth::user();
-            $senderInbox = employee_linked_inbox_path($user);
-            if ($senderInbox !== null && $senderInbox !== '') {
-                FolderCache::setUnreadCount($senderInbox, 0);
-            }
-
-            $badgePaths = array_values(array_filter(
-                $routedPaths,
-                static fn (string $p): bool => folder_shows_unread_badge($p)
-            ));
-            if ($badgePaths === []) {
-                $badgePaths = FolderCache::getPendingBadgePaths();
-            }
-            foreach ($destPaths as $path) {
-                $resolved = FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-                if (
-                    $resolved !== ''
-                    && folder_shows_unread_badge($resolved)
-                    && !sender_suppresses_dest_folder_badge($resolved, $user)
-                    && !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)
-                ) {
-                    $badgePaths[] = $resolved;
-                }
-            }
-            foreach ([$contextFolder, $sentFolder, $inbox] as $extraPath) {
-                if ($extraPath !== '' && folder_shows_unread_badge($extraPath)) {
-                    $badgePaths[] = $extraPath;
-                }
-            }
-            $badgePaths = array_values(array_unique(array_filter($badgePaths)));
-
-            $imapRefreshPaths = [];
-            foreach ($badgePaths as $path) {
-                MailCacheService::reconcileBadgeFromIndex($path);
-                FolderCache::clearPendingBadgePath($path);
-                mail_clear_post_send_preview($path);
-                if (!folder_badge_uses_index_truth($path)) {
-                    $imapRefreshPaths[] = $path;
-                }
-            }
-            if ($imapRefreshPaths !== []) {
-                FolderCache::refreshPaths($imapRefreshPaths);
-            }
-
-            if (outbound_send_skips_inbox_badge($destPaths, $inbox)) {
-                MailCacheService::reconcileBadgeFromIndex($inbox);
-                FolderCache::clearPendingBadgePath($inbox);
-                if (!folder_badge_uses_index_truth($inbox)) {
-                    FolderCache::refreshPaths([$inbox]);
-                }
-            }
-
-            foreach ($destPaths as $path) {
-                $resolved = FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-                if ($resolved === '' || !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
-                    continue;
-                }
-                FolderCache::setUnreadCount($resolved, 0);
-                MailCacheService::reconcileBadgeFromIndex($resolved);
-                FolderCache::clearPendingBadgePath($resolved);
-            }
-
+            $senderInbox = employee_linked_inbox_path(Auth::user());
             $senderFolder = folder_for_alias_email($fromEmail);
-            if ($senderFolder !== null && $senderFolder !== '') {
-                foreach (mail_normalize_sync_paths([$senderFolder]) as $senderPath) {
-                    FolderCache::setUnreadCount($senderPath, 0);
-                    MailCacheService::reconcileBadgeFromIndex($senderPath);
-                    FolderCache::clearPendingBadgePath($senderPath);
-                }
+
+            // Server is the single source of truth: recompute every affected badge
+            // from IMAP UNSEEN + mail_index. Our own outbound copies were appended
+            // \Seen, so they are already excluded — no prediction, bump, or
+            // suppression is applied here.
+            $affected = array_values(array_unique(array_filter(array_merge(
+                mail_normalize_sync_paths($destPaths),
+                mail_normalize_sync_paths(array_filter([$inbox, $contextFolder, $sentFolder])),
+                mail_normalize_sync_paths($routedPaths),
+                ($senderInbox !== null && $senderInbox !== '') ? mail_normalize_sync_paths([$senderInbox]) : [],
+                ($senderFolder !== null && $senderFolder !== '') ? mail_normalize_sync_paths([$senderFolder]) : [],
+            ))));
+
+            // Drop any optimistic markers so the recompute reflects truth rather
+            // than a predicted or suppressed session value.
+            FolderCache::clearPendingBadgePaths();
+            mail_clear_admin_outbound_badge_suppression();
+            foreach ($affected as $path) {
+                mail_clear_post_send_preview($path);
             }
+
+            FolderCache::refreshPaths($affected);
         });
 
         return [

@@ -2322,20 +2322,6 @@ function mail_employee_inbox_row_counts_for_badge(string $folderPath, array $row
 }
 
 /**
- * Optimistic sidebar badges right after send (before background IMAP sync).
- *
- * @param list<string> $destPaths
- * @return array<string, int>
- */
-function mail_post_send_optimistic_unread_counts(string $fromEmail, array $destPaths): array
-{
-    mail_apply_destination_folder_badges($fromEmail, $destPaths);
-
-    // Avoid reconciling from a stale index mid-send — that briefly flashes wrong badges.
-    return \App\Services\FolderCache::sidebarUnreadCountsSessionOnly();
-}
-
-/**
  * Apply session state after a successful send (badges, previews, filter hints).
  *
  * @param list<string> $destPaths
@@ -2353,17 +2339,12 @@ function mail_apply_post_send_session_state(
     string $snippet,
     ?array $threadReply = null,
 ): void {
-    mail_note_admin_outbound_send($fromEmail, $destPaths);
-    $user = App\Auth::user();
+    // Correspondent-folder sidebar notes (feature): record who we corresponded
+    // with so their folders surface in the sidebar. No optimistic badge bump or
+    // suppression is applied — badges are recomputed from server truth by the
+    // post-send job (see ComposeController::syncMailboxAfterSend).
     foreach ($destPaths as $destPath) {
         mail_note_employee_correspondent((string) $destPath);
-        $resolved = \App\Services\FolderCache::resolvePath(
-            employee_messages_imap_path((string) $destPath)
-        );
-        if ($resolved !== '' && sender_suppresses_dest_folder_badge($resolved, $user)) {
-            \App\Services\FolderCache::setUnreadCount($resolved, 0);
-            \App\Services\FolderCache::clearPendingBadgePath($resolved);
-        }
     }
     mail_note_correspondents_from_addresses($toHeader, $ccHeader, $bccHeader);
     if ($threadReply !== null) {
@@ -2377,54 +2358,10 @@ function mail_apply_post_send_session_state(
     if ($sentMessageId !== null && $sentMessageId !== '') {
         $_SESSION['_post_send_message_id'] = $sentMessageId;
     }
-    mail_store_post_send_previews(
-        $fromEmail,
-        $destPaths,
-        $subject,
-        $toHeader,
-        $sentMessageId,
-        $snippet,
-        $contextFolder,
-    );
     if ($destPaths !== [] && $sentMessageId !== null && $sentMessageId !== '') {
         \App\Services\FolderCache::queuePendingFilterRoute($sentMessageId, $destPaths);
     }
     unset($_SESSION['_compose_draft'], $_SESSION['_forward_attachments']);
-}
-
-/**
- * Client payload for compose/send JSON after session state is written.
- *
- * @param list<string> $destPaths
- * @return array{
- *   return_folder_b64: string,
- *   list_previews: array<string, array<string, mixed>>,
- *   sent_list_preview: array<string, mixed>|null,
- *   unread_counts: array<string, int>,
- *   dest_folders: list<string>
- * }
- */
-function mail_build_post_send_client_state(
-    string $fromEmail,
-    string $contextFolder,
-    array $destPaths,
-): array {
-    $listPreviews = mail_post_send_previews_for_client();
-    $sentPreview = null;
-    if ($contextFolder !== '') {
-        $raw = mail_get_post_send_preview($contextFolder);
-        if ($raw !== null) {
-            $sentPreview = mail_format_post_send_preview_for_client($raw);
-        }
-    }
-
-    return [
-        'return_folder_b64' => $contextFolder !== '' ? encode_folder_path($contextFolder) : '',
-        'list_previews' => $listPreviews,
-        'sent_list_preview' => $sentPreview,
-        'unread_counts' => mail_post_send_optimistic_unread_counts($fromEmail, $destPaths),
-        'dest_folders' => mail_post_send_poll_folder_tokens($fromEmail, $destPaths, $contextFolder),
-    ];
 }
 
 /**
@@ -2440,61 +2377,6 @@ function mail_in_post_send_fast_window(): bool
     $suppress = $_SESSION['_admin_outbound_suppress_badges'] ?? null;
 
     return is_array($suppress) && time() <= (int) ($suppress['until'] ?? 0);
-}
-
-/**
- * Remember admin outbound sends so sidebar badges stay suppressed until post-send sync.
- *
- * @param list<string> $destPaths
- */
-function mail_note_admin_outbound_send(string $fromEmail, array $destPaths): void
-{
-    $user = App\Auth::user();
-    if ($user === null || ($user['role'] ?? '') !== 'admin') {
-        return;
-    }
-
-    $fromEmail = strtolower(trim($fromEmail));
-    if ($fromEmail === '') {
-        return;
-    }
-
-    $suppress = [];
-    $senderFolder = folder_for_alias_email($fromEmail);
-    if ($senderFolder !== null && $senderFolder !== '') {
-        $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
-        if (
-            $senderResolved !== ''
-            && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved)
-        ) {
-            foreach (mail_folder_path_aliases($senderResolved) as $alias) {
-                $suppress[strtolower($alias)] = $alias;
-            }
-        }
-    }
-
-    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-        if ($resolved === '' || !admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
-            continue;
-        }
-        foreach (mail_folder_path_aliases($resolved) as $alias) {
-            $suppress[strtolower($alias)] = $alias;
-        }
-    }
-
-    if ($suppress === []) {
-        return;
-    }
-
-    ensure_session_writable();
-    $_SESSION['_post_send_from'] = $fromEmail;
-    $_SESSION['_post_send_at'] = time();
-    $_SESSION['_admin_outbound_suppress_badges'] = [
-        'until' => time() + 120,
-        'from' => $fromEmail,
-        'paths' => array_values($suppress),
-    ];
 }
 
 function mail_clear_admin_outbound_badge_suppression(): void
@@ -2579,268 +2461,6 @@ function mail_post_send_preview_inflates_sidebar_badge(string $folderPath): bool
     }
 
     return admin_employee_inbox_preview_inflates_badge($folderPath);
-}
-
-/**
- * Bump unread badges for folders that will receive the outbound message.
- *
- * @param list<string> $destPaths
- */
-function mail_apply_destination_folder_badges(string $fromEmail, array $destPaths, ?array $user = null): void
-{
-    $user = $user ?? App\Auth::user();
-    mail_note_admin_outbound_send($fromEmail, $destPaths);
-    $senderInbox = employee_linked_inbox_path($user)
-        ?? employee_linked_inbox_path_for_email($fromEmail);
-    if ($senderInbox !== null && $senderInbox !== '') {
-        \App\Services\FolderCache::setUnreadCount(
-            \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderInbox)),
-            0,
-        );
-    }
-
-    $senderFolder = folder_for_alias_email($fromEmail);
-    if ($senderFolder !== null && $senderFolder !== '') {
-        $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
-        \App\Services\FolderCache::setUnreadCount($senderResolved, 0);
-        \App\Services\FolderCache::clearPendingBadgePath($senderResolved);
-    }
-
-    $pending = [];
-    foreach (array_values(array_unique(array_filter($destPaths))) as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-        if ($resolved === '' || sender_suppresses_dest_folder_badge($resolved, $user)) {
-            continue;
-        }
-        if (admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail)) {
-            \App\Services\FolderCache::setUnreadCount($resolved, 0);
-            \App\Services\FolderCache::clearPendingBadgePath($resolved);
-            continue;
-        }
-        $currentUnread = \App\Services\MailCacheService::sidebarBadgeCount($resolved);
-        \App\Services\FolderCache::setUnreadCount($resolved, $currentUnread + 1);
-        $pending[] = $resolved;
-    }
-
-    if ($pending !== []) {
-        \App\Services\FolderCache::setPendingBadgePaths($pending);
-    }
-}
-
-/**
- * Encoded folder paths for client post-send polling.
- *
- * @param list<string> $destPaths
- * @return list<string>
- */
-function mail_post_send_dest_folder_tokens(array $destPaths): array
-{
-    return mail_post_send_poll_folder_tokens('', $destPaths);
-}
-
-/**
- * Encoded folder paths the client should refresh after send (destinations + shared sender).
- *
- * @param list<string> $destPaths
- * @return list<string>
- */
-function mail_post_send_poll_folder_tokens(string $fromEmail, array $destPaths, string $contextFolder = ''): array
-{
-    $paths = array_values(array_unique(array_filter($destPaths)));
-    if ($contextFolder !== '') {
-        $nav = sidebar_folder_nav_path($contextFolder);
-        if ($nav !== '') {
-            $paths[] = $nav;
-        }
-    }
-    if ($fromEmail !== '') {
-        $senderFolder = folder_for_alias_email($fromEmail);
-        if ($senderFolder !== null && $senderFolder !== '') {
-            $paths[] = $senderFolder;
-        }
-    }
-
-    $tokens = [];
-    foreach ($paths as $path) {
-        foreach (mail_folder_path_aliases((string) $path) as $alias) {
-            $token = encode_folder_path($alias);
-            if (!in_array($token, $tokens, true)) {
-                $tokens[] = $token;
-            }
-        }
-    }
-
-    return $tokens;
-}
-
-/**
- * Store a short-lived list preview so destination folders can render instantly
- * after send while IMAP/index sync catches up.
- *
- * @param list<string> $destPaths
- */
-function mail_store_post_send_previews(
-    string $fromEmail,
-    array $destPaths,
-    string $subject,
-    string $toHeader,
-    ?string $sentMessageId = null,
-    string $snippet = '',
-    string $contextFolder = '',
-): void {
-    $aliasService = new App\Services\AliasService();
-    $fromDisplay = $aliasService->getDisplayName($fromEmail);
-    $from = $fromDisplay !== '' && strcasecmp($fromDisplay, $fromEmail) !== 0
-        ? $fromDisplay . ' <' . $fromEmail . '>'
-        : $fromEmail;
-    $msgId = $sentMessageId ?? '';
-    $folders = [];
-    $previewPaths = [];
-    foreach (array_values(array_unique(array_filter($destPaths))) as $destPath) {
-        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $destPath));
-        if ($resolved !== '') {
-            $previewPaths[] = $resolved;
-        }
-    }
-    if ($contextFolder !== '') {
-        $contextNav = sidebar_folder_nav_path($contextFolder);
-        if ($contextNav !== '') {
-            $previewPaths[] = $contextNav;
-        }
-    }
-    $senderFolder = folder_for_alias_email($fromEmail);
-    $senderResolved = '';
-    if ($senderFolder !== null && $senderFolder !== '') {
-        $senderResolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($senderFolder));
-        if (
-            $senderResolved !== ''
-            && \App\Services\MailCacheService::isSharedEmployeeMailbox($senderResolved)
-        ) {
-            $senderIsDest = false;
-            foreach ($previewPaths as $existing) {
-                if (strcasecmp($existing, $senderResolved) === 0) {
-                    $senderIsDest = true;
-                    break;
-                }
-            }
-            if ($senderIsDest || \App\Services\MailCacheService::viewerIsAdmin()) {
-                $previewPaths[] = $senderResolved;
-            }
-        }
-    }
-    $previewPaths = array_values(array_unique(array_filter($previewPaths)));
-    if ($previewPaths === []) {
-        return;
-    }
-
-    foreach ($previewPaths as $path) {
-        $resolved = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) $path));
-        if ($resolved === '') {
-            continue;
-        }
-        $adminToEmployee = admin_sent_to_employee_inbox_from_shared_mailbox($resolved, $fromEmail);
-        $adminFromShared = $senderResolved !== ''
-            && strcasecmp($resolved, $senderResolved) === 0
-            && \App\Services\MailCacheService::viewerIsAdmin();
-        $employeeOwnOutbound = sender_suppresses_dest_folder_badge($resolved);
-        if ($adminToEmployee) {
-            continue;
-        }
-        $optimisticUid = $msgId !== ''
-            ? -(int) sprintf('%u', crc32($msgId . '|' . strtolower($resolved)))
-            : -(int) sprintf('%u', crc32($resolved) ^ time());
-
-        $folders[$resolved] = [
-            'uid' => $optimisticUid,
-            'from' => $from,
-            'to' => $toHeader,
-            'subject' => $subject !== '' ? $subject : '(no subject)',
-            'date' => date('r'),
-            'sort_date' => date('r'),
-            'seen' => $adminFromShared || $employeeOwnOutbound,
-            'flagged' => false,
-            'has_attachment' => false,
-            'size' => 0,
-            'snippet' => $snippet,
-            'optimistic' => true,
-            'message_id' => $msgId,
-        ];
-    }
-
-    if ($folders === []) {
-        return;
-    }
-
-    ensure_session_writable();
-    $_SESSION['_post_send_previews'] = [
-        'until' => time() + 120,
-        'folders' => $folders,
-    ];
-}
-
-/**
- * Client-ready optimistic rows keyed by folder path and base64 token.
- *
- * @return array<string, array<string, mixed>>
- */
-function mail_post_send_previews_for_client(): array
-{
-    $pending = $_SESSION['_post_send_previews'] ?? null;
-    if (!is_array($pending) || time() > (int) ($pending['until'] ?? 0)) {
-        return [];
-    }
-
-    $out = [];
-    foreach ((array) ($pending['folders'] ?? []) as $path => $preview) {
-        if (!is_array($preview)) {
-            continue;
-        }
-
-        $entry = mail_format_post_send_preview_for_client($preview);
-        if ($entry === null) {
-            continue;
-        }
-
-        $resolved = \App\Services\FolderCache::resolvePath((string) $path);
-        if ($resolved === '') {
-            continue;
-        }
-
-        foreach (mail_folder_path_aliases($resolved) as $alias) {
-            $out[$alias] = $entry;
-            $out[encode_folder_path($alias)] = $entry;
-        }
-    }
-
-    return $out;
-}
-
-/**
- * @param array<string, mixed> $preview
- * @return array<string, mixed>|null
- */
-function mail_format_post_send_preview_for_client(array $preview): ?array
-{
-    if ($preview === []) {
-        return null;
-    }
-
-    $subject = (string) ($preview['subject'] ?? '(no subject)');
-    $threadKey = mail_normalize_thread_subject($subject);
-
-    return [
-        'uid' => (int) ($preview['uid'] ?? 0),
-        'from' => format_mail_from((string) ($preview['from'] ?? '')),
-        'subject' => $subject,
-        'thread_key' => $threadKey !== '' ? $threadKey : null,
-        'snippet' => (string) ($preview['snippet'] ?? ''),
-        'date' => format_mail_date((string) ($preview['date'] ?? '')),
-        'sort_date' => (string) ($preview['sort_date'] ?? $preview['date'] ?? ''),
-        'seen' => (bool) ($preview['seen'] ?? false),
-        'flagged' => false,
-        'has_attachment' => false,
-        'optimistic' => true,
-    ];
 }
 
 function mail_folder_path_aliases(string $folderPath): array
@@ -5645,7 +5265,10 @@ function deliver_outbound_copies_to_folders(string $mime, array $destPaths, stri
             continue;
         }
 
-        if (!$imap->appendMessage($destPath, $mime)) {
+        // Append as \Seen: this is our own outbound copy, so it must not inflate
+        // the destination folder's unread badge. Index truth then excludes it
+        // without needing a suppression helper.
+        if (!$imap->appendMessage($destPath, $mime, '\\Seen')) {
             app_log('Outbound deliver to ' . $destPath . ' failed: ' . $imap->getLastError());
             continue;
         }
