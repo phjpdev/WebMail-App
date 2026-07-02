@@ -8321,54 +8321,17 @@ function mail_supplement_correspondent_thread_entries(array $entries): array
  */
 function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, bool $fast = false): array
 {
-    if (!$fast) {
-        $fast = mail_in_post_send_fast_window() || mail_get_post_send_preview($folderPath) !== null;
-    }
+    // Plain per-folder model: a folder shows exactly its own cached IMAP rows.
+    // No cross-folder merge, no thread grouping, no correspondent/shared "finalize"
+    // seen overrides. Each row's `seen` is its own mail_index.seen, so the unread
+    // blue bars always equal the folder's seen=0 count and the sidebar badge.
+    $messages = is_array($list['messages'] ?? null) ? $list['messages'] : [];
+    $messages = mail_dedupe_list_by_uid($messages);
+    $messages = \App\Services\MailCacheService::enrichListMessages($folderPath, $messages, true);
+    $messages = mail_resort_list_by_message_date($messages);
 
-    $list = employee_filter_correspondent_list($folderPath, $list);
-    $list = employee_filter_own_inbox_list($folderPath, $list);
-    $list = admin_filter_employee_inbox_correspondent_list($folderPath, $list);
-
-    if ($fast) {
-        if (
-            !\App\Services\MailCacheService::viewerIsAdmin()
-            && employee_is_correspondent_folder($folderPath)
-        ) {
-            $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
-        }
-        if (
-            \App\Services\MailCacheService::viewerIsAdmin()
-            && \App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)
-        ) {
-            $list = employee_merge_shared_mailbox_outbound_list($folderPath, $list);
-        }
-        $list = mail_merge_post_send_preview_into_list($folderPath, $list);
-        $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
-        $list = mail_group_list_by_thread($folderPath, $list);
-        $list['messages'] = \App\Services\MailCacheService::enrichListMessages($folderPath, $list['messages'], true);
-        $list['messages'] = mail_finalize_correspondent_list_seen($folderPath, $list['messages']);
-        $list['messages'] = mail_finalize_shared_mailbox_list_seen($folderPath, $list['messages']);
-        $list['messages'] = mail_dedupe_list_by_uid($list['messages']);
-        $list['messages'] = mail_resort_list_by_message_date($list['messages']);
-        $list['total'] = count($list['messages']);
-
-        return $list;
-    }
-
-    $list = employee_merge_personal_sent_list($folderPath, $list);
-    $list = employee_merge_shared_mailbox_outbound_list($folderPath, $list);
-    $list = employee_merge_correspondent_inbox_inbound_list($folderPath, $list);
-    $list = employee_merge_linked_inbox_correspondent_list($folderPath, $list);
-    $list = admin_merge_linked_inbox_from_shared_mailboxes($folderPath, $list);
-    $list = mail_merge_post_send_preview_into_list($folderPath, $list);
-    $list['messages'] = mail_dedupe_list_messages($list['messages'] ?? []);
-    $list = mail_group_list_by_thread($folderPath, $list);
-    $list['messages'] = \App\Services\MailCacheService::enrichListMessages($folderPath, $list['messages'], true);
-    $list['messages'] = mail_finalize_correspondent_list_seen($folderPath, $list['messages']);
-    $list['messages'] = mail_finalize_shared_mailbox_list_seen($folderPath, $list['messages']);
-    $list['messages'] = mail_dedupe_list_by_uid($list['messages']);
-    $list['messages'] = mail_resort_list_by_message_date($list['messages']);
-    $list['total'] = count($list['messages']);
+    $list['messages'] = $messages;
+    $list['total'] = count($messages);
 
     return $list;
 }

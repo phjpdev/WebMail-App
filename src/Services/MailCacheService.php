@@ -890,19 +890,11 @@ class MailCacheService
             return null;
         }
 
-        $uids = array_values(array_unique(array_filter(array_map(
-            static fn (array $row): int => (int) ($row['imap_uid'] ?? 0),
-            $rows
-        ), static fn (int $uid): bool => $uid > 0)));
-        $viewerId = (int) (Auth::user()['id'] ?? 0);
-        $readMap = self::usesPerUserRead($folderPath)
-            || ($viewerId > 0 && self::sharedMailboxUsesPerUserSeen($folderPath, $viewerId))
-            ? self::batchUserReadState($folderPath, $uids, $viewerId)
-            : null;
-
+        // Plain per-folder model: `seen` comes straight from mail_index.seen
+        // (each row's own IMAP \Seen); no per-user read map.
         $messages = [];
         foreach ($rows as $row) {
-            $messages[] = self::indexRowToMessage($row, $folderPath, $readMap);
+            $messages[] = self::indexRowToMessage($row, $folderPath);
         }
 
         return mail_filter_removed_messages($folderPath, [
@@ -1425,17 +1417,24 @@ class MailCacheService
 
         self::upsertIndexMessages($folderPath, $messages, $imapTotal);
 
-        if ($imapTotal > 0 && $imapTotal <= $limit && $messages !== []) {
-            $serverUids = [];
-            foreach ($messages as $msg) {
-                $uid = (int) ($msg['uid'] ?? 0);
-                if ($uid > 0) {
-                    $serverUids[] = $uid;
-                }
+        $serverUids = [];
+        foreach ($messages as $msg) {
+            $uid = (int) ($msg['uid'] ?? 0);
+            if ($uid > 0) {
+                $serverUids[] = $uid;
             }
-            if ($serverUids !== []) {
-                self::pruneIndexUidsNotIn($folderPath, $serverUids);
-            }
+        }
+
+        // A message still present on the server must not stay optimistically
+        // hidden by a stale removed-tombstone; clearing it here keeps the list ==
+        // index == badge (the tombstone survives only for genuinely-gone UIDs,
+        // which pruneIndexUidsNotIn then drops from the index).
+        if ($serverUids !== []) {
+            mail_clear_removed_uids($folderPath, $serverUids);
+        }
+
+        if ($imapTotal > 0 && $imapTotal <= $limit && $serverUids !== []) {
+            self::pruneIndexUidsNotIn($folderPath, $serverUids);
         }
 
         mail_reconcile_correspondent_badges_for_linked_inbox($folderPath);
@@ -2737,26 +2736,9 @@ class MailCacheService
         $listFrom = ($isDraft && $to !== '') ? format_mail_from($to) : format_mail_from($from);
         $uid = (int) ($row['imap_uid'] ?? 0);
 
-        if (self::usesPerUserRead($folderPath)) {
-            $viewerId = $viewerId ?? (int) (Auth::user()['id'] ?? 0);
-            $linkedId = self::linkedUserId($folderPath);
-            if ($linkedId !== null && $viewerId !== $linkedId && self::viewerIsAdmin()) {
-                $seen = ($readMap !== null && isset($readMap[$uid])) || (bool) ($row['seen'] ?? false);
-            } else {
-                $seen = $readMap !== null
-                    ? isset($readMap[$uid])
-                    : self::effectiveSeen($folderPath, $uid, $viewerId);
-            }
-        } else {
-            $viewerId = $viewerId ?? (int) (Auth::user()['id'] ?? 0);
-            if (self::sharedMailboxUsesPerUserSeen($folderPath, $viewerId)) {
-                $seen = $readMap !== null
-                    ? isset($readMap[$uid])
-                    : self::effectiveSeen($folderPath, $uid, $viewerId);
-            } else {
-                $seen = (bool) ($row['seen'] ?? false);
-            }
-        }
+        // Plain per-folder model: read state is the folder's own IMAP \Seen,
+        // mirrored in mail_index.seen. No per-user / shared per-viewer override.
+        $seen = (bool) ($row['seen'] ?? false);
 
         return [
             'uid' => $uid,
