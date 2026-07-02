@@ -362,7 +362,7 @@ function finish_background(callable $after): void
     }
 
     ignore_user_abort(true);
-    @set_time_limit(120);
+    @set_time_limit(300);
 
     try {
         $after();

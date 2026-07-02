@@ -32,6 +32,9 @@ if (is_file($jobPath)) {
 }
 
 ignore_user_abort(true);
-@set_time_limit(120);
+// Generous ceiling for a detached background job: the send already returned to the
+// user, and the folder-sync loop is separately time-budgeted, so this only guards
+// against a genuinely hung IMAP connection on a slow/remote server.
+@set_time_limit(300);
 
 (new App\Controllers\ComposeController())->runPostSendJobByToken($token);

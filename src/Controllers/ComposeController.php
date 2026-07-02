@@ -389,7 +389,7 @@ class ComposeController
 
         json_response_then(['ok' => true, 'accepted' => true], function () use ($token): void {
             ignore_user_abort(true);
-            @set_time_limit(120);
+            @set_time_limit(300);
             $this->runPostSendJobByToken($token);
         });
     }
@@ -1444,7 +1444,20 @@ class ComposeController
             }
             $pathsToSync = array_values(array_unique(array_filter($pathsToSync)));
 
+            // Cap the per-folder sync by wall-clock time so a slow/remote IMAP
+            // server can't push this background job past its CLI time limit — it was
+            // hitting 120s and being killed mid-loop, leaving stuck jobs and skipping
+            // the tail work. Anything we don't reach here self-heals: opening a folder
+            // re-syncs it and recomputes its badge. The Sent copy and reply mark-read
+            // already happened synchronously in send(), so nothing user-critical is
+            // deferred to this loop.
+            $syncDeadline = microtime(true)
+                + max(5.0, (float) (config('app')['post_send_sync_budget_seconds'] ?? 30));
             foreach ($pathsToSync as $path) {
+                if (microtime(true) > $syncDeadline) {
+                    app_log('Post-send sync budget reached; remaining folders sync on next open.');
+                    break;
+                }
                 if ($path !== '') {
                     $imap->removeDuplicateDeliveries($path, 12);
                 }
