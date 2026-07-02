@@ -251,8 +251,10 @@ class ComposeController
             $sentMessageId = extract_message_id_from_mime($sentMime);
 
             // Save + index the Sent copy synchronously (not in the deferred job) so
-            // it appears in the Sent folder immediately once the send returns.
-            $this->saveToSent($sentFolder, $sentMime);
+            // it appears in the Sent folder immediately once the send returns; for a
+            // reply, also mark the replied-to message read here (the deferred job can
+            // time out on a slow IMAP server and never do it).
+            $this->saveToSent($sentFolder, $sentMime, $mode, $folderPath, $uid);
             releaseSessionLock();
 
             $threadReply = null;
@@ -1311,9 +1313,15 @@ class ComposeController
     /**
      * Save a copy of an outgoing message to the Sent folder (best effort).
      */
-    private function saveToSent(string $sentFolder, string $mime): void
-    {
-        if ($mime === '' || $sentFolder === '') {
+    private function saveToSent(
+        string $sentFolder,
+        string $mime,
+        string $mode = '',
+        string $replyFolder = '',
+        int $replyUid = 0,
+    ): void {
+        $isReply = in_array($mode, ['reply', 'reply-all'], true) && $replyFolder !== '' && $replyUid > 0;
+        if (($mime === '' || $sentFolder === '') && !$isReply) {
             return;
         }
 
@@ -1322,20 +1330,30 @@ class ComposeController
             return;
         }
 
-        if (!$imap->appendMessage($sentFolder, $mime, '\\Seen')) {
-            app_log('Could not save sent copy: ' . $imap->getLastError());
-
-            return;
+        if ($mime !== '' && $sentFolder !== '') {
+            if ($imap->appendMessage($sentFolder, $mime, '\\Seen')) {
+                // Index the Sent folder right away so the copy shows the instant the
+                // user opens Sent (listFromCache reads mail_index). Only the newest
+                // few headers are needed (the copy is newest); the deferred job does
+                // the full sync. The append is \Seen, so no unread badge is affected.
+                try {
+                    MailCacheService::syncFolderHeaders($imap, $sentFolder, 5);
+                } catch (\Throwable $e) {
+                    app_log('Immediate Sent index failed for ' . $sentFolder . ': ' . $e->getMessage());
+                }
+            } else {
+                app_log('Could not save sent copy: ' . $imap->getLastError());
+            }
         }
 
-        // Index the Sent folder right away so the copy shows the instant the user
-        // opens Sent (listFromCache reads mail_index). Only the newest few headers
-        // are needed (the copy is newest); the deferred job does the full sync. The
-        // append is \Seen, so it never affects an unread badge.
-        try {
-            MailCacheService::syncFolderHeaders($imap, $sentFolder, 5);
-        } catch (\Throwable $e) {
-            app_log('Immediate Sent index failed for ' . $sentFolder . ': ' . $e->getMessage());
+        // Reply/reply-all: mark the replied-to message read now. This used to live
+        // only in the deferred post-send job, which can time out against a slow IMAP
+        // server and never reach it, leaving the original stuck unread. Do it here
+        // (reusing this connection) so it is reliable and immediate.
+        if ($isReply && FolderCache::canAccess($replyFolder)) {
+            $imap->markSeen($replyFolder, $replyUid);
+            MailCacheService::updateIndexSeen($replyFolder, $replyUid, true);
+            MailCacheService::reconcileBadgeFromIndex($replyFolder);
         }
     }
 
