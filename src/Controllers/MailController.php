@@ -1357,7 +1357,7 @@ class MailController
             'replyFrom' => $replyFrom,
             'moveTargets' => mail_move_target_folders($folders, $folderPath),
             'pollInterval' => (int) ($prefs['poll_interval'] ?? config('app')['mail_poll_interval']),
-            'wasUnread' => ($wasUnread || $correspondentInboxUnread || $listShowsUnread),
+            'wasUnread' => $shouldMarkRead,
         ];
     }
 
