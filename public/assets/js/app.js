@@ -6103,15 +6103,15 @@
                 var hasSize = Array.prototype.some.call(sizeSel.options, function (o) { return o.value === wanted; });
                 if (hasSize) sizeSel.value = wanted;
             }
-            var alignSel = toolbar.querySelector('select[data-cmd="align"]');
-            if (alignSel) {
+            var alignBtn = toolbar.querySelector('.compose-format-menu[data-menu="align"] .compose-format-menu-btn');
+            if (alignBtn) {
                 var a = 'justifyLeft';
                 try {
                     if (document.queryCommandState('justifyCenter')) a = 'justifyCenter';
                     else if (document.queryCommandState('justifyRight')) a = 'justifyRight';
                     else if (document.queryCommandState('justifyFull')) a = 'justifyFull';
                 } catch (e) {}
-                alignSel.value = a;
+                alignBtn.setAttribute('data-align', a);
             }
         }
 
@@ -6140,15 +6140,8 @@
                 sel.addEventListener('mousedown', snapshotSelection);
                 sel.addEventListener('change', function () {
                     if (!sel.value) return;
-                    if (kind === 'fontSize') {
-                        applyFontSize(sel.value);
-                    } else if (kind === 'lineHeight') {
-                        applyLineHeight(sel.value);
-                    } else if (kind === 'align') {
-                        runCommand(sel.value);
-                    } else {
-                        runCommand(kind, sel.value);
-                    }
+                    if (kind === 'fontSize') applyFontSize(sel.value);
+                    else runCommand(kind, sel.value);
                 });
             });
             var colorInput = toolbar.querySelector('input[type="color"][data-cmd]');
@@ -6156,6 +6149,47 @@
                 colorInput.addEventListener('mousedown', snapshotSelection);
                 colorInput.addEventListener('change', function () {
                     runCommand(colorInput.getAttribute('data-cmd'), colorInput.value);
+                });
+            }
+
+            // Icon dropdowns (alignment, line spacing): a button that opens a
+            // small popup menu instead of a native <select>, so it can show an icon.
+            function closeFormatMenus() {
+                toolbar.querySelectorAll('.compose-format-menu-pop').forEach(function (p) { p.setAttribute('hidden', ''); });
+                toolbar.querySelectorAll('.compose-format-menu-btn').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+            }
+            toolbar.querySelectorAll('.compose-format-menu').forEach(function (menu) {
+                var menuBtn = menu.querySelector('.compose-format-menu-btn');
+                var pop = menu.querySelector('.compose-format-menu-pop');
+                var kind = menu.getAttribute('data-menu');
+                if (!menuBtn || !pop) return;
+                menuBtn.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    var wasOpen = !pop.hasAttribute('hidden');
+                    closeFormatMenus();
+                    if (!wasOpen) {
+                        pop.removeAttribute('hidden');
+                        menuBtn.setAttribute('aria-expanded', 'true');
+                    }
+                });
+                pop.addEventListener('mousedown', function (e) { e.preventDefault(); });
+                pop.addEventListener('click', function (e) {
+                    var item = e.target.closest('.compose-format-menu-item');
+                    if (!item) return;
+                    e.preventDefault();
+                    var value = item.getAttribute('data-value');
+                    if (kind === 'align') runCommand(value);
+                    else if (kind === 'lineHeight') applyLineHeight(value);
+                    closeFormatMenus();
+                });
+            });
+            // Close any open ribbon menu when clicking elsewhere (bound once).
+            if (!document.__composeMenuOutsideClose) {
+                document.__composeMenuOutsideClose = true;
+                document.addEventListener('mousedown', function (e) {
+                    if (e.target.closest('.compose-format-menu')) return;
+                    document.querySelectorAll('.compose-format-menu-pop:not([hidden])').forEach(function (p) { p.setAttribute('hidden', ''); });
+                    document.querySelectorAll('.compose-format-menu-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
                 });
             }
         }

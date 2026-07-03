@@ -75,21 +75,35 @@
 
     <span class="compose-format-sep" aria-hidden="true"></span>
 
-    <select class="compose-format-select compose-format-align" data-cmd="align" title="Alignment" aria-label="Text alignment">
-        <option value="justifyLeft">Left</option>
-        <option value="justifyCenter">Center</option>
-        <option value="justifyRight">Right</option>
-        <option value="justifyFull">Justify</option>
-    </select>
-    <select class="compose-format-select compose-format-spacing" data-cmd="lineHeight" title="Line spacing" aria-label="Line spacing">
-        <option value="">Spacing</option>
-        <option value="1">1.0</option>
-        <option value="1.15">1.15</option>
-        <option value="1.5">1.5</option>
-        <option value="2">2.0</option>
-        <option value="2.5">2.5</option>
-        <option value="3">3.0</option>
-    </select>
+    <div class="compose-format-menu" data-menu="align">
+        <button type="button" class="compose-format-btn compose-format-menu-btn" data-align="justifyLeft" title="Alignment" aria-haspopup="true" aria-expanded="false" aria-label="Alignment">
+            <span class="compose-format-menu-icon icon-justifyLeft"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="12" x2="3" y2="12"/><line x1="17" y1="18" x2="3" y2="18"/></svg></span>
+            <span class="compose-format-menu-icon icon-justifyCenter"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="17" y1="12" x2="7" y2="12"/><line x1="19" y1="18" x2="5" y2="18"/></svg></span>
+            <span class="compose-format-menu-icon icon-justifyRight"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="9" y2="12"/><line x1="21" y1="18" x2="7" y2="18"/></svg></span>
+            <span class="compose-format-menu-icon icon-justifyFull"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="3" y2="18"/></svg></span>
+            <svg class="compose-format-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="compose-format-menu-pop compose-format-menu-pop--align" role="menu" hidden>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="justifyLeft" title="Align left" aria-label="Align left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="12" x2="3" y2="12"/><line x1="17" y1="18" x2="3" y2="18"/></svg></button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="justifyCenter" title="Align center" aria-label="Align center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="17" y1="12" x2="7" y2="12"/><line x1="19" y1="18" x2="5" y2="18"/></svg></button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="justifyRight" title="Align right" aria-label="Align right"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="9" y2="12"/><line x1="21" y1="18" x2="7" y2="18"/></svg></button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="justifyFull" title="Justify" aria-label="Justify"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="3" y2="18"/></svg></button>
+        </div>
+    </div>
+    <div class="compose-format-menu" data-menu="lineHeight">
+        <button type="button" class="compose-format-btn compose-format-menu-btn" title="Line spacing" aria-haspopup="true" aria-expanded="false" aria-label="Line spacing">
+            <span class="compose-format-menu-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M6 4v16"/><path d="M3 7l3-3 3 3"/><path d="M3 17l3 3 3-3"/></svg></span>
+            <svg class="compose-format-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="compose-format-menu-pop compose-format-menu-pop--spacing" role="menu" hidden>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="1">1.0</button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="1.15">1.15</button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="1.5">1.5</button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="2">2.0</button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="2.5">2.5</button>
+            <button type="button" class="compose-format-menu-item" role="menuitem" data-value="3">3.0</button>
+        </div>
+    </div>
 
     <span class="compose-format-sep" aria-hidden="true"></span>
 
