@@ -686,6 +686,20 @@
         announceLive('Loaded: ' + subject);
     }
 
+    function paneFetchWithRetry(url, retries) {
+        return fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+            .catch(function (err) {
+                // "Failed to fetch" is a network-level hiccup — common against a slow/
+                // remote IMAP host under concurrent load. Retry once before surfacing an
+                // error, so a transient blip doesn't leave the message unopenable.
+                if (retries > 0 && err && err.name === 'TypeError') {
+                    return new Promise(function (resolve) { window.setTimeout(resolve, 600); })
+                        .then(function () { return paneFetchWithRetry(url, retries - 1); });
+                }
+                throw err;
+            });
+    }
+
     function openMessageInPaneNow(uid, pushHistory, bustCache) {
         if (!uid) return;
         cancelPostSendBackgroundWork();
@@ -729,7 +743,7 @@
             window.history.pushState({ paneUid: uid }, '', messageHref);
         }
 
-        fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+        paneFetchWithRetry(url, 1)
             .then(function (res) {
                 return res.json().then(function (data) {
                     if (!res.ok) {

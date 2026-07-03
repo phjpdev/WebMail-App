@@ -96,7 +96,11 @@ class ComposeController
 
         $isReplacement = $existingDraftUid > 0 && $existingDraftFolder !== '';
         if ($isReplacement) {
-            if ($imap->moveMessage($existingDraftFolder, $existingDraftUid, trash_folder_path())) {
+            // A re-save supersedes the previous draft version, which has no value —
+            // delete it outright rather than moving it to Trash. Auto-save fires on
+            // every typing pause, so trashing each old version would flood Trash with
+            // a copy per keystroke-burst.
+            if ($imap->deleteMessage($existingDraftFolder, $existingDraftUid)) {
                 MailCacheService::removeMessage($existingDraftFolder, $existingDraftUid);
             }
         }
@@ -1528,7 +1532,10 @@ class ComposeController
 
         $imap = new ImapService();
         if ($imap->connect()) {
-            if ($imap->moveMessage($draftFolder, $draftUid, trash_folder_path())) {
+            // The draft has been sent — the outgoing message is already in Sent, so the
+            // draft is spent. Delete it outright instead of moving it to Trash, which
+            // would otherwise leave a redundant copy behind for every send.
+            if ($imap->deleteMessage($draftFolder, $draftUid)) {
                 MailCacheService::removeMessage($draftFolder, $draftUid);
                 MailCacheService::reconcileBadgeFromIndex($draftFolder);
             }
