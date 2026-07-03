@@ -688,6 +688,16 @@
 
     function paneFetchWithRetry(url, retries) {
         return fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+            .then(function (res) {
+                // 503 = the server couldn't reach the slow/remote mail host this
+                // time (a transient blip, not a deleted message). Retry once before
+                // surfacing it, so the message isn't wrongly reported as gone.
+                if (res.status === 503 && retries > 0) {
+                    return new Promise(function (resolve) { window.setTimeout(resolve, 600); })
+                        .then(function () { return paneFetchWithRetry(url, retries - 1); });
+                }
+                return res;
+            })
             .catch(function (err) {
                 // "Failed to fetch" is a network-level hiccup — common against a slow/
                 // remote IMAP host under concurrent load. Retry once before surfacing an

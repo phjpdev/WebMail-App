@@ -1079,8 +1079,16 @@ class MailController
             ]);
         }
 
-        $context = $this->loadMessageContext($folderPath, $uid, markRead: !$prefetch, deferred: $deferred);
+        $failureReason = null;
+        $context = $this->loadMessageContext($folderPath, $uid, markRead: !$prefetch, deferred: $deferred, failureReason: $failureReason);
         if ($context === null) {
+            if ($failureReason === 'unavailable') {
+                // Couldn't reach the mail server this time — not a deleted message.
+                // Signal a retryable error so the client keeps the row and retries.
+                http_response_code(503);
+                echo json_encode(['ok' => false, 'error' => 'Message is temporarily unavailable. Please try again.']);
+                return;
+            }
             http_response_code(404);
             echo json_encode(['ok' => false, 'error' => 'Message not found', 'gone' => true]);
             return;
@@ -1177,14 +1185,12 @@ class MailController
             redirect('compose/edit-draft?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid);
         }
 
-        $context = $this->loadMessageContext($folderPath, $uid);
+        $failureReason = null;
+        $context = $this->loadMessageContext($folderPath, $uid, failureReason: $failureReason);
         if ($context === null) {
-            $imap = new ImapService();
-            if (!$imap->connect()) {
-                flash('error', $imap->getLastError());
-            } else {
-                flash('error', 'Message not found.');
-            }
+            flash('error', $failureReason === 'unavailable'
+                ? 'Could not reach the mail server. Please try again.'
+                : 'Message not found.');
             redirect('folder/' . encode_folder_path($folderPath));
         }
 
@@ -1219,8 +1225,13 @@ class MailController
      *     wasUnread: bool
      * }|null
      */
-    private function loadMessageContext(string $folderPath, int $uid, bool $markRead = true, ?callable &$deferred = null): ?array
-    {
+    private function loadMessageContext(
+        string $folderPath,
+        int $uid,
+        bool $markRead = true,
+        ?callable &$deferred = null,
+        ?string &$failureReason = null
+    ): ?array {
         assert_folder_access($folderPath);
 
         $folderData = FolderCache::load(skipUnreadRefresh: true);
@@ -1228,19 +1239,22 @@ class MailController
         $unreadCounts = $folderData['unread_counts'] ?? [];
 
         $message = MailCacheService::getBody($folderPath, $uid);
-        if ($message === null) {
-            $message = $this->fetchMessageFromImap($folderPath, $uid);
-            if ($message !== null) {
-                MailCacheService::saveBody($folderPath, $message);
-            }
-        }
 
+        // Not cached locally — go to the mail server. Track whether we actually
+        // reached it: against a slow/flaky remote host a transient connection
+        // failure must NOT be mistaken for a deleted message, or we'd evict a
+        // message that still exists on the server (and 404 the client).
+        $serverReached = false;
         if ($message === null) {
             $imap = new ImapService();
             if ($imap->connect()) {
-                MailCacheService::syncFolderHeaders($imap, $folderPath);
-                $message = MailCacheService::getBody($folderPath, $uid)
-                    ?? $this->fetchMessageFromImap($folderPath, $uid, $imap);
+                $serverReached = true;
+                $message = $this->fetchMessageFromImap($folderPath, $uid, $imap);
+                if ($message === null) {
+                    MailCacheService::syncFolderHeaders($imap, $folderPath);
+                    $message = MailCacheService::getBody($folderPath, $uid)
+                        ?? $this->fetchMessageFromImap($folderPath, $uid, $imap);
+                }
                 if ($message !== null) {
                     MailCacheService::saveBody($folderPath, $message);
                 }
@@ -1248,7 +1262,15 @@ class MailController
         }
 
         if ($message === null) {
-            MailCacheService::removeMessage($folderPath, $uid);
+            if ($serverReached) {
+                // The server responded and the message genuinely isn't there.
+                MailCacheService::removeMessage($folderPath, $uid);
+                $failureReason = 'gone';
+            } else {
+                // Couldn't reach the mail server — leave the cached row intact so
+                // the message doesn't vanish; the caller reports a retryable error.
+                $failureReason = 'unavailable';
+            }
 
             return null;
         }
