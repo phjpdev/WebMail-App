@@ -2113,25 +2113,31 @@ class MailCacheService
         }
 
         $placeholders = implode(',', array_fill(0, count($uids), '?'));
-        $params = array_merge([$toPath, $fromPath], $uids);
+        $params = array_merge([$fromPath], $uids);
 
-        $indexMoved = Database::query(
-            "UPDATE mail_index SET folder_path = ?, seen = 1 WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+        // Drop the messages from the SOURCE folder's cache. We deliberately do NOT
+        // relocate the rows into the target keeping the source UID: an IMAP move
+        // assigns a brand-new UID in the destination, so the source UID is wrong
+        // there — and reusing it violates the unique (folder_path, imap_uid) key
+        // whenever that UID already exists in the target (extremely common, since
+        // IMAP UIDs start at 1 per folder). That collision previously threw and
+        // aborted the whole move. The background resyncFolderAfterMove() repopulates
+        // the target with the real server UIDs, so no optimistic insert is needed.
+        $indexRemoved = Database::query(
+            "DELETE FROM mail_index WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
             $params
         )->rowCount();
 
         Database::query(
-            "UPDATE mail_bodies SET folder_path = ? WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            "DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
             $params
         );
 
-        if ($indexMoved > 0) {
+        if ($indexRemoved > 0) {
             self::reconcileSyncStateFromIndex($fromPath);
-            $indexed = self::countListableMessagesInIndex($toPath);
-            self::touchSyncState($toPath, max($indexed, $indexMoved), $indexed);
         }
 
-        return $indexMoved;
+        return $indexRemoved;
     }
 
     /** Keep mail_sync_state totals aligned after local index removals. */
