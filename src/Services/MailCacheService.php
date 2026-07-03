@@ -683,6 +683,11 @@ class MailCacheService
 
     public static function hasFolderData(string $folderPath): bool
     {
+        // Sync state is stored under the resolved index path (e.g. the shared
+        // "INBOX.support" node keeps its data under "INBOX.support.Inbox"), so
+        // resolve here too — otherwise callers passing the raw node path get a
+        // false "cold" result and the UI shows a needless "Loading…" spinner.
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
         $row = Database::fetchOne(
             'SELECT headers_cached, imap_total, last_sync_at
              FROM mail_sync_state WHERE folder_path = ? LIMIT 1',
