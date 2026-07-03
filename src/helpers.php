@@ -6354,6 +6354,21 @@ function folder_badge_uses_index_truth(string $folderPath): bool
         return true;
     }
 
+    // Plain per-folder model: any badge-showing folder that is already indexed uses
+    // its mail_index count (seen=0) as the badge truth — so Inbox, Junk, Archive, …
+    // update like the shared/employee folders instead of being stuck on a stale
+    // session 0 (their badge was never reconciled, so the light poll wiped it). Before
+    // a folder is indexed we still fall back to the IMAP/session count, so a freshly
+    // logged-in, not-yet-synced folder is not shown as 0.
+    if (
+        folder_shows_unread_badge($folderPath)
+        && \App\Services\MailCacheService::hasFolderData(
+            \App\Services\MailCacheService::indexFolderPath($folderPath)
+        )
+    ) {
+        return true;
+    }
+
     return false;
 }
 
