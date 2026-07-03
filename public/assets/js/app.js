@@ -2750,7 +2750,7 @@
 
     function folderShowsUnreadBadge(path) {
         if (!path) return false;
-        return path.toLowerCase().indexOf('trash') < 0;
+        return path.toLowerCase().indexOf('trash') < 0 && !isSpamFolderPath(path);
     }
 
     function folderUnreadLookup(lookup, path) {

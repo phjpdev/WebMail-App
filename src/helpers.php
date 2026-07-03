@@ -6211,6 +6211,26 @@ function is_trash_folder(string $path): bool
     return folder_icon_type($path) === 'trash';
 }
 
+/**
+ * Junk/Spam folder — identified by its leaf name so it holds across viewers (unlike
+ * folder_icon_type(), which only tags the current user's own Junk). Used to suppress
+ * the unread badge: spam shouldn't nag you with a count.
+ */
+function is_spam_folder(string $path): bool
+{
+    if (folder_icon_type($path) === 'spam') {
+        return true;
+    }
+    $resolved = strtolower(\App\Services\FolderCache::resolvePath($path));
+    if ($resolved === '') {
+        return false;
+    }
+    $pos = strrpos($resolved, '.');
+    $leaf = $pos !== false ? substr($resolved, $pos + 1) : $resolved;
+
+    return $leaf === 'junk' || $leaf === 'spam';
+}
+
 function is_draft_folder(string $path): bool
 {
     return folder_icon_type($path) === 'draft';
@@ -6544,10 +6564,13 @@ function mail_is_employee_inbound_to_shared_mailbox(string $folderPath, array $m
     return $row !== null && ($row['role'] ?? '') === 'employee';
 }
 
-/** Trash is a holding area — never show an unread badge in the sidebar or header. */
+/**
+ * Trash is a holding area and Junk/Spam is noise — neither shows an unread badge in
+ * the sidebar or header.
+ */
 function folder_shows_unread_badge(string $path): bool
 {
-    return !is_trash_folder($path);
+    return !is_trash_folder($path) && !is_spam_folder($path);
 }
 
 /** Drafts badge shows total draft count, not IMAP \\Seen flags. */
