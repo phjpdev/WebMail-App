@@ -50,6 +50,8 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
         <input type="hidden" name="draft_uid" value="<?= (int) $draftUid ?>">
     <?php endif; ?>
 
+    <?php require base_path('views/partials/compose-format-toolbar.php'); ?>
+
     <div class="compose-outlook-card<?= $isReplyMode ? ' compose-outlook-card--reply' : '' ?>">
         <div class="compose-outlook-header">
             <div class="compose-outlook-header-row">
@@ -122,14 +124,6 @@ $editorHtml = $composeBody !== '' ? nl2br(e($composeBody)) : '<p><br></p>';
         <?php endif; ?>
 
         <div class="compose-outlook-editor-wrap">
-            <?php if (!$isReplyMode): ?>
-            <div class="rich-toolbar rich-toolbar--minimal" id="rich-toolbar">
-                <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
-                <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
-                <button type="button" data-cmd="underline" title="Underline"><u>U</u></button>
-                <button type="button" data-cmd="insertUnorderedList" title="Bullet list">•</button>
-            </div>
-            <?php endif; ?>
             <div id="body-editor" class="rich-editor compose-outlook-editor" contenteditable="true"><?= $editorHtml ?></div>
             <?php if ($quotedBody !== ''): ?>
             <textarea class="compose-quoted-source sr-only" readonly aria-hidden="true"><?= e($quotedBody) ?></textarea>

@@ -43,6 +43,8 @@ if (!empty($body_html)) {
         <input type="hidden" name="draft_uid" value="<?= (int) $draftUid ?>">
     <?php endif; ?>
 
+    <?php require base_path('views/partials/compose-format-toolbar.php'); ?>
+
     <div class="compose-draft-card">
         <header class="compose-draft-header">
             <div class="compose-draft-header-main">

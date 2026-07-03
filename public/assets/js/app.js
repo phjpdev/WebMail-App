@@ -5976,21 +5976,195 @@
             syncComposeEditor(form);
         }
 
+        // Remember the editor's last selection so toolbar controls that take
+        // focus themselves (the dropdowns and the colour picker) still apply to
+        // the text that was selected.
+        var savedRange = null;
+        function snapshotSelection() {
+            var sel = window.getSelection();
+            if (sel && sel.rangeCount) {
+                var range = sel.getRangeAt(0);
+                if (editor.contains(range.commonAncestorContainer)) {
+                    savedRange = range.cloneRange();
+                }
+            }
+        }
+        function withSavedSelection(fn) {
+            editor.focus();
+            if (savedRange) {
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(savedRange);
+            }
+            fn();
+            snapshotSelection();
+            refreshToolbarState();
+            syncEditorFields();
+        }
+        function firstFont(value) {
+            return String(value || '').split(',')[0].replace(/["']/g, '').trim().toLowerCase();
+        }
+
+        function runCommand(cmd, value) {
+            withSavedSelection(function () {
+                try { document.execCommand('styleWithCSS', false, true); } catch (e) { /* legacy fallback */ }
+                if (cmd === 'createLink') {
+                    var url = window.prompt('Link URL');
+                    if (url) document.execCommand('createLink', false, url);
+                } else {
+                    document.execCommand(cmd, false, value == null ? null : value);
+                }
+            });
+        }
+
+        // execCommand only knows the 1-7 size scale, so wrap the selection at
+        // size 7 then rewrite those nodes to the exact point size the user chose.
+        function applyFontSize(size) {
+            withSavedSelection(function () {
+                try { document.execCommand('styleWithCSS', false, false); } catch (e) {}
+                document.execCommand('fontSize', false, '7');
+                try { document.execCommand('styleWithCSS', false, true); } catch (e) {}
+                Array.prototype.forEach.call(editor.querySelectorAll('font[size="7"]'), function (f) {
+                    var span = document.createElement('span');
+                    span.style.fontSize = size;
+                    while (f.firstChild) span.appendChild(f.firstChild);
+                    if (f.parentNode) f.parentNode.replaceChild(span, f);
+                });
+            });
+        }
+
+        var BLOCK_TAGS = { P: 1, DIV: 1, LI: 1, BLOCKQUOTE: 1, PRE: 1, TD: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1 };
+        function blockAncestor(node) {
+            while (node && node !== editor) {
+                if (node.nodeType === 1 && BLOCK_TAGS[node.tagName]) return node;
+                node = node.parentNode;
+            }
+            return null;
+        }
+        function selectedBlocks() {
+            var sel = window.getSelection();
+            if (!sel.rangeCount) return [];
+            var range = sel.getRangeAt(0);
+            var start = blockAncestor(range.startContainer);
+            var end = blockAncestor(range.endContainer);
+            var blocks = [];
+            var node = start || end;
+            while (node) {
+                if (blocks.indexOf(node) < 0) blocks.push(node);
+                if (node === end || !end) break;
+                node = node.nextElementSibling;
+            }
+            if (end && blocks.indexOf(end) < 0) blocks.push(end);
+            return blocks;
+        }
+        function applyLineHeight(value) {
+            withSavedSelection(function () {
+                var blocks = selectedBlocks();
+                if (!blocks.length) {
+                    document.execCommand('formatBlock', false, 'div');
+                    blocks = selectedBlocks();
+                }
+                blocks.forEach(function (b) { if (b && b !== editor) b.style.lineHeight = value; });
+            });
+        }
+
+        function currentFontSizePt() {
+            var sel = window.getSelection();
+            if (!sel.rangeCount) return 0;
+            var node = sel.getRangeAt(0).startContainer;
+            if (node && node.nodeType === 3) node = node.parentNode;
+            if (!node || node.nodeType !== 1) return 0;
+            var px = parseFloat(window.getComputedStyle(node).fontSize) || 0;
+            return px ? Math.round(px * 72 / 96) : 0;
+        }
+
+        // Reflect the selection's formatting in the ribbon: active toggles get a
+        // grey background; the font/size/alignment dropdowns show what's in effect.
+        function refreshToolbarState() {
+            if (!toolbar) return;
+            toolbar.querySelectorAll('button[data-cmd]').forEach(function (btn) {
+                var on = false;
+                try { on = document.queryCommandState(btn.getAttribute('data-cmd')); } catch (e) { on = false; }
+                btn.classList.toggle('is-active', !!on);
+            });
+            var fontSel = toolbar.querySelector('select[data-cmd="fontName"]');
+            if (fontSel) {
+                var cur = '';
+                try { cur = firstFont(document.queryCommandValue('fontName')); } catch (e) { cur = ''; }
+                var fontMatch = '';
+                Array.prototype.forEach.call(fontSel.options, function (opt) {
+                    if (opt.value && firstFont(opt.value) === cur) fontMatch = opt.value;
+                });
+                if (fontMatch) fontSel.value = fontMatch;
+            }
+            var sizeSel = toolbar.querySelector('select[data-cmd="fontSize"]');
+            if (sizeSel) {
+                var wanted = currentFontSizePt() + 'pt';
+                var hasSize = Array.prototype.some.call(sizeSel.options, function (o) { return o.value === wanted; });
+                if (hasSize) sizeSel.value = wanted;
+            }
+            var alignSel = toolbar.querySelector('select[data-cmd="align"]');
+            if (alignSel) {
+                var a = 'justifyLeft';
+                try {
+                    if (document.queryCommandState('justifyCenter')) a = 'justifyCenter';
+                    else if (document.queryCommandState('justifyRight')) a = 'justifyRight';
+                    else if (document.queryCommandState('justifyFull')) a = 'justifyFull';
+                } catch (e) {}
+                alignSel.value = a;
+            }
+        }
+
+        function onSelectionChange() {
+            snapshotSelection();
+            refreshToolbarState();
+        }
+        editor.addEventListener('keyup', onSelectionChange);
+        editor.addEventListener('mouseup', onSelectionChange);
+        editor.addEventListener('focus', refreshToolbarState);
+
         if (toolbar) {
+            // Keep the selection when pressing a button (it would otherwise steal
+            // focus before the command runs and format nothing).
+            toolbar.addEventListener('mousedown', function (e) {
+                if (e.target.closest('button')) e.preventDefault();
+            });
             toolbar.addEventListener('click', function (e) {
                 var btn = e.target.closest('button[data-cmd]');
                 if (!btn) return;
                 e.preventDefault();
-                var cmd = btn.getAttribute('data-cmd');
-                if (cmd === 'createLink') {
-                    var url = prompt('Link URL');
-                    if (url) document.execCommand(cmd, false, url);
-                } else {
-                    document.execCommand(cmd, false, null);
-                }
-                editor.focus();
+                runCommand(btn.getAttribute('data-cmd'));
             });
+            toolbar.querySelectorAll('select[data-cmd]').forEach(function (sel) {
+                var kind = sel.getAttribute('data-cmd');
+                sel.addEventListener('mousedown', snapshotSelection);
+                sel.addEventListener('change', function () {
+                    if (!sel.value) return;
+                    if (kind === 'fontSize') {
+                        applyFontSize(sel.value);
+                    } else if (kind === 'lineHeight') {
+                        applyLineHeight(sel.value);
+                    } else if (kind === 'align') {
+                        runCommand(sel.value);
+                    } else {
+                        runCommand(kind, sel.value);
+                    }
+                });
+            });
+            var colorInput = toolbar.querySelector('input[type="color"][data-cmd]');
+            if (colorInput) {
+                colorInput.addEventListener('mousedown', snapshotSelection);
+                colorInput.addEventListener('change', function () {
+                    runCommand(colorInput.getAttribute('data-cmd'), colorInput.value);
+                });
+            }
         }
+
+        // Reveal the formatting ribbon at the top of the panel once the message
+        // body is being edited, and keep it shown for the rest of the session.
+        editor.addEventListener('focus', function () {
+            form.classList.add('is-editing-body');
+        });
 
         form.addEventListener('submit', function () {
             syncEditorFields();

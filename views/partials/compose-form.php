@@ -49,6 +49,8 @@ if ($outlookInline) {
         <input type="hidden" name="draft_uid" value="<?= (int) $draftUid ?>">
     <?php endif; ?>
 
+    <?php require base_path('views/partials/compose-format-toolbar.php'); ?>
+
     <?php require base_path('views/partials/compose-send-as.php'); ?>
 
     <div class="compose-recipients">
@@ -91,13 +93,6 @@ if ($outlookInline) {
 
     <div class="form-group">
         <label>Message</label>
-        <div class="rich-toolbar" id="rich-toolbar">
-            <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
-            <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
-            <button type="button" data-cmd="underline" title="Underline"><u>U</u></button>
-            <button type="button" data-cmd="insertUnorderedList" title="Bullet list">•</button>
-            <button type="button" data-cmd="createLink" title="Link">Link</button>
-        </div>
         <div id="body-editor" class="rich-editor" contenteditable="true"><?= !empty($body_html) ? \App\HtmlSanitizer::sanitize($body_html) : nl2br(e($body)) ?></div>
         <textarea id="body" name="body" rows="14" class="sr-only"><?= e($body) ?></textarea>
     </div>

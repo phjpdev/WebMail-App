@@ -3357,9 +3357,111 @@ a:hover {
     min-height: 200px;
     padding: 0.75rem;
     border: 1px solid var(--color-border);
-    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    border-radius: var(--radius-sm);
     background: var(--color-surface);
     outline: none;
+}
+
+/* Compose formatting ribbon: pinned at the top of the compose panel and
+   revealed only once the message body gains focus (Outlook-style). Hidden
+   otherwise so the panel stays clean. */
+.compose-format-toolbar {
+    display: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.1rem;
+    row-gap: 0.2rem;
+    flex-shrink: 0;
+    padding: 0.35rem 0.4rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
+}
+
+.compose-form.is-editing-body .compose-format-toolbar {
+    display: flex;
+}
+
+/* Scoped under .compose-format-toolbar so these win over the generic
+   ".compose-form select { width: 100% }" rule (otherwise every dropdown
+   stretches full-width and wraps onto its own row). */
+.compose-format-toolbar .compose-format-select {
+    height: 1.9rem;
+    flex: 0 0 auto;
+    padding: 0 1.4rem 0 0.4rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 0.78rem;
+    cursor: pointer;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.compose-format-toolbar .compose-format-font { width: 7rem; }
+.compose-format-toolbar .compose-format-size { width: 4.75rem; }
+.compose-format-toolbar .compose-format-align { width: 5.5rem; }
+.compose-format-toolbar .compose-format-spacing { width: 5.75rem; }
+
+.compose-format-color {
+    width: 1.9rem;
+    height: 1.9rem;
+    padding: 2px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+.compose-format-color::-webkit-color-swatch-wrapper { padding: 0; }
+.compose-format-color::-webkit-color-swatch { border: none; border-radius: 3px; }
+.compose-format-color::-moz-color-swatch { border: none; border-radius: 3px; }
+
+.compose-format-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.9rem;
+    height: 1.9rem;
+    padding: 0 0.45rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text);
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.compose-format-btn:hover {
+    background: var(--color-bg);
+}
+
+.compose-format-btn:active {
+    background: var(--color-border-subtle);
+}
+
+/* Grey "pressed" state so the user can see which formatting is applied to the
+   current selection (bold, italic, alignment, ...). */
+.compose-format-btn.is-active,
+.compose-format-btn.is-active:hover {
+    background: rgba(0, 0, 0, 0.12);
+    color: var(--color-text);
+}
+
+[data-theme="dark"] .compose-format-btn.is-active,
+[data-theme="dark"] .compose-format-btn.is-active:hover {
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.compose-format-sep {
+    width: 1px;
+    height: 1.15rem;
+    margin: 0 0.25rem;
+    background: var(--color-border);
 }
 
 .sr-only {
