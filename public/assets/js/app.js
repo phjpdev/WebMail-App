@@ -114,6 +114,7 @@
     var bodyWarmKeys = {};
     var backgroundFetchQueue = [];
     var backgroundFetchActive = 0;
+    var backgroundFetchControllers = [];
     var MAX_BACKGROUND_FETCH = 2;
     var paneNavTimer = null;
     var paneNavPendingUid = null;
@@ -796,16 +797,42 @@
 
     function drainBackgroundFetchQueue() {
         while (backgroundFetchActive < MAX_BACKGROUND_FETCH && backgroundFetchQueue.length) {
-            var item = backgroundFetchQueue.shift();
-            backgroundFetchActive++;
-            fetch(item.url, item.options)
-                .then(item.resolve)
-                .catch(item.reject)
-                .finally(function () {
-                    backgroundFetchActive--;
-                    drainBackgroundFetchQueue();
-                });
+            startBackgroundFetch(backgroundFetchQueue.shift());
         }
+    }
+
+    function startBackgroundFetch(item) {
+        backgroundFetchActive++;
+        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var options = item.options || {};
+        if (ctrl && !options.signal) options.signal = ctrl.signal;
+        if (ctrl) backgroundFetchControllers.push(ctrl);
+        fetch(item.url, options)
+            .then(item.resolve)
+            .catch(item.reject)
+            .finally(function () {
+                backgroundFetchActive--;
+                if (ctrl) {
+                    var idx = backgroundFetchControllers.indexOf(ctrl);
+                    if (idx >= 0) backgroundFetchControllers.splice(idx, 1);
+                }
+                drainBackgroundFetchQueue();
+            });
+    }
+
+    // Drop queued prefetches and abort in-flight ones. Called when navigating to a
+    // new folder so stale pane/compose prefetches from the folder we're leaving stop
+    // hogging the browser's (few) connections — on a slow/remote IMAP server they
+    // were starving the new folder's list load, leaving it stuck on "Loading…".
+    function abortBackgroundFetches() {
+        if (backgroundFetchQueue.length) {
+            backgroundFetchQueue.splice(0, backgroundFetchQueue.length).forEach(function (item) {
+                try { item.reject(new Error('navigated')); } catch (e) { /* ignore */ }
+            });
+        }
+        backgroundFetchControllers.splice(0).forEach(function (ctrl) {
+            try { ctrl.abort(); } catch (e) { /* ignore */ }
+        });
     }
 
     function prefetchPane(uid) {
@@ -1166,6 +1193,7 @@
     function abortInFlightFolderFetch() {
         abortDeferredListEnhancements();
         abortMailBootstrap();
+        abortBackgroundFetches();
         if (folderFetchTimeoutId) {
             window.clearTimeout(folderFetchTimeoutId);
             folderFetchTimeoutId = null;
