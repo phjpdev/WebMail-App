@@ -128,12 +128,24 @@ if ($outlookInline) {
     </div>
 
     <div class="form-actions compose-form-actions">
-        <button type="submit" class="btn btn-primary">Send</button>
-        <button type="submit" formaction="<?= e(url('compose/draft')) ?>" class="btn btn-outline">Save draft</button>
+        <button type="submit" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9 22 2z"/></svg>
+            <span>Send</span>
+        </button>
+        <button type="submit" formaction="<?= e(url('compose/draft')) ?>" class="btn btn-outline">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            <span>Save draft</span>
+        </button>
         <?php if ($embed): ?>
-            <button type="button" class="btn btn-outline" data-compose-cancel>Discard</button>
+            <button type="button" class="btn btn-outline" data-compose-cancel>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M9 7V4h6v3"/></svg>
+                <span>Discard</span>
+            </button>
         <?php else: ?>
-            <a class="btn btn-outline" href="<?= e(url('')) ?>">Cancel</a>
+            <a class="btn btn-outline" href="<?= e(url('')) ?>">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                <span>Cancel</span>
+            </a>
         <?php endif; ?>
     </div>
 </form>
