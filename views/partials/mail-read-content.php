@@ -88,7 +88,7 @@ $messageAttachments = $message['attachments'] ?? [];
             </select>
         </div>
         <button type="button" class="mail-action-btn mail-action-btn--move" data-mail-action="move" title="Move to folder" aria-label="Move to folder">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h5l2 3h11v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7z"/><path d="M9 12h7"/><path d="M13 9l3 3-3 3"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9l-.81-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10.5v4.5"/><path d="m9.75 12.75 2.25 2.25 2.25-2.25"/></svg>
         </button>
     </div>
     <?php endif; ?>

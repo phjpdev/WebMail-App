@@ -3106,11 +3106,53 @@ a:hover {
         display: none;
     }
 
+    /* Compact mobile header: brand + account on the top row, search on its own
+       full-width row below. The old fixed 3-column grid forced everything onto
+       one line and overlapped on narrow screens. Because the header is now two
+       rows tall, bump --header-height so the fixed sidebar drawer, sticky
+       offsets and the content area all start below the real header height
+       (otherwise the sidebar's Compose button hides under the header). */
+    :root {
+        --header-height: 6rem;
+    }
+
     .header-inner {
-        grid-template-columns: auto 1fr auto;
+        display: flex;
+        flex-wrap: wrap;
+        align-content: center;
+        align-items: center;
+        column-gap: 0.6rem;
+        row-gap: 0.5rem;
+        min-height: var(--header-height);
+        padding-top: 0.35rem;
+        padding-bottom: 0.35rem;
+    }
+
+    /* The login screen keeps a single-row header, so don't let the taller
+       app-shell --header-height stretch it. */
+    .login-header {
+        min-height: 3.5rem;
+    }
+
+    .header-left {
+        flex: 0 1 auto;
+        min-width: 0;
+    }
+
+    .site-title,
+    .site-brand-text {
+        white-space: nowrap;
+        overflow: hidden;
+    }
+
+    .header-user {
+        margin-left: auto;
+        flex: 0 0 auto;
     }
 
     .header-center {
+        order: 1;
+        flex: 1 1 100%;
         max-width: none;
     }
 
@@ -3190,6 +3232,12 @@ a:hover {
     }
 
     .role-badge {
+        display: none;
+    }
+
+    /* Drop the "Webmail" suffix on very narrow screens so the brand + account
+       row always fits without clipping. */
+    .site-brand-suffix {
         display: none;
     }
 }
@@ -6477,6 +6525,21 @@ body:has(.mail-workspace) {
     padding: 0.2rem 0.55rem;
     font-size: 0.75rem;
     font-weight: 600;
+}
+
+/* Desktop reading pane: keep the toolbar focused on Reply / Reply-all /
+   Forward / Print. Unread, Flag, Spam, Delete and Move are all reachable from
+   the right-click menu on the list row (and the bulk command bar), so they're
+   redundant clutter here. The mobile full-page read view (.mail-read-card,
+   without --pane) keeps them, since it has no hover/right-click affordance. */
+.mail-read-card--pane .mail-actions [data-mail-action="mark-read"],
+.mail-read-card--pane .mail-actions [data-mail-action="mark-unread"],
+.mail-read-card--pane .mail-actions [data-mail-action="flag-toggle"],
+.mail-read-card--pane .mail-actions [data-mail-action="spam"],
+.mail-read-card--pane .mail-actions [data-mail-action="trash"],
+.mail-read-card--pane .mail-actions .mail-action-move,
+.mail-read-card--pane .mail-actions .mail-action-divider {
+    display: none;
 }
 
 /* U6 — performance, a11y, mobile */

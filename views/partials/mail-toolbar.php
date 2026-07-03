@@ -32,19 +32,10 @@
 
     <div class="mail-command-bar-row mail-command-bar-row--selection">
         <div class="mail-command-bar-actions">
-            <button type="button" class="mail-cmd-btn mail-cmd-btn--compose-action" data-cmd="reply" disabled hidden title="Reply" aria-label="Reply">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 15L4 10l5-5"/><path d="M4 10h9a7 7 0 0 1 7 7v2"/></svg>
-                <span class="mail-cmd-label">Reply</span>
-            </button>
-            <button type="button" class="mail-cmd-btn mail-cmd-btn--compose-action" data-cmd="reply-all" disabled hidden title="Reply all" aria-label="Reply all">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 15l-5-5 5-5"/><path d="M12 15l-5-5 5-5"/><path d="M7 10h8a6 6 0 0 1 6 6v2"/></svg>
-                <span class="mail-cmd-label">Reply all</span>
-            </button>
-            <button type="button" class="mail-cmd-btn mail-cmd-btn--compose-action" data-cmd="forward" disabled hidden title="Forward" aria-label="Forward">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M15 15l5-5-5-5"/><path d="M20 10h-9a7 7 0 0 0-7 7v2"/></svg>
-                <span class="mail-cmd-label">Forward</span>
-            </button>
-
+            <?php /* Reply / Reply-all / Forward intentionally omitted here: they don't
+               apply to a multi-message selection and are already available via the
+               right-click menu (single row) and the reading-pane toolbar (open
+               message). This bar is for bulk actions only. */ ?>
             <button type="button" class="mail-cmd-btn mail-cmd-btn--danger" data-cmd="delete" disabled title="Delete">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M9 7V4h6v3"/></svg>
                 <span class="mail-cmd-label">Delete</span>
@@ -61,7 +52,7 @@
                     </select>
                 </div>
                 <button type="button" class="mail-cmd-btn mail-cmd-btn--move" data-cmd="move" disabled title="Move to folder" aria-label="Move to folder">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h5l2 3h11v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7z"/><path d="M9 12h7"/><path d="M13 9l3 3-3 3"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9l-.81-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10.5v4.5"/><path d="m9.75 12.75 2.25 2.25 2.25-2.25"/></svg>
                 </button>
             </div>
 
