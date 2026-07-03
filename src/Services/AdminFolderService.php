@@ -39,6 +39,63 @@ class AdminFolderService
         return admin_folder_parent_options($this->listAll());
     }
 
+    /**
+     * Folders that can act as a sidebar group container ("Show under"). Any
+     * active folder except the one being edited (and its own descendants, to
+     * avoid a grouping loop) may be chosen.
+     *
+     * @return list<array{id: int, label: string, imap_path: string}>
+     */
+    public function listGroupParentChoices(int $excludeId = 0): array
+    {
+        $descendants = $excludeId > 0 ? $this->displayDescendantIds($excludeId) : [];
+        $blocked = $descendants;
+        if ($excludeId > 0) {
+            $blocked[$excludeId] = true;
+        }
+
+        $options = [];
+        foreach (admin_folder_parent_options($this->listAll()) as $option) {
+            if (isset($blocked[(int) $option['id']])) {
+                continue;
+            }
+            $options[] = $option;
+        }
+
+        return $options;
+    }
+
+    /**
+     * IDs of folders grouped (directly or transitively) under the given folder.
+     *
+     * @return array<int, true>
+     */
+    private function displayDescendantIds(int $rootId): array
+    {
+        $children = [];
+        foreach (Database::query('SELECT id, display_parent_id FROM folders')->fetchAll() as $row) {
+            $parent = $row['display_parent_id'];
+            if ($parent === null) {
+                continue;
+            }
+            $children[(int) $parent][] = (int) $row['id'];
+        }
+
+        $descendants = [];
+        $stack = [$rootId];
+        while ($stack !== []) {
+            $current = array_pop($stack);
+            foreach ($children[$current] ?? [] as $childId) {
+                if (!isset($descendants[$childId])) {
+                    $descendants[$childId] = true;
+                    $stack[] = $childId;
+                }
+            }
+        }
+
+        return $descendants;
+    }
+
     public function find(int $id): ?array
     {
         $row = Database::fetchOne('SELECT * FROM folders WHERE id = ?', [$id]);
@@ -227,16 +284,27 @@ class AdminFolderService
     }
 
     /**
-     * @param array{display_name?: string, folder_type?: string, active?: int} $data
+     * @param array{display_name?: string, folder_type?: string, active?: int, display_parent_id?: int|null} $data
      */
     public function update(int $id, array $data): void
     {
+        $displayParentId = null;
+        if (array_key_exists('display_parent_id', $data)) {
+            $displayParentId = (int) $data['display_parent_id'] > 0 ? (int) $data['display_parent_id'] : null;
+            // Never allow a folder to be grouped under itself or one of its own
+            // grouped descendants (that would make the sidebar tree recurse).
+            if ($displayParentId === $id || ($displayParentId !== null && isset($this->displayDescendantIds($id)[$displayParentId]))) {
+                $displayParentId = null;
+            }
+        }
+
         Database::query(
-            'UPDATE folders SET display_name = ?, folder_type = ?, active = ? WHERE id = ?',
+            'UPDATE folders SET display_name = ?, folder_type = ?, active = ?, display_parent_id = ? WHERE id = ?',
             [
                 $data['display_name'],
                 $data['folder_type'],
                 (int) ($data['active'] ?? 1),
+                $displayParentId,
                 $id,
             ]
         );

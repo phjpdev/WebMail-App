@@ -516,6 +516,7 @@ class AdminController
         $this->render('admin/folders/form', [
             'title' => 'Edit folder',
             'folder' => $folder,
+            'groupParents' => $this->folders->listGroupParentChoices((int) $folder['id']),
             'adminSection' => 'folders',
         ]);
     }
@@ -541,6 +542,7 @@ class AdminController
             'display_name' => $displayName,
             'folder_type' => $this->normalizeFolderType($_POST['folder_type'] ?? 'client'),
             'active' => isset($_POST['active']) ? 1 : 0,
+            'display_parent_id' => (int) ($_POST['display_parent_id'] ?? 0),
         ]);
         $this->audit('folder_update', 'Updated folder #' . $id);
         flash('success', 'Folder updated.');

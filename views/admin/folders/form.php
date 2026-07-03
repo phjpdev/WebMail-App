@@ -5,7 +5,9 @@ $action = $isEdit ? url('admin/folders/' . $folder['id'] . '/update') : url('adm
 $type = $folder['folder_type'] ?? 'client';
 $types = ['client' => 'Client', 'company' => 'Company', 'employee' => 'Employee', 'system' => 'System'];
 $parentFolders = $parentFolders ?? [];
+$groupParents = $groupParents ?? [];
 $selectedParent = (int) ($_GET['parent'] ?? ($_POST['parent_folder_id'] ?? 0));
+$selectedGroupParent = (int) ($folder['display_parent_id'] ?? 0);
 ?>
 
 <section class="page-header"><h2><?= $isEdit ? 'Edit folder' : 'Add folder' ?></h2></section>
@@ -48,6 +50,18 @@ $selectedParent = (int) ($_GET['parent'] ?? ($_POST['parent_folder_id'] ?? 0));
             <div class="form-group">
                 <label>Mailbox path</label>
                 <p><code><?= e($folder['imap_path']) ?></code></p>
+            </div>
+            <div class="form-group">
+                <label for="display_parent_id">Show under (sidebar group)</label>
+                <select id="display_parent_id" name="display_parent_id">
+                    <option value="0">— Top level (no group)</option>
+                    <?php foreach ($groupParents as $parent): ?>
+                        <option value="<?= (int) $parent['id'] ?>"<?= $selectedGroupParent === (int) $parent['id'] ? ' selected' : '' ?>>
+                            <?= e($parent['label']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <small class="form-hint">Display only — nests this folder under the chosen folder in the sidebar. The mailbox, its address, and mail routing are unchanged.</small>
             </div>
             <div class="form-group form-check">
                 <label class="form-check-label">

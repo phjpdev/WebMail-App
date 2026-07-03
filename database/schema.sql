@@ -27,10 +27,12 @@ CREATE TABLE IF NOT EXISTS folders (
     display_name VARCHAR(150) NOT NULL,
     folder_type ENUM('inbox', 'employee', 'client', 'spam', 'trash', 'sent', 'other') NOT NULL DEFAULT 'other',
     linked_user_id INT UNSIGNED NULL,
+    display_parent_id INT UNSIGNED NULL DEFAULT NULL,
     active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_folders_imap_path (imap_path),
-    CONSTRAINT fk_folders_user FOREIGN KEY (linked_user_id) REFERENCES users(id) ON DELETE SET NULL
+    CONSTRAINT fk_folders_user FOREIGN KEY (linked_user_id) REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT fk_folders_display_parent FOREIGN KEY (display_parent_id) REFERENCES folders(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS aliases (
