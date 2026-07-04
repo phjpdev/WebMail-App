@@ -57,7 +57,7 @@ $selectedGroupParent = (int) ($folder['display_parent_id'] ?? 0);
                     <option value="0">— Top level (no group)</option>
                     <?php foreach ($groupParents as $parent): ?>
                         <option value="<?= (int) $parent['id'] ?>"<?= $selectedGroupParent === (int) $parent['id'] ? ' selected' : '' ?>>
-                            <?= e($parent['label']) ?>
+                            &#128193; <?= e($parent['label']) ?>
                         </option>
                     <?php endforeach; ?>
                 </select>

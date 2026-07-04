@@ -40,27 +40,40 @@ class AdminFolderService
     }
 
     /**
-     * Folders that can act as a sidebar group container ("Show under"). Any
-     * active folder except the one being edited (and its own descendants, to
-     * avoid a grouping loop) may be chosen.
+     * Folders that can act as a sidebar group container ("Show under"). Only
+     * admin-created group folders (client/company type) are offered — never the
+     * shared system folders (Inbox, Sent, Drafts, Archive, Junk, Trash, Spam) and
+     * never user mailboxes (employee folders like Jean/Erik/Support), so a user
+     * folder can be placed into a group but can't itself become a group. The
+     * folder being edited and its own grouped descendants are excluded to avoid a
+     * loop.
      *
      * @return list<array{id: int, label: string, imap_path: string}>
      */
     public function listGroupParentChoices(int $excludeId = 0): array
     {
-        $descendants = $excludeId > 0 ? $this->displayDescendantIds($excludeId) : [];
-        $blocked = $descendants;
+        $blocked = $excludeId > 0 ? $this->displayDescendantIds($excludeId) : [];
         if ($excludeId > 0) {
             $blocked[$excludeId] = true;
         }
 
         $options = [];
-        foreach (admin_folder_parent_options($this->listAll()) as $option) {
-            if (isset($blocked[(int) $option['id']])) {
+        foreach ($this->listAll() as $folder) {
+            $id = (int) ($folder['id'] ?? 0);
+            if ($id <= 0 || isset($blocked[$id]) || (int) ($folder['active'] ?? 1) === 0) {
                 continue;
             }
-            $options[] = $option;
+            if (!in_array((string) ($folder['folder_type'] ?? ''), ['client', 'company'], true)) {
+                continue;
+            }
+            $options[] = [
+                'id' => $id,
+                'label' => (string) ($folder['display_name'] ?? ''),
+                'imap_path' => (string) ($folder['imap_path'] ?? ''),
+            ];
         }
+
+        usort($options, static fn (array $a, array $b): int => strcasecmp($a['label'], $b['label']));
 
         return $options;
     }

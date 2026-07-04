@@ -116,14 +116,14 @@ $renderSidebarFolderBranch = static function (array $node, int $depth = 0) use (
     $renderTreeRow($folder, 'other', $depth, $displayName, false, false, null);
 };
 
-// Manual, display-only sidebar grouping. An admin can set a folder's
-// display_parent_id so it renders nested under another folder in the sidebar.
-// The IMAP mailboxes, their paths, addresses and routing are NOT changed — this
-// only affects how the "other" folders are laid out here.
-// Keys are normalized with employee_mailbox_root_prefix() so an employee mailbox
-// matches whether the sidebar lists it as INBOX.Jean or INBOX.Jean.Inbox.
-$displayChildToParent = [];   // childKey  => parentKey
-$displayParentPaths = [];     // parentKey => true
+// Manual, display-only sidebar grouping (arbitrary depth). A folder's
+// display_parent_id nests it under another folder in the sidebar; chains like
+// Employees → New-Employees → Jean are supported. The IMAP mailboxes, their
+// paths, addresses and routing are NOT changed — this only affects how the
+// "other" folders are laid out here. Keys are normalized with
+// employee_mailbox_root_prefix() so an employee mailbox matches whether the
+// sidebar lists it as INBOX.Jean or INBOX.Jean.Inbox.
+$displayParentKey = []; // childKey => parentKey
 try {
     foreach (App\Database::query(
         "SELECT c.imap_path AS child_path, p.imap_path AS parent_path
@@ -134,50 +134,174 @@ try {
         $childKey = strtolower(employee_mailbox_root_prefix((string) ($row['child_path'] ?? '')));
         $parentKey = strtolower(employee_mailbox_root_prefix((string) ($row['parent_path'] ?? '')));
         if ($childKey !== '' && $parentKey !== '' && $childKey !== $parentKey) {
-            $displayChildToParent[$childKey] = $parentKey;
-            $displayParentPaths[$parentKey] = true;
+            $displayParentKey[$childKey] = $parentKey;
         }
     }
 } catch (\Throwable) {
 }
 
-$displayGroups = []; // parentKey => ['folder' => ?array, 'children' => list]
-if ($displayChildToParent !== [] && $grouped['other'] !== []) {
-    $remainingOther = [];
-    $consumedChildKeys = [];
+$displayForest = []; // list of ['folder' => array, 'children' => list<self>]
+if ($displayParentKey !== [] && $grouped['other'] !== []) {
+    $folderByKey = [];
     foreach ($grouped['other'] as $folder) {
         $key = strtolower(employee_mailbox_root_prefix((string) ($folder['path'] ?? '')));
-        if ($key !== '' && isset($displayParentPaths[$key])) {
-            $displayGroups[$key]['folder'] = $folder;
-            $displayGroups[$key]['children'] ??= [];
-        } elseif ($key !== '' && isset($displayChildToParent[$key]) && !isset($consumedChildKeys[$key])) {
-            $consumedChildKeys[$key] = true;
-            $parentKey = $displayChildToParent[$key];
-            $displayGroups[$parentKey]['children'][] = $folder;
-            $displayGroups[$parentKey]['folder'] ??= null;
-        } else {
+        if ($key !== '' && !isset($folderByKey[$key])) {
+            $folderByKey[$key] = $folder;
+        }
+    }
+
+    // Effective parent of a grouped folder = its display_parent (if present); a
+    // grouped folder with no display_parent falls back to its nearest present
+    // IMAP ancestor, so a group's real subfolder (e.g. INBOX.Employee.New-Employees
+    // under Employees) nests under the group just like it does in the admin table.
+    $effectiveParent = [];
+    $involved = [];
+    foreach ($displayParentKey as $childKey => $parentKey) {
+        if (isset($folderByKey[$childKey], $folderByKey[$parentKey])) {
+            $effectiveParent[$childKey] = $parentKey;
+            $involved[$childKey] = true;
+            $involved[$parentKey] = true;
+        }
+    }
+
+    if ($involved !== []) {
+        $findImapAncestorKey = static function (string $path) use ($folderByKey): ?string {
+            $path = \App\Services\FolderCache::resolvePath($path);
+            while (($pos = strrpos($path, '.')) !== false) {
+                $path = substr($path, 0, $pos);
+                $key = strtolower(employee_mailbox_root_prefix($path));
+                if ($key !== '' && isset($folderByKey[$key])) {
+                    return $key;
+                }
+            }
+
+            return null;
+        };
+
+        $queue = array_keys($involved);
+        while ($queue !== []) {
+            $key = array_pop($queue);
+            if (isset($effectiveParent[$key])) {
+                continue;
+            }
+            $ancestorKey = $findImapAncestorKey((string) ($folderByKey[$key]['path'] ?? ''));
+            if ($ancestorKey !== null && $ancestorKey !== $key) {
+                $effectiveParent[$key] = $ancestorKey;
+                if (!isset($involved[$ancestorKey])) {
+                    $involved[$ancestorKey] = true;
+                    $queue[] = $ancestorKey;
+                }
+            }
+        }
+
+        $childrenByParent = [];
+        foreach ($effectiveParent as $childKey => $parentKey) {
+            $childrenByParent[$parentKey][] = $childKey;
+        }
+
+        $placedKeys = [];
+        $buildDisplayNode = function (string $key, array $seen = []) use (&$buildDisplayNode, $folderByKey, $childrenByParent, &$placedKeys): array {
+            $seen[$key] = true;
+            $placedKeys[$key] = true;
+            $children = [];
+            foreach ($childrenByParent[$key] ?? [] as $childKey) {
+                if (isset($seen[$childKey])) {
+                    continue;
+                }
+                $children[] = $buildDisplayNode($childKey, $seen);
+            }
+
+            return ['folder' => $folderByKey[$key], 'children' => $children];
+        };
+
+        // Roots = involved folders with no effective parent of their own.
+        foreach ($folderByKey as $key => $folder) {
+            if (isset($involved[$key]) && !isset($effectiveParent[$key])) {
+                $displayForest[] = $buildDisplayNode($key);
+            }
+        }
+
+        // Pull only the folders actually placed in the forest out of the flat list.
+        $remainingOther = [];
+        foreach ($grouped['other'] as $folder) {
+            $key = strtolower(employee_mailbox_root_prefix((string) ($folder['path'] ?? '')));
+            if ($key !== '' && isset($placedKeys[$key])) {
+                continue;
+            }
             $remainingOther[] = $folder;
         }
+        $grouped['other'] = $remainingOther;
     }
+}
 
-    // Only keep groups that have both a visible container and at least one child;
-    // otherwise return the folders to the flat list so nothing disappears.
-    foreach ($displayGroups as $key => $group) {
-        $hasFolder = !empty($group['folder']);
-        $hasChildren = !empty($group['children']);
-        if (!$hasFolder || !$hasChildren) {
-            if ($hasFolder) {
-                $remainingOther[] = $group['folder'];
+// Recursive helpers for rendering the display forest.
+$displayGroupUnread = function (array $node) use (&$displayGroupUnread, $unreadCounts): int {
+    $total = 0;
+    foreach ($node['children'] as $child) {
+        if ($child['children'] === []) {
+            $nav = sidebar_folder_nav_path($child['folder']['path']);
+            if (folder_shows_unread_badge($nav)) {
+                $total += (int) ($unreadCounts[$nav] ?? $unreadCounts[$child['folder']['path']] ?? 0);
             }
-            foreach ($group['children'] ?? [] as $orphan) {
-                $remainingOther[] = $orphan;
-            }
-            unset($displayGroups[$key]);
+        } else {
+            $total += $displayGroupUnread($child);
         }
     }
 
-    $grouped['other'] = $remainingOther;
-}
+    return $total;
+};
+
+$displayGroupHasActive = function (array $node) use (&$displayGroupHasActive, $activeFolder): bool {
+    foreach ($node['children'] as $child) {
+        $nav = sidebar_folder_nav_path($child['folder']['path']);
+        if (sidebar_folder_matches_active($activeFolder ?? '', $nav)) {
+            return true;
+        }
+        if ($child['children'] !== [] && $displayGroupHasActive($child)) {
+            return true;
+        }
+    }
+
+    return false;
+};
+
+$renderDisplayGroup = function (array $node, int $depth) use (
+    &$renderDisplayGroup,
+    $renderTreeRow,
+    $displayGroupUnread,
+    $displayGroupHasActive,
+    $activeFolder
+): void {
+    $folder = $node['folder'];
+    $nav = sidebar_folder_nav_path($folder['path']);
+    $label = sidebar_folder_tree_label($folder);
+    $unread = $displayGroupUnread($node);
+    $open = sidebar_folder_matches_active($activeFolder ?? '', $nav) || $displayGroupHasActive($node);
+    ?>
+    <div class="sidebar-group is-collapsible sidebar-group--folder<?= $open ? ' is-open' : '' ?>" data-group="folder:<?= e(strtolower($nav)) ?>">
+        <div class="sidebar-tree-row" style="--tree-depth: <?= (int) $depth ?>;">
+            <span class="sidebar-tree-toggle-spacer" aria-hidden="true"></span>
+            <button type="button" class="sidebar-group-toggle sidebar-link sidebar-tree-link" aria-expanded="<?= $open ? 'true' : 'false' ?>" title="<?= e($label) ?>">
+                <span class="folder-icon folder-icon-folder" aria-hidden="true"></span>
+                <span class="sidebar-link-text"><?= e($label) ?></span>
+                <?php if ($unread > 0): ?>
+                    <span class="folder-badge folder-badge-sm"><?= $unread > 99 ? '99+' : $unread ?></span>
+                <?php endif; ?>
+                <svg class="sidebar-group-caret" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+        </div>
+        <div class="sidebar-group-items">
+            <?php foreach ($node['children'] as $child): ?>
+                <?php if ($child['children'] !== []): ?>
+                    <?php $renderDisplayGroup($child, $depth + 1); ?>
+                <?php else: ?>
+                    <?php $renderTreeRow($child['folder'], 'employee', $depth + 1, null, false, false, null); ?>
+                <?php endif; ?>
+            <?php endforeach; ?>
+        </div>
+    </div>
+    <?php
+};
 
 $otherFolderTree = [];
 if ($grouped['other'] !== []) {
@@ -204,41 +328,8 @@ if ($grouped['other'] !== []) {
             <?php foreach ($otherFolderTree as $node): ?>
                 <?php $renderSidebarFolderBranch($node, 0); ?>
             <?php endforeach; ?>
-            <?php foreach ($displayGroups as $group): ?>
-                <?php
-                $groupFolder = $group['folder'];
-                $groupNav = sidebar_folder_nav_path($groupFolder['path']);
-                $groupLabel = sidebar_folder_tree_label($groupFolder);
-                $groupOpen = sidebar_folder_matches_active($activeFolder ?? '', $groupNav);
-                $groupUnread = 0;
-                foreach ($group['children'] as $childFolder) {
-                    $childNav = sidebar_folder_nav_path($childFolder['path']);
-                    if (folder_shows_unread_badge($childNav)) {
-                        $groupUnread += (int) ($unreadCounts[$childNav] ?? $unreadCounts[$childFolder['path']] ?? 0);
-                    }
-                    if (sidebar_folder_matches_active($activeFolder ?? '', $childNav)) {
-                        $groupOpen = true;
-                    }
-                }
-                ?>
-                <div class="sidebar-group is-collapsible sidebar-group--folder<?= $groupOpen ? ' is-open' : '' ?>" data-group="folder:<?= e(strtolower($groupNav)) ?>">
-                    <div class="sidebar-tree-row" style="--tree-depth: 0;">
-                        <span class="sidebar-tree-toggle-spacer" aria-hidden="true"></span>
-                        <button type="button" class="sidebar-group-toggle sidebar-link sidebar-tree-link" aria-expanded="<?= $groupOpen ? 'true' : 'false' ?>" title="<?= e($groupLabel) ?>">
-                            <span class="folder-icon folder-icon-folder" aria-hidden="true"></span>
-                            <span class="sidebar-link-text"><?= e($groupLabel) ?></span>
-                            <?php if ($groupUnread > 0): ?>
-                                <span class="folder-badge folder-badge-sm"><?= $groupUnread > 99 ? '99+' : $groupUnread ?></span>
-                            <?php endif; ?>
-                            <svg class="sidebar-group-caret" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                        </button>
-                    </div>
-                    <div class="sidebar-group-items">
-                        <?php foreach ($group['children'] as $childFolder): ?>
-                            <?php $renderTreeRow($childFolder, 'employee', 1, null, false, false, null); ?>
-                        <?php endforeach; ?>
-                    </div>
-                </div>
+            <?php foreach ($displayForest as $node): ?>
+                <?php $renderDisplayGroup($node, 0); ?>
             <?php endforeach; ?>
         </div>
     </div>

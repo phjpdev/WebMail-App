@@ -6180,8 +6180,109 @@ function partition_admin_folders_for_display(array $folders): array
 
     return [
         'primary' => $primary,
-        'custom_tree' => build_admin_folder_tree($custom, 'imap_path'),
+        'custom_tree' => admin_apply_display_grouping(
+            build_admin_folder_tree($custom, 'imap_path'),
+            $folders
+        ),
     ];
+}
+
+/**
+ * Overlay the manual "Show under" grouping onto the admin folder tree: any folder
+ * with a display_parent_id is moved to become a child of that container folder, so
+ * the admin table nests exactly like the sidebar — to any depth, so chains like
+ * Employees → New-Employees → Jean keep nesting. Display-only — nothing about the
+ * mailbox changes. A child whose container is gone stays at the top level.
+ *
+ * @param list<array{folder: array<string, mixed>, children: list}> $tree
+ * @param list<array<string, mixed>> $folders
+ * @return list<array{folder: array<string, mixed>, children: list}>
+ */
+function admin_apply_display_grouping(array $tree, array $folders): array
+{
+    $displayParent = [];
+    foreach ($folders as $folder) {
+        $id = (int) ($folder['id'] ?? 0);
+        $parentId = (int) ($folder['display_parent_id'] ?? 0);
+        if ($id > 0 && $parentId > 0) {
+            $displayParent[$id] = $parentId;
+        }
+    }
+    if ($displayParent === []) {
+        return $tree;
+    }
+
+    // Pull every display-child (with its own subtree) out of the tree.
+    $detached = [];
+    $prune = static function (array $nodes) use (&$prune, &$detached, $displayParent): array {
+        $out = [];
+        foreach ($nodes as $node) {
+            $node['children'] = $prune($node['children'] ?? []);
+            $id = (int) ($node['folder']['id'] ?? 0);
+            if ($id > 0 && isset($displayParent[$id])) {
+                $detached[$id] = $node;
+            } else {
+                $out[] = $node;
+            }
+        }
+
+        return $out;
+    };
+    $pruned = $prune($tree);
+
+    if ($detached === []) {
+        return $tree;
+    }
+
+    $childIdsByParent = [];
+    foreach ($detached as $id => $node) {
+        $childIdsByParent[$displayParent[$id]][] = $id;
+    }
+
+    // Rebuild a detached node with its own display-children nested recursively.
+    $placed = [];
+    $buildDetached = static function (int $id) use (&$buildDetached, &$detached, $childIdsByParent, &$placed): array {
+        $node = $detached[$id];
+        foreach ($childIdsByParent[$id] ?? [] as $childId) {
+            if (isset($detached[$childId])) {
+                $node['children'][] = $buildDetached($childId);
+                $placed[$childId] = true;
+            }
+        }
+
+        return $node;
+    };
+
+    // Attach detached children under any matching container still in the tree.
+    $attach = static function (array $nodes) use (&$attach, $childIdsByParent, $buildDetached, &$detached, &$placed): array {
+        $out = [];
+        foreach ($nodes as $node) {
+            $node['children'] = $attach($node['children'] ?? []);
+            $id = (int) ($node['folder']['id'] ?? 0);
+            foreach ($childIdsByParent[$id] ?? [] as $childId) {
+                if (isset($detached[$childId])) {
+                    $node['children'][] = $buildDetached($childId);
+                    $placed[$childId] = true;
+                }
+            }
+            $out[] = $node;
+        }
+
+        return $out;
+    };
+    $result = $attach($pruned);
+
+    // Orphan chains (container missing): place the chain root at top level;
+    // buildDetached carries the rest of that chain along.
+    foreach ($detached as $id => $node) {
+        if (isset($placed[$id]) || isset($detached[$displayParent[$id]])) {
+            continue;
+        }
+        $result[] = $buildDetached($id);
+        $placed[$id] = true;
+    }
+
+    return $result;
 }
 
 /**

@@ -45,7 +45,7 @@
     --radius-lg: 6px;
 
     /* Layout */
-    --sidebar-width: 220px;
+    --sidebar-width: 250px;
     --header-height: 48px;
 
     /* Typography — Segoe UI first (Outlook native) */
@@ -2857,7 +2857,7 @@ a:hover {
     align-items: center;
     gap: 0;
     min-height: 1.75rem;
-    padding: 0.125rem 0.25rem 0.125rem calc(0.25rem + var(--tree-depth, 0) * 1.125rem);
+    padding: 0.125rem 0.25rem 0.125rem calc(0.25rem + var(--tree-depth, 0) * 0.85rem);
     margin: 0;
     border-radius: 4px;
     transition: background 0.1s ease;
@@ -4396,8 +4396,10 @@ body.app-is-busy {
     padding: 0.15rem 0 0.35rem 0.35rem;
 }
 
-.sidebar-group.is-open .sidebar-group-items,
-.sidebar-group.is-fixed .sidebar-group-items {
+/* Child combinator so an open parent group only reveals its own items — a
+   nested group keeps controlling its own collapse independently. */
+.sidebar-group.is-open > .sidebar-group-items,
+.sidebar-group.is-fixed > .sidebar-group-items {
     display: block;
 }
 
