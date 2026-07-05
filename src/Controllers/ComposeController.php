@@ -164,9 +164,9 @@ class ComposeController
             assert_folder_access($folderPath);
         }
 
-        $body = $this->appendSignature($body);
+        $body = $this->appendSignature($body, $fromEmail);
         if ($bodyHtml !== '') {
-            $bodyHtml = $this->appendSignatureHtml($bodyHtml);
+            $bodyHtml = $this->appendSignatureHtml($bodyHtml, $fromEmail);
         }
 
         $draft = compact('to', 'cc', 'bcc', 'subject', 'body', 'fromEmail', 'mode', 'folderPath', 'uid');
@@ -1055,26 +1055,41 @@ class ComposeController
         redirect('compose');
     }
 
-    private function appendSignature(string $body): string
+    private function signatureForFrom(string $fromEmail): string
     {
-        $user = Auth::user();
-        $sig = trim($user['signature'] ?? '');
+        // The signature belongs to the identity the mail is sent AS (the send-as
+        // alias), not necessarily the logged-in user — so an admin sending as Tink
+        // gets Tink's signature. Falls back to the logged-in user's signature if
+        // the From address isn't a linked alias.
+        $userId = mail_user_id_from_email(trim($fromEmail));
+        if ($userId !== null && $userId > 0) {
+            $row = \App\Database::fetchOne('SELECT signature FROM users WHERE id = ?', [$userId]);
+            if ($row !== null) {
+                return trim((string) ($row['signature'] ?? ''));
+            }
+        }
+
+        return trim((string) (Auth::user()['signature'] ?? ''));
+    }
+
+    private function appendSignature(string $body, string $fromEmail = ''): string
+    {
+        $sig = $this->signatureForFrom($fromEmail);
         if ($sig === '') {
             return $body;
         }
 
-        return rtrim($body) . "\n\n--\n" . $sig;
+        return rtrim($body) . "\n\n" . $sig;
     }
 
-    private function appendSignatureHtml(string $html): string
+    private function appendSignatureHtml(string $html, string $fromEmail = ''): string
     {
-        $user = Auth::user();
-        $sig = trim($user['signature'] ?? '');
+        $sig = $this->signatureForFrom($fromEmail);
         if ($sig === '') {
             return $html;
         }
 
-        return rtrim($html) . '<br><br>--<br>' . nl2br(e($sig));
+        return rtrim($html) . '<br><br>' . nl2br(e($sig));
     }
 
     /**

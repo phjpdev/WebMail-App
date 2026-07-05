@@ -4303,12 +4303,19 @@
     }
 
     function armMailListLoadingGuard() {
-        clearMailListLoadingGuard();
+        // Absolute deadline: if a guard is already armed, keep its original
+        // countdown instead of resetting it. Otherwise repeated arms (e.g. on
+        // column re-init) keep pushing the timeout back and the "Loading messages…"
+        // spinner can hang forever on a brand-new / empty folder that never settles.
+        if (mailListLoadingGuard) return;
         mailListLoadingGuard = window.setTimeout(function () {
             mailListLoadingGuard = null;
             setMailListLoading(false);
             syncListEmptyState();
-        }, 25000);
+            // Kick one more forced sync so a folder that never settled records its
+            // (possibly empty) sync state, rather than re-showing the spinner next time.
+            scheduleMailPoll(true, false);
+        }, 8000);
     }
 
     function setMailListLoading(loading) {

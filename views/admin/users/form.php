@@ -94,6 +94,12 @@ ob_start();
             </label>
         </div>
         <?php endif; ?>
+        <div class="form-group">
+            <label for="signature">Email signature</label>
+            <textarea id="signature" name="signature" rows="4"
+                      placeholder="e.g. John Tran&#10;Tax &amp; Business Consultant&#10;(571) 527-8120"><?= e($editUser['signature'] ?? '') ?></textarea>
+            <small class="form-hint">Added to the bottom of this user's outgoing emails. You can set it here on their behalf — they can also change it later under Settings.</small>
+        </div>
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Save</button>
             <a class="btn btn-secondary" href="<?= e(url('admin/users')) ?>">Cancel</a>

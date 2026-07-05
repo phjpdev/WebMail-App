@@ -771,6 +771,7 @@ class AdminController
             'alias_email' => trim($_POST['alias_email'] ?? ''),
             'folder_name' => trim($_POST['folder_name'] ?? ''),
             'display_parent_id' => (int) ($_POST['display_parent_id'] ?? 0),
+            'signature' => trim($_POST['signature'] ?? ''),
             'active' => isset($_POST['active']) ? 1 : 0,
             'must_change_password' => isset($_POST['must_change_password']) ? 1 : 0,
         ];

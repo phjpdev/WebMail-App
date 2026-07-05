@@ -32,7 +32,7 @@ class AdminUserService
 
     public function find(int $id): ?array
     {
-        $columns = 'id, name, username, role, active';
+        $columns = 'id, name, username, role, active, signature';
         if (schema_has_column('users', 'must_change_password')) {
             $columns .= ', must_change_password';
         }
@@ -76,15 +76,16 @@ class AdminUserService
         // creation fails we roll the whole thing back rather than leave a half
         // provisioned account.
         return Database::transaction(function () use ($data, $role, $passwordHash, $mustChange): int {
+            $signature = ($data['signature'] ?? '') !== '' ? $data['signature'] : null;
             if (schema_has_column('users', 'must_change_password')) {
                 Database::query(
-                    'INSERT INTO users (name, username, password_hash, role, active, must_change_password) VALUES (?, ?, ?, ?, 1, ?)',
-                    [$data['name'], $data['username'], $passwordHash, $role, $mustChange]
+                    'INSERT INTO users (name, username, password_hash, role, active, must_change_password, signature) VALUES (?, ?, ?, ?, 1, ?, ?)',
+                    [$data['name'], $data['username'], $passwordHash, $role, $mustChange, $signature]
                 );
             } else {
                 Database::query(
-                    'INSERT INTO users (name, username, password_hash, role, active) VALUES (?, ?, ?, ?, 1)',
-                    [$data['name'], $data['username'], $passwordHash, $role]
+                    'INSERT INTO users (name, username, password_hash, role, active, signature) VALUES (?, ?, ?, ?, 1, ?)',
+                    [$data['name'], $data['username'], $passwordHash, $role, $signature]
                 );
             }
 
@@ -305,13 +306,14 @@ class AdminUserService
         $hasMustChangeColumn = schema_has_column('users', 'must_change_password');
 
         if (!empty($data['password'])) {
-            $sql = 'UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?, active = ?';
+            $sql = 'UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?, active = ?, signature = ?';
             $params = [
                 $data['name'],
                 $data['username'],
                 password_hash($data['password'], PASSWORD_BCRYPT),
                 $data['role'],
                 (int) ($data['active'] ?? 1),
+                ($data['signature'] ?? '') !== '' ? $data['signature'] : null,
             ];
             if ($hasMustChangeColumn && $mustChange !== null) {
                 $sql .= ', must_change_password = ?';
@@ -321,12 +323,13 @@ class AdminUserService
             $params[] = $id;
             Database::query($sql, $params);
         } else {
-            $sql = 'UPDATE users SET name = ?, username = ?, role = ?, active = ?';
+            $sql = 'UPDATE users SET name = ?, username = ?, role = ?, active = ?, signature = ?';
             $params = [
                 $data['name'],
                 $data['username'],
                 $data['role'],
                 (int) ($data['active'] ?? 1),
+                ($data['signature'] ?? '') !== '' ? $data['signature'] : null,
             ];
             if ($hasMustChangeColumn && $mustChange !== null) {
                 $sql .= ', must_change_password = ?';
