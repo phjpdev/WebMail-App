@@ -4552,25 +4552,8 @@ function mail_correspondent_folders_sidebar_payload(?int $userId = null): array
  */
 function default_mail_folder(): string
 {
-    $user = App\Auth::user();
-    if ($user === null || ($user['role'] ?? '') !== 'employee') {
-        return 'INBOX';
-    }
-
-    try {
-        $row = App\Database::fetchOne(
-            'SELECT imap_path FROM folders WHERE linked_user_id = ? AND active = 1 LIMIT 1',
-            [(int) $user['id']]
-        );
-        if ($row !== null && !empty($row['imap_path'])) {
-            return employee_messages_imap_path((string) $row['imap_path']);
-        }
-    } catch (\Throwable $e) {
-        // ignore
-    }
-
-    // Employee without a linked folder cannot access INBOX — land on Sent instead.
-    return resolve_system_folder(['sent'], 'INBOX.Sent');
+    // Shared mailbox: every user (admin and employees) lands on the shared INBOX.
+    return 'INBOX';
 }
 
 /**
@@ -5289,7 +5272,10 @@ function find_mailbox_folder_by_leaf(string $parent, string $leafName): ?string
  */
 function resolve_system_folder(array $keywords, string $default): string
 {
-    $employeeInbox = employee_linked_inbox_path();
+    // Shared mailbox: system folders (Sent/Drafts/Archive/Junk/Trash) resolve to
+    // the shared INBOX.* for every user, not a per-employee subtree. Kept as a
+    // nulled variable so the (now-dead) employee branches below simply no-op.
+    $employeeInbox = null;
 
     try {
         $folders = \App\Services\FolderCache::load(skipUnreadRefresh: true)['folders'];
@@ -5662,7 +5648,10 @@ function sidebar_dedupe_primary_bucket(array $folders, string $bucket): array
 
 function folder_icon_type(string $path): string
 {
-    $employeeInbox = employee_linked_inbox_path();
+    // Shared mailbox: no per-user "own inbox". Every user icons folders the same
+    // way as admin — the logged-in employee's INBOX.<name>.Inbox is a name folder,
+    // not a second Inbox.
+    $employeeInbox = null;
     if ($employeeInbox !== null) {
         if (strcasecmp($path, $employeeInbox) === 0) {
             return 'inbox';
@@ -5690,7 +5679,9 @@ function folder_icon_type(string $path): string
  */
 function sidebar_folder_bucket(string $path): string
 {
-    $employeeInbox = employee_linked_inbox_path();
+    // Shared mailbox: bucket folders the same for everyone — the logged-in
+    // employee's own INBOX.<name>.Inbox is a name folder, not a second Inbox.
+    $employeeInbox = null;
     if ($employeeInbox !== null) {
         if (strcasecmp($path, $employeeInbox) === 0) {
             return 'inbox';

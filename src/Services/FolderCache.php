@@ -831,17 +831,8 @@ class FolderCache
      */
     private function pathsToRefreshUnread(array $allPaths): array
     {
-        $user = Auth::user();
-        if ($user === null || ($user['role'] ?? '') === 'admin') {
-            return $allPaths;
-        }
-
-        $prefix = $this->employeeMailboxPrefix((int) $user['id']);
-
-        return array_values(array_filter(
-            $allPaths,
-            fn (string $path) => $this->isEmployeeFolderAllowed($path, $prefix)
-        ));
+        // Shared mailbox: every user sees every folder, so refresh all badges.
+        return $allPaths;
     }
 
     /**
@@ -867,13 +858,10 @@ class FolderCache
             return false;
         }
 
-        if (($user['role'] ?? '') === 'admin') {
-            return true;
-        }
-
-        $prefix = $cache->employeeMailboxPrefix((int) $user['id']);
-
-        return $cache->isEmployeeFolderAllowed($path, $prefix);
+        // Shared mailbox: any authenticated user may open any folder that exists
+        // on the server (verified above). Admin-only controls are gated separately
+        // via requireAdmin() on the /admin routes.
+        return true;
     }
 
     /**
@@ -889,77 +877,11 @@ class FolderCache
             return $data;
         }
 
-        if ($user['role'] === 'admin') {
-            return $this->filterAdminFolders($data);
-        }
-
-        $prefix = $this->employeeMailboxPrefix((int) $user['id']);
-        $filtered = [];
-        $counts = [];
-
-        foreach ($data['folders'] as $folder) {
-            if ($this->isEmployeeFolderAllowed($folder['path'], $prefix)) {
-                $filtered[] = $folder;
-                $counts[$folder['path']] = self::sidebarUnreadForFolderPath(
-                    $folder['path'],
-                    $data['unread_counts'] ?? []
-                );
-            }
-        }
-
-        $existing = [];
-        foreach ($filtered as $folder) {
-            $existing[sidebar_mailbox_root_key((string) ($folder['path'] ?? ''))] = true;
-        }
-
-        foreach ($data['folders'] as $folder) {
-            $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || isset($existing[sidebar_mailbox_root_key($path)])) {
-                continue;
-            }
-            if (!employee_can_access_correspondent_folder($path)) {
-                continue;
-            }
-            $filtered[] = $folder;
-            $counts[$path] = self::sidebarUnreadForFolderPath($path, $data['unread_counts'] ?? []);
-            $existing[sidebar_mailbox_root_key($path)] = true;
-        }
-
-        foreach (employee_correspondent_folder_paths() as $corrPath) {
-            if ($corrPath === '') {
-                continue;
-            }
-            $corrRoot = employee_mailbox_root_prefix(self::resolvePath($corrPath));
-            if ($corrRoot === '' || isset($existing[sidebar_mailbox_root_key($corrRoot)])) {
-                continue;
-            }
-            $meta = folder_registry_meta($corrPath) ?? folder_registry_meta($corrRoot);
-            if ($meta === null) {
-                continue;
-            }
-            $resolved = self::resolvePath($corrRoot);
-            $filtered[] = [
-                'path' => $resolved,
-                'name' => $meta['name'],
-                'delimiter' => '.',
-            ];
-            $counts[$resolved] = self::sidebarUnreadForFolderPath($resolved, $data['unread_counts'] ?? []);
-            $existing[sidebar_mailbox_root_key($resolved)] = true;
-        }
-
-        $data['folders'] = $filtered;
-        $data['unread_counts'] = $counts;
-
-        ensure_session_writable();
-        if (isset($_SESSION[self::SESSION_KEY])) {
-            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
-                self::sanitizeUnreadCounts($counts)
-            );
-        }
-
-        $data = $this->filterEmployeeSidebarFolders($data, $prefix);
-
-        return $this->dedupeSidebarFoldersByMailboxRoot($data);
+        // Shared mailbox: every authenticated user — admin and employees alike —
+        // sees the same folders. Employees were previously scoped to their own
+        // INBOX.<name> subtree; the client requires one shared mailbox for all,
+        // so everyone now gets the same shared folder view.
+        return $this->filterAdminFolders($data);
     }
 
     /**
