@@ -61,6 +61,16 @@ ob_start();
                    placeholder="e.g. ankesh or support">
             <small class="form-hint">Creates an IMAP folder (INBOX.<em>name</em>) and links it to this user. Required for employees.</small>
         </div>
+        <div class="form-group" id="employee-group-field">
+            <label for="display_parent_id">Show under (sidebar group)</label>
+            <select id="display_parent_id" name="display_parent_id">
+                <option value="0">— Top level (no group)</option>
+                <?php foreach (($groupParents ?? []) as $parent): ?>
+                    <option value="<?= (int) $parent['id'] ?>">&#128193; <?= e($parent['label']) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <small class="form-hint">Optional — nests this employee's folder under the chosen group (e.g. Employees) in the sidebar right away, so you don't have to edit it afterward.</small>
+        </div>
         <?php endif; ?>
         <?php if ($isEdit && ($editUser['role'] ?? '') !== 'admin'): ?>
         <div class="form-group">
@@ -99,6 +109,7 @@ ob_start();
     var folder = document.getElementById('folder_name');
     var onboarding = document.getElementById('employee-onboarding-fields');
     var folderField = document.getElementById('employee-folder-field');
+    var groupField = document.getElementById('employee-group-field');
     if (!role || !email || !folder) return;
 
     function syncEmployeeFields() {
@@ -107,6 +118,7 @@ ob_start();
         folder.required = isEmployee;
         if (onboarding) onboarding.hidden = !isEmployee;
         if (folderField) folderField.hidden = !isEmployee;
+        if (groupField) groupField.hidden = !isEmployee;
     }
 
     role.addEventListener('change', syncEmployeeFields);

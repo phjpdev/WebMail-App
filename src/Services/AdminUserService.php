@@ -101,7 +101,8 @@ class AdminUserService
                     $data['name'],
                     $aliasEmail,
                     $folderName,
-                    $data['username']
+                    $data['username'],
+                    (int) ($data['display_parent_id'] ?? 0) ?: null
                 );
             }
 
@@ -120,7 +121,8 @@ class AdminUserService
         string $displayName,
         string $aliasEmail,
         ?string $folderName,
-        string $username
+        string $username,
+        ?int $displayParentId = null
     ): bool {
         $created = false;
         $folderService = new AdminFolderService();
@@ -149,6 +151,23 @@ class AdminUserService
             ], false);
             $created = true;
             $needsFolderCacheClear = true;
+        }
+
+        // Optional: nest the brand-new folder under a chosen sidebar group
+        // (display-only, e.g. "Employees") so the admin doesn't have to edit the
+        // folder afterward. Only touches a folder we just created.
+        if ($created && $displayParentId !== null && $displayParentId > 0 && $displayParentId !== $folderId) {
+            $parent = Database::fetchOne(
+                'SELECT id FROM folders WHERE id = ? AND active = 1',
+                [$displayParentId]
+            );
+            if ($parent !== null) {
+                Database::query(
+                    'UPDATE folders SET display_parent_id = ? WHERE id = ?',
+                    [$displayParentId, $folderId]
+                );
+                $needsFolderCacheClear = true;
+            }
         }
 
         $existingAlias = Database::fetchOne(
