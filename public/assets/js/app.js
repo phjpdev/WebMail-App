@@ -4128,6 +4128,31 @@
     }
 
     var lastUnreadCounts = {};
+    var lastNotifiedTotalUnread = null;
+    var newMailNotifyArmed = false; // armed a few seconds after load (see initLiveSync)
+
+    // Total unread across folders that actually notify (inbox + name folders;
+    // excludes Sent/Drafts/Junk/Trash via folderShowsUnreadBadge).
+    function notifiableUnreadTotal() {
+        var total = 0;
+        Object.keys(lastUnreadCounts || {}).forEach(function (path) {
+            if (folderShowsUnreadBadge(path)) total += (lastUnreadCounts[path] || 0);
+        });
+        return total;
+    }
+
+    // Fire the new-mail sound + desktop notification whenever the total unread
+    // goes up (new mail arrived in any folder). The first call just seeds the
+    // baseline so the initial page load never notifies.
+    function maybeNotifyNewMail() {
+        var total = notifiableUnreadTotal();
+        if (newMailNotifyArmed && lastNotifiedTotalUnread !== null && total > lastNotifiedTotalUnread) {
+            var delta = total - lastNotifiedTotalUnread;
+            playNewMailSound();
+            notifyNewMail(delta);
+        }
+        lastNotifiedTotalUnread = total;
+    }
 
     function applyUnreadCounts(counts) {
         if (!counts) return;
@@ -4138,6 +4163,7 @@
             lookup[key.toLowerCase()] = counts[key];
         });
         lastUnreadCounts = Object.assign({}, lastUnreadCounts, counts);
+        maybeNotifyNewMail();
 
         document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
             var path = link.getAttribute('data-folder-path');
@@ -4680,8 +4706,8 @@
 
                     if (visibleMailRowCount() === 0 && data.messages.length > 0) {
                         if (hydrateMailListFromPoll(data.messages, true)) {
-                            playNewMailSound();
-                            notifyNewMail(data.messages.length);
+                            // Notification is fired centrally from applyUnreadCounts
+                            // (on any total-unread increase), not per-folder here.
                             scheduleListSnippets(liveCard);
                         }
                         reorderMailListFromPoll(data.messages);
@@ -4731,8 +4757,7 @@
                             if (tbody) tbody.insertBefore(buildDesktopRow(msg, true), tbody.firstChild);
                             if (mobile) mobile.insertBefore(buildMobileCard(msg, true), mobile.firstChild);
                         });
-                        playNewMailSound();
-                        notifyNewMail(newMessages.length);
+                        // Notification handled centrally in applyUnreadCounts.
                         scheduleListSnippets(liveCard);
                     }
 
@@ -7758,6 +7783,35 @@
         }, delay);
     }
 
+    // Live new-mail detection: every ~30s ask the server to check the mail server
+    // for new mail (routing it into the right folder + updating the index), then
+    // refresh badges (which fires the sound/desktop notification on any increase)
+    // and light-sync the open folder so new rows appear. The IMAP work runs
+    // server-side AFTER an instant response and releases the session lock, so
+    // opening a folder or a message stays as fast as before.
+    function initLiveSync() {
+        if (!document.getElementById('mail-workspace')) return;
+        // Suppress notifications during the initial page-load settle so the badge
+        // counts accumulating to their real baseline don't false-fire.
+        window.setTimeout(function () { newMailNotifyArmed = true; }, 6000);
+        var intervalMs = 30000;
+        window.setInterval(function () {
+            if (isPostSendQuiet()) return;
+            fetch(apiUrl('mail/live-sync'), {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' }
+            })
+                .then(function (r) { return r.json(); })
+                .then(function () {
+                    window.setTimeout(function () {
+                        refreshUnreadBadges(true);
+                        scheduleMailPoll(false);
+                    }, 3000);
+                })
+                .catch(function () {});
+        }, intervalMs);
+    }
+
     function initStatusPage() {
         var card = document.getElementById('status-card');
         if (!card) return;
@@ -7853,6 +7907,7 @@
         initStatusPage();
         initSidebarBadgesOnLoad();
         initMailBootstrap();
+        initLiveSync();
         initComposePanel();
         initReadViewActions();
         initConfirmForms();

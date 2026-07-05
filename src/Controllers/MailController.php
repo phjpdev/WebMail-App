@@ -492,6 +492,37 @@ class MailController
     }
 
     /**
+     * Periodic live check for new mail — polled roughly every ~30s while the
+     * webmail is open. Responds instantly with the current counts, then (after the
+     * session lock is released, so it never blocks an interactive folder/message
+     * open) routes any new INBOX mail into the name folders and reconciles this
+     * session's sidebar badges from the freshly-synced index. The existing light
+     * polls then surface the new rows + bumped counts and fire the sound / desktop
+     * notification.
+     */
+    public function liveSync(): void
+    {
+        requireAuth();
+
+        json_response_then(
+            ['ok' => true, 'unread_counts' => FolderCache::sidebarUnreadCountsFromSession()],
+            function (): void {
+                // Route new INBOX mail into the name folders. A shared file lock in
+                // runBackground guarantees only one filter runs at a time across all
+                // open sessions, and it's cheap when the inbox is idle; the 8s cap
+                // bounds a heavy run. Forced (not throttled) so detection stays near
+                // the ~30s poll cadence. It syncs the destination folders' headers
+                // into the index and updates their badges.
+                FilterService::runBackground(true, 8);
+
+                // Reflect any newly-routed mail in THIS session's sidebar badges
+                // (from the updated index) so it appears without a page refresh.
+                $this->reconcileSidebarBadgesFromIndex();
+            }
+        );
+    }
+
+    /**
      * Warm only the active folder and inbox on bootstrap — not every sidebar folder.
      *
      * @param list<array{path: string, name: string}> $folders

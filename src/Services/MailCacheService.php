@@ -1223,6 +1223,12 @@ class MailCacheService
         $to = (string) ($msg['to'] ?? '');
         $cc = (string) ($msg['cc'] ?? '');
 
+        // seen uses GREATEST(seen, VALUES(seen)) below so a background re-sync never
+        // downgrades a read message: a read here marks IMAP \Seen with a DEFERRED
+        // push, and a sync that runs before that push lands would otherwise flip
+        // seen 1->0 and the unread badge would reappear. A deliberate mark-unread
+        // sets the shared index seen=0 directly, so read reliability wins here.
+
         Database::query(
             'INSERT INTO mail_index
                 (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, flagged, has_attachment, size, synced_at)
@@ -1233,7 +1239,7 @@ class MailCacheService
                 cc_addrs = COALESCE(NULLIF(VALUES(cc_addrs), \'\'), cc_addrs),
                 subject = VALUES(subject),
                 msg_date = VALUES(msg_date),
-                seen = VALUES(seen),
+                seen = GREATEST(seen, VALUES(seen)),
                 flagged = VALUES(flagged),
                 has_attachment = VALUES(has_attachment),
                 size = VALUES(size),
@@ -1998,6 +2004,11 @@ class MailCacheService
                 // Phantom UNSEEN — overview says read; clear stale server flag.
                 $imap->markSeen($folderPath, $uid);
                 self::updateIndexSeen($folderPath, $uid, true);
+            } elseif (self::effectiveSeen($folderPath, $uid)) {
+                // Our shared index already has it read (e.g. a read whose deferred
+                // IMAP \Seen push hasn't landed yet). Push the read to IMAP instead
+                // of reverting the index — otherwise the unread badge reappears.
+                $imap->markSeen($folderPath, $uid);
             } else {
                 self::updateIndexSeen($folderPath, $uid, false);
             }

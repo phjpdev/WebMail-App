@@ -688,8 +688,10 @@ function user_preferences(?array $user = null): array
 
     $defaults = [
         'poll_interval' => config('app')['mail_poll_interval'],
-        'sound_enabled' => false,
-        'notify_enabled' => false,
+        // New-mail sound + desktop notifications on by default; users can turn
+        // them off in Settings (the browser still asks permission once).
+        'sound_enabled' => true,
+        'notify_enabled' => true,
         'theme' => 'light',
     ];
 
