@@ -303,15 +303,16 @@ class MailController
         $preview = mail_get_post_send_preview($folderPath);
         $previewWouldShow = $preview !== null
             && mail_post_send_preview_visible_in_folder($folderPath, $preview);
+        // Only show the "Loading messages…" state when the folder actually has
+        // mail to load that isn't in the index yet — a post-send preview, or an
+        // unread badge running ahead of the (not-yet-synced) index. A brand-new or
+        // empty folder has nothing to await, so it renders "No messages" straight
+        // away instead of a spinner that could hang on the very first open.
         $listAwaitingSync = $query === ''
             && $imapConnected
             && empty($list['messages'])
             && (
                 $previewWouldShow
-                || (
-                    ($servedFromCache && ($badgePending || !empty($list['stale'])))
-                    && !\App\Services\MailCacheService::hasFolderData($folderPath)
-                )
                 || (
                     MailCacheService::badgeAheadOfIndex($folderPath)
                     && !\App\Services\MailCacheService::hasFolderData($folderPath)
