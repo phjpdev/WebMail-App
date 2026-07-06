@@ -5936,7 +5936,10 @@ function admin_folder_is_deletable(array $folder): bool
 function admin_folder_allows_subfolders(array $folder): bool
 {
     $type = (string) ($folder['folder_type'] ?? '');
-    if (in_array($type, ['inbox', 'sent', 'other', 'spam', 'trash', 'system'], true)) {
+    // Employee folders are a person's mailbox (a leaf), not a container — adding a
+    // subfolder under them (INBOX.Erik.Inbox.X) doesn't fit the model. Only real
+    // group/client folders (Employees, New-Employees, …) can hold subfolders.
+    if (in_array($type, ['inbox', 'sent', 'other', 'spam', 'trash', 'system', 'employee'], true)) {
         return false;
     }
 
