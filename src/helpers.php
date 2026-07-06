@@ -8845,6 +8845,41 @@ function mail_build_correspondent_conversation_thread(
 
     $entries = mail_supplement_correspondent_thread_entries($entries);
 
+    // The collection above matches by SUBJECT only, so a same-subject message to a
+    // DIFFERENT person (e.g. "Test" to Harry) leaks into this conversation. Scope
+    // the thread to the opened message's actual correspondent(s): the folder owner
+    // is the linked user, and anyone else on the opened message's from/to/cc is a
+    // correspondent. Every kept entry must involve one of them — except the opened
+    // message itself and any not-yet-delivered pending reply, which we always keep.
+    $ownerUserId = mail_linked_user_id_for_inbox($folderPath);
+    $ownerEmails = $ownerUserId !== null ? array_map('strtolower', mail_user_emails($ownerUserId)) : [];
+    $mailboxEmail = strtolower((string) (config('mail')['mailbox_email'] ?? ''));
+    $threadCorrespondents = [];
+    foreach (parse_email_list(
+        ($message['from'] ?? '') . ',' . ($message['to'] ?? '') . ',' . ($message['cc'] ?? '')
+    )['valid'] as $addr) {
+        $addr = strtolower(trim($addr));
+        if ($addr !== '' && !in_array($addr, $ownerEmails, true) && $addr !== $mailboxEmail) {
+            $threadCorrespondents[] = $addr;
+        }
+    }
+    if ($threadCorrespondents !== []) {
+        $resolvedCurrent = \App\Services\FolderCache::resolvePath($folderPath);
+        $entries = array_values(array_filter($entries, static function ($entry) use ($threadCorrespondents, $uid, $resolvedCurrent): bool {
+            if (!is_array($entry)) {
+                return false;
+            }
+            if (!empty($entry['is_pending_reply'])) {
+                return true;
+            }
+            if ((int) ($entry['imap_uid'] ?? 0) === $uid
+                && strcasecmp(\App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? '')), $resolvedCurrent) === 0) {
+                return true;
+            }
+            return mail_message_involves_user($entry, $threadCorrespondents);
+        }));
+    }
+
     if ($entries === []) {
         return [];
     }

@@ -886,13 +886,16 @@ class ComposeController
      */
     private function buildReplyAllCc(array $message, string $replyFrom, string $folderPath = '', string $replyTo = ''): string
     {
-        $aliasService = new AliasService();
-        $ownEmails = array_map(
-            fn ($a) => strtolower($a['email']),
-            $aliasService->listActive()
-        );
-        $ownEmails[] = strtolower(config('mail')['mailbox_email']);
-        $ownEmails[] = strtolower($replyFrom);
+        // Shared-mailbox model: every employee address (erik@, harry@, jack@ …) is
+        // an active alias of the ONE mailbox. Excluding ALL active aliases here
+        // dropped every internal recipient, so reply-all produced an empty Cc and
+        // behaved exactly like reply. Only exclude the identity we're sending AS
+        // (and the mailbox's own primary address), so colleagues already on the
+        // thread stay in the loop on a reply-all.
+        $ownEmails = [
+            strtolower((string) (config('mail')['mailbox_email'] ?? '')),
+            strtolower($replyFrom),
+        ];
 
         $replyToEmail = strtolower(normalize_email_token($replyTo));
         if ($replyToEmail !== '') {
