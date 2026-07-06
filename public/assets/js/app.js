@@ -7794,7 +7794,13 @@
         // Suppress notifications during the initial page-load settle so the badge
         // counts accumulating to their real baseline don't false-fire.
         window.setTimeout(function () { newMailNotifyArmed = true; }, 6000);
-        var intervalMs = 30000;
+        // GENTLE variant: a single lightweight request every 2 minutes. The server
+        // does the filter + reconcile and returns fresh counts in this one response,
+        // so we just apply them (which bumps the badge and fires the new-mail
+        // sound/desktop notification on any increase). A light cache-only poll then
+        // lets a new row show in the currently-open folder. This replaced the old
+        // 3-request/30s version that overloaded the shared host.
+        var intervalMs = 120000;
         window.setInterval(function () {
             if (isPostSendQuiet()) return;
             fetch(apiUrl('mail/live-sync'), {
@@ -7802,11 +7808,11 @@
                 headers: { Accept: 'application/json' }
             })
                 .then(function (r) { return r.json(); })
-                .then(function () {
-                    window.setTimeout(function () {
-                        refreshUnreadBadges(true);
-                        scheduleMailPoll(false);
-                    }, 3000);
+                .then(function (data) {
+                    if (data && data.unread_counts) {
+                        applyUnreadCounts(data.unread_counts);
+                    }
+                    scheduleMailPoll(false);
                 })
                 .catch(function () {});
         }, intervalMs);
@@ -7907,7 +7913,7 @@
         initStatusPage();
         initSidebarBadgesOnLoad();
         initMailBootstrap();
-        initLiveSync();
+        initLiveSync();  // gentle variant: one lightweight request every 2 min
         initComposePanel();
         initReadViewActions();
         initConfirmForms();

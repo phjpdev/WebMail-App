@@ -334,7 +334,15 @@ function json_response_then(array $data, callable $after, int $status = 200): ne
 
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
-    header('Connection: close');
+    // `Connection` is a forbidden hop-by-hop header on HTTP/2+ — sending it makes
+    // the browser reject the whole stream (ERR_HTTP2_PROTOCOL_ERROR), which on a
+    // multiplexed HTTP/2 connection can also break sibling requests. Only hint
+    // close on HTTP/1.x, where it lets the client stop waiting while we finish the
+    // background work in this process.
+    $proto = (string) ($_SERVER['SERVER_PROTOCOL'] ?? '');
+    if (stripos($proto, 'HTTP/2') === false && stripos($proto, 'HTTP/3') === false) {
+        header('Connection: close');
+    }
     $body = json_encode_safe($data);
     header('Content-Length: ' . (string) strlen($body));
     echo $body;
@@ -2968,16 +2976,13 @@ function mail_resolve_correspondent_thread_context(string $folderPath, ?array $m
  */
 function employee_correspondent_privacy_emails(string $folderPath): ?array
 {
-    $user = App\Auth::user();
-    if ($user === null || ($user['role'] ?? '') !== 'employee') {
-        return null;
-    }
-
-    if (!employee_is_correspondent_folder($folderPath)) {
-        return null;
-    }
-
-    return mail_user_emails((int) ($user['id'] ?? 0));
+    // Shared-mailbox model: every user (admin AND employees) sees the exact same
+    // folders and messages — the only difference is the Admin panel. So there is
+    // no per-employee correspondent privacy scoping; returning null makes an
+    // employee behave like admin at every call site (message read/pane, list
+    // filtering, reply, badge). Previously this returned the employee's own emails
+    // for correspondent folders, which 404'd any message that didn't involve them.
+    return null;
 }
 
 /**

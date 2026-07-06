@@ -504,22 +504,25 @@ class MailController
     {
         requireAuth();
 
-        json_response_then(
-            ['ok' => true, 'unread_counts' => FolderCache::sidebarUnreadCountsFromSession()],
-            function (): void {
-                // Route new INBOX mail into the name folders. A shared file lock in
-                // runBackground guarantees only one filter runs at a time across all
-                // open sessions, and it's cheap when the inbox is idle; the 8s cap
-                // bounds a heavy run. Forced (not throttled) so detection stays near
-                // the ~30s poll cadence. It syncs the destination folders' headers
-                // into the index and updates their badges.
-                FilterService::runBackground(true, 8);
+        // Release the session lock up front so this background poll never blocks an
+        // interactive folder-open or message-open (those need the session) while it
+        // does its IMAP/index work below.
+        releaseSessionLock();
 
-                // Reflect any newly-routed mail in THIS session's sidebar badges
-                // (from the updated index) so it appears without a page refresh.
-                $this->reconcileSidebarBadgesFromIndex();
-            }
-        );
+        // Route new INBOX mail into the name folders. Throttled + shared-lock guarded
+        // (filter_min_interval): with many sessions polling in parallel, only ONE
+        // filter runs per interval across all of them — a fast no-op the rest of the
+        // time. This is the gentle variant (a single ~2-min poll per session), sized
+        // for shared hosting after the 3-request/30s version overloaded it.
+        FilterService::runBackground(false);
+
+        // Reflect any newly-routed mail in THIS session's sidebar badges from the
+        // updated index (mostly DB work; an IMAP STATUS only for not-yet-warmed
+        // folders), then return the FRESH counts so the client bumps the badge and
+        // fires the new-mail sound/notification in this one request — no follow-ups.
+        $this->reconcileSidebarBadgesFromIndex();
+
+        json_response(['ok' => true, 'unread_counts' => FolderCache::sidebarUnreadCountsFromSession()]);
     }
 
     /**
