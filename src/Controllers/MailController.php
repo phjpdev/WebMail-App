@@ -2147,22 +2147,16 @@ class MailController
                 continue;
             }
 
-            $raw = $imap->fetchRawMessage($fromPath, $uid);
-            if ($raw === null || $raw === '') {
+            if (!mail_unspam_rescue_message($imap, $fromPath, $uid, $resolvedInbox)) {
+                app_log('Un-spam rescue failed for uid ' . $uid . ': ' . $imap->getLastError());
                 $remaining[] = $uid;
                 continue;
             }
 
-            $wasSeen = $imap->isSeen($fromPath, $uid);
-            $cleaned = mail_unspam_raw_message($raw);
-            if (!$imap->appendMessage($resolvedInbox, $cleaned, $wasSeen ? '\\Seen' : null)) {
-                app_log('Un-spam rescue append failed for uid ' . $uid . ': ' . $imap->getLastError());
-                $remaining[] = $uid;
-                continue;
-            }
+            // Trust this sender going forward: their future mail is auto-rescued
+            // from Junk by FilterService (so it stops landing in Junk at all).
+            mail_allowlist_add((string) ($headers['from'] ?? ''));
 
-            // The cleaned copy is now in the inbox; drop the tagged original.
-            $imap->deleteMessage($fromPath, $uid);
             MailCacheService::removeMessages($fromPath, [$uid]);
             $removed[$fromPath] = array_merge($removed[$fromPath] ?? [], [$uid]);
             $allMovedUids[] = $uid;

@@ -551,6 +551,13 @@ class FilterService
             $result['processed']++;
         }
 
+        // Auto-rescue: pull allow-listed senders' mail back out of Junk (the host's
+        // spam filter drops ***SPAM***-tagged mail there before we ever see it), and
+        // clean the markers so it stays. Cheap no-op when the allow-list is empty.
+        foreach ($this->rescueAllowlistedFromJunk() as $path) {
+            $refreshUnreadPaths[$path] = true;
+        }
+
         if ($refreshUnreadPaths !== []) {
             $result['refresh_unread_paths'] = array_keys($refreshUnreadPaths);
         }
@@ -558,6 +565,51 @@ class FilterService
         $result['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
 
         return $result;
+    }
+
+    /**
+     * Move messages from allow-listed senders out of Junk into the inbox, stripping
+     * the host's spam markers so they aren't re-junked. Returns the folder paths
+     * that changed (for badge refresh).
+     *
+     * @return list<string>
+     */
+    private function rescueAllowlistedFromJunk(): array
+    {
+        $allow = mail_allowlist_all();
+        if ($allow === []) {
+            return [];
+        }
+        $allowSet = array_fill_keys($allow, true);
+
+        $source = (string) (config('app')['filter_source_folder'] ?? 'INBOX');
+        $inbox = FolderCache::resolvePath($source);
+        $junk = FolderCache::resolvePath(mail_spam_folder_for_delivery($source));
+        if ($inbox === '' || $junk === '' || strcasecmp($inbox, $junk) === 0) {
+            return [];
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return [];
+        }
+
+        $rescued = 0;
+        foreach ($imap->listMessages($junk, 1, 50)['messages'] as $m) {
+            $uid = (int) ($m['uid'] ?? 0);
+            $from = parse_email_list((string) ($m['from'] ?? ''))['valid'] ?? [];
+            if ($uid <= 0 || $from === [] || !isset($allowSet[strtolower(trim((string) $from[0]))])) {
+                continue;
+            }
+            if (mail_unspam_rescue_message($imap, $junk, $uid, $inbox)) {
+                MailCacheService::removeMessages($junk, [$uid]);
+                $rescued++;
+            }
+        }
+
+        ImapService::closeShared();
+
+        return $rescued > 0 ? [$junk, $inbox] : [];
     }
 
     /**

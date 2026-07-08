@@ -5213,6 +5213,90 @@ function mail_unspam_raw_message(string $raw): string
 }
 
 /**
+ * Reduce a From value ("Name <a@b.com>" or "a@b.com") to a bare, comparable email.
+ */
+function mail_allowlist_normalize(string $address): string
+{
+    $parsed = parse_email_list($address)['valid'] ?? [];
+    if ($parsed !== []) {
+        return strtolower(trim((string) $parsed[0]));
+    }
+
+    return strtolower(trim($address));
+}
+
+/**
+ * Trust a sender: their future mail is auto-rescued from Junk (see FilterService).
+ * Called when a user rescues one of their messages from Junk into the inbox.
+ */
+function mail_allowlist_add(string $address): void
+{
+    $email = mail_allowlist_normalize($address);
+    if ($email === '' || !str_contains($email, '@')) {
+        return;
+    }
+    try {
+        App\Database::query('INSERT IGNORE INTO spam_allowlist (email) VALUES (?)', [$email]);
+    } catch (\Throwable $e) {
+        app_log('Allowlist add failed for ' . $email . ': ' . $e->getMessage());
+    }
+}
+
+function mail_allowlist_has(string $address): bool
+{
+    $email = mail_allowlist_normalize($address);
+    if ($email === '') {
+        return false;
+    }
+    try {
+        return App\Database::fetchOne('SELECT 1 FROM spam_allowlist WHERE email = ? LIMIT 1', [$email]) !== null;
+    } catch (\Throwable) {
+        return false;
+    }
+}
+
+/**
+ * @return list<string> lowercased emails currently on the spam allow-list
+ */
+function mail_allowlist_all(): array
+{
+    try {
+        $rows = App\Database::query('SELECT email FROM spam_allowlist')->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    return array_values(array_filter(array_map(
+        static fn ($r) => strtolower(trim((string) ($r['email'] ?? ''))),
+        $rows
+    )));
+}
+
+/**
+ * Rewrite a Junk message clean (strip ***SPAM*** subject + X-Spam headers, keeping
+ * Message-ID/body) into the inbox and drop the tagged original, so the mail host's
+ * spam sieve won't re-junk it. Returns true on success. Shared by the manual
+ * "move to Inbox" rescue and the allow-list auto-rescue.
+ */
+function mail_unspam_rescue_message(App\Services\ImapService $imap, string $fromPath, int $uid, string $inboxPath): bool
+{
+    $raw = $imap->fetchRawMessage($fromPath, $uid);
+    if ($raw === null || $raw === '') {
+        return false;
+    }
+
+    $wasSeen = $imap->isSeen($fromPath, $uid);
+    $cleaned = mail_unspam_raw_message($raw);
+    if (!$imap->appendMessage($inboxPath, $cleaned, $wasSeen ? '\\Seen' : null)) {
+        return false;
+    }
+
+    $imap->deleteMessage($fromPath, $uid);
+
+    return true;
+}
+
+/**
  * The Junk folder that spam for a given delivery folder should land in — the
  * recipient's own Junk (INBOX.Erik.Inbox -> INBOX.Erik.Junk), or the shared
  * INBOX.Junk for catch-all/shared inbox mail. Falls back to the canonical Junk
