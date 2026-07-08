@@ -174,10 +174,18 @@ class FilterService
      *
      * @param list<int> $uids
      */
-    public static function preserveManualInboxPlacementFromIndex(string $inboxPath, array $uids): void
+    /**
+     * Record the Message-IDs of messages the user is moving INTO the filter inbox
+     * as already-processed, so the filter won't re-route them (e.g. bounce a
+     * rescued ***SPAM*** message straight back to Junk). Must be called with the
+     * SOURCE folder + uids BEFORE the cache relocate deletes those source rows —
+     * that is where the Message-IDs still live.
+     */
+    public static function preserveManualInboxPlacementFromIndex(string $sourceIndexPath, array $uids, string $inboxPath): void
     {
+        $sourceIndexPath = FolderCache::resolvePath($sourceIndexPath);
         $inboxPath = FolderCache::resolvePath($inboxPath);
-        if ($inboxPath === '') {
+        if ($sourceIndexPath === '' || $inboxPath === '') {
             return;
         }
 
@@ -188,9 +196,12 @@ class FilterService
             }
             $row = Database::fetchOne(
                 'SELECT message_id FROM mail_index WHERE folder_path = ? AND imap_uid = ? LIMIT 1',
-                [$inboxPath, $uid]
+                [$sourceIndexPath, $uid]
             );
-            $service->markProcessed($uid, $inboxPath, $row['message_id'] ?? null);
+            $messageId = $row['message_id'] ?? null;
+            if ($messageId !== null && $messageId !== '') {
+                $service->markProcessed($uid, $inboxPath, $messageId);
+            }
         }
     }
 
@@ -413,6 +424,7 @@ class FilterService
         $batchLimit = config('app')['filter_batch_limit'];
         $needsBody = $this->rulesNeedBody($rules);
         $processedUids = $this->loadProcessedUids($sourceFolder);
+        $processedMessageIds = $this->loadProcessedMessageIds($sourceFolder);
 
         $imap = new ImapService();
         if (!$imap->connect()) {
@@ -458,6 +470,17 @@ class FilterService
         foreach ($candidates as $uid) {
             $headers = $imap->fetchFilterHeaders($sourceFolder, $uid);
             if ($headers === null) {
+                continue;
+            }
+
+            // Already handled this exact message before? Then it's back in INBOX
+            // because the user deliberately moved it here (e.g. rescued it from
+            // Junk). Respect that: record this new uid and DON'T re-route it — this
+            // is what stops a ***SPAM***-subject message bouncing straight back to
+            // Junk every time it's moved to the Inbox.
+            $normalizedId = mail_normalize_thread_id((string) ($headers['message_id'] ?? ''));
+            if ($normalizedId !== '' && isset($processedMessageIds[$normalizedId])) {
+                $this->markProcessed($uid, $sourceFolder, $headers['message_id'] ?? null);
                 continue;
             }
 
@@ -785,6 +808,33 @@ class FilterService
         $map = [];
         foreach ($rows as $row) {
             $map[(int) $row['imap_uid']] = true;
+        }
+
+        return $map;
+    }
+
+    /**
+     * Message-ids already routed for this source folder, normalized for comparison.
+     * Used to skip a message the user has deliberately moved back (e.g. rescued
+     * from Junk): after an IMAP move it reappears in INBOX with a NEW uid that isn't
+     * in the processed-uid set, but its Message-ID is already known.
+     *
+     * @return array<string, true>
+     */
+    private function loadProcessedMessageIds(string $folderPath): array
+    {
+        $rows = Database::query(
+            "SELECT message_id FROM processed_messages
+             WHERE folder_path = ? AND message_id IS NOT NULL AND message_id <> ''",
+            [$folderPath]
+        )->fetchAll();
+
+        $map = [];
+        foreach ($rows as $row) {
+            $id = mail_normalize_thread_id((string) $row['message_id']);
+            if ($id !== '') {
+                $map[$id] = true;
+            }
         }
 
         return $map;

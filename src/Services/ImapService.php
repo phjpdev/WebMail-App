@@ -272,6 +272,10 @@ class ImapService
                 'flagged' => (bool) ($row->flagged ?? false),
                 'size' => (int) ($row->size ?? 0),
                 'has_attachment' => false,
+                // Reply-chain headers (from the overview) for Gmail-style threading.
+                'message_id' => (string) ($row->message_id ?? ''),
+                'in_reply_to' => (string) ($row->in_reply_to ?? ''),
+                'references' => (string) ($row->references ?? ''),
             ];
         }
 

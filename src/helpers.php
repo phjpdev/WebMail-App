@@ -5172,6 +5172,47 @@ function mail_headers_indicate_spam(array $headers): bool
 }
 
 /**
+ * Strip server-added spam markers from a raw RFC822 message so the mail host's own
+ * spam sieve no longer re-classifies it: removes the "***SPAM***" subject prefix
+ * and every X-Spam-* header (with folded continuations). Everything else —
+ * crucially the Message-ID, and the body — is preserved untouched. Used when a
+ * user rescues a message from Junk into the inbox: without this the host keeps
+ * moving the ***SPAM***-subject message straight back to Junk.
+ */
+function mail_unspam_raw_message(string $raw): string
+{
+    $eol = str_contains($raw, "\r\n") ? "\r\n" : "\n";
+    $pos = strpos($raw, $eol . $eol);
+    if ($pos === false) {
+        return $raw;
+    }
+
+    $headerBlock = substr($raw, 0, $pos);
+    $rest = substr($raw, $pos); // blank-line boundary + body, left untouched
+
+    $out = [];
+    $skipContinuation = false;
+    foreach (explode($eol, $headerBlock) as $line) {
+        // Drop folded continuation lines that belong to a header we're removing.
+        if ($skipContinuation && $line !== '' && ($line[0] === ' ' || $line[0] === "\t")) {
+            continue;
+        }
+        $skipContinuation = false;
+
+        if (preg_match('/^X-Spam-[A-Za-z-]*\s*:/i', $line)) {
+            $skipContinuation = true;
+            continue;
+        }
+        if (preg_match('/^Subject\s*:/i', $line)) {
+            $line = preg_replace('/\*\*\*SPAM\*\*\*\s*/i', '', $line);
+        }
+        $out[] = $line;
+    }
+
+    return implode($eol, $out) . $rest;
+}
+
+/**
  * The Junk folder that spam for a given delivery folder should land in — the
  * recipient's own Junk (INBOX.Erik.Inbox -> INBOX.Erik.Junk), or the shared
  * INBOX.Junk for catch-all/shared inbox mail. Falls back to the canonical Junk
@@ -8811,6 +8852,56 @@ function mail_find_correspondent_outbound_for_subject(
 }
 
 /**
+ * Normalize a single Message-ID to a bare, comparable token (no angle brackets,
+ * lowercased). Takes the first <...> token when several are present.
+ */
+function mail_normalize_thread_id(string $id): string
+{
+    $id = trim($id);
+    if (preg_match('/<([^>]+)>/', $id, $m)) {
+        $id = $m[1];
+    }
+
+    return strtolower(trim($id, " \t\r\n<>"));
+}
+
+/**
+ * The set of message-ids that place a row in a reply chain: its own Message-ID
+ * plus everything it references (In-Reply-To + References). Two rows are in the
+ * same conversation when these sets intersect (transitively).
+ *
+ * @param array<string, mixed> $row
+ * @return array<string, true>
+ */
+function mail_thread_ids_from_row(array $row): array
+{
+    $ids = [];
+    foreach (['message_id', 'in_reply_to'] as $field) {
+        $norm = mail_normalize_thread_id((string) ($row[$field] ?? ''));
+        if ($norm !== '') {
+            $ids[$norm] = true;
+        }
+    }
+
+    $refs = (string) ($row['references_ids'] ?? '');
+    if ($refs !== '') {
+        if (preg_match_all('/<([^>]+)>/', $refs, $m)) {
+            $tokens = $m[1];
+        } else {
+            $tokens = preg_split('/[\s,]+/', $refs) ?: [];
+        }
+        foreach ($tokens as $token) {
+            $norm = mail_normalize_thread_id((string) $token);
+            if ($norm !== '') {
+                $ids[$norm] = true;
+            }
+        }
+    }
+
+    return $ids;
+}
+
+/**
  * Full correspondent-folder thread: outbound copies + inbound replies in chronological order.
  *
  * @return list<array<string, mixed>>
@@ -8845,39 +8936,115 @@ function mail_build_correspondent_conversation_thread(
 
     $entries = mail_supplement_correspondent_thread_entries($entries);
 
-    // The collection above matches by SUBJECT only, so a same-subject message to a
-    // DIFFERENT person (e.g. "Test" to Harry) leaks into this conversation. Scope
-    // the thread to the opened message's actual correspondent(s): the folder owner
-    // is the linked user, and anyone else on the opened message's from/to/cc is a
-    // correspondent. Every kept entry must involve one of them — except the opened
-    // message itself and any not-yet-delivered pending reply, which we always keep.
-    $ownerUserId = mail_linked_user_id_for_inbox($folderPath);
-    $ownerEmails = $ownerUserId !== null ? array_map('strtolower', mail_user_emails($ownerUserId)) : [];
-    $mailboxEmail = strtolower((string) (config('mail')['mailbox_email'] ?? ''));
-    $threadCorrespondents = [];
-    foreach (parse_email_list(
-        ($message['from'] ?? '') . ',' . ($message['to'] ?? '') . ',' . ($message['cc'] ?? '')
-    )['valid'] as $addr) {
-        $addr = strtolower(trim($addr));
-        if ($addr !== '' && !in_array($addr, $ownerEmails, true) && $addr !== $mailboxEmail) {
-            $threadCorrespondents[] = $addr;
+    // The collection above matches by SUBJECT only, so separate emails that reuse
+    // a subject (e.g. two different "Test" emails) get stitched together. Scope the
+    // conversation to the opened message's actual REPLY CHAIN using message-ids
+    // (Gmail-style): gather each row's {Message-ID ∪ In-Reply-To ∪ References} from
+    // the index and keep only rows transitively connected to the opened message.
+    $resolvedCurrent = \App\Services\FolderCache::resolvePath($folderPath);
+    $threadIdsByKey = [];
+    $uidsByFolder = [$resolvedCurrent => [$uid]];
+    foreach ($entries as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
+        $ef = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
+        $eu = (int) ($entry['imap_uid'] ?? 0);
+        if ($ef !== '' && $eu > 0) {
+            $uidsByFolder[$ef][] = $eu;
         }
     }
-    if ($threadCorrespondents !== []) {
-        $resolvedCurrent = \App\Services\FolderCache::resolvePath($folderPath);
-        $entries = array_values(array_filter($entries, static function ($entry) use ($threadCorrespondents, $uid, $resolvedCurrent): bool {
+    foreach ($uidsByFolder as $scanFolder => $scanUids) {
+        $scanUids = array_values(array_unique(array_filter($scanUids, static fn ($u) => (int) $u > 0)));
+        if ($scanFolder === '' || $scanUids === []) {
+            continue;
+        }
+        $placeholders = implode(',', array_fill(0, count($scanUids), '?'));
+        try {
+            $rows = App\Database::query(
+                "SELECT imap_uid, message_id, in_reply_to, references_ids
+                 FROM mail_index WHERE folder_path = ? AND imap_uid IN ($placeholders)",
+                array_merge([$scanFolder], $scanUids)
+            )->fetchAll();
+        } catch (\Throwable) {
+            $rows = [];
+        }
+        foreach ($rows as $r) {
+            $threadIdsByKey[$scanFolder . '|' . (int) $r['imap_uid']] = mail_thread_ids_from_row($r);
+        }
+    }
+
+    $openedIds = $threadIdsByKey[$resolvedCurrent . '|' . $uid] ?? [];
+
+    if ($openedIds !== []) {
+        // Transitive closure of the opened message's chain over the candidate set.
+        $closure = $openedIds;
+        do {
+            $added = false;
+            foreach ($entries as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+                $key = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''))
+                    . '|' . (int) ($entry['imap_uid'] ?? 0);
+                $ids = $threadIdsByKey[$key] ?? [];
+                if ($ids === [] || array_intersect_key($ids, $closure) === []) {
+                    continue;
+                }
+                foreach ($ids as $id => $_) {
+                    if (!isset($closure[$id])) {
+                        $closure[$id] = true;
+                        $added = true;
+                    }
+                }
+            }
+        } while ($added);
+
+        $entries = array_values(array_filter($entries, static function ($entry) use ($threadIdsByKey, $closure, $uid, $resolvedCurrent): bool {
             if (!is_array($entry)) {
                 return false;
             }
             if (!empty($entry['is_pending_reply'])) {
                 return true;
             }
-            if ((int) ($entry['imap_uid'] ?? 0) === $uid
-                && strcasecmp(\App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? '')), $resolvedCurrent) === 0) {
+            $ef = \App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? ''));
+            if ((int) ($entry['imap_uid'] ?? 0) === $uid && strcasecmp($ef, $resolvedCurrent) === 0) {
                 return true;
             }
-            return mail_message_involves_user($entry, $threadCorrespondents);
+            $ids = $threadIdsByKey[$ef . '|' . (int) ($entry['imap_uid'] ?? 0)] ?? [];
+            return $ids !== [] && array_intersect_key($ids, $closure) !== [];
         }));
+    } else {
+        // No message-id on the opened row yet (e.g. not re-synced): fall back to
+        // scoping by the opened message's correspondent(s) so at least unrelated
+        // people don't leak in. Always keep the opened message + any pending reply.
+        $ownerUserId = mail_linked_user_id_for_inbox($folderPath);
+        $ownerEmails = $ownerUserId !== null ? array_map('strtolower', mail_user_emails($ownerUserId)) : [];
+        $mailboxEmail = strtolower((string) (config('mail')['mailbox_email'] ?? ''));
+        $threadCorrespondents = [];
+        foreach (parse_email_list(
+            ($message['from'] ?? '') . ',' . ($message['to'] ?? '') . ',' . ($message['cc'] ?? '')
+        )['valid'] as $addr) {
+            $addr = strtolower(trim($addr));
+            if ($addr !== '' && !in_array($addr, $ownerEmails, true) && $addr !== $mailboxEmail) {
+                $threadCorrespondents[] = $addr;
+            }
+        }
+        if ($threadCorrespondents !== []) {
+            $entries = array_values(array_filter($entries, static function ($entry) use ($threadCorrespondents, $uid, $resolvedCurrent): bool {
+                if (!is_array($entry)) {
+                    return false;
+                }
+                if (!empty($entry['is_pending_reply'])) {
+                    return true;
+                }
+                if ((int) ($entry['imap_uid'] ?? 0) === $uid
+                    && strcasecmp(\App\Services\FolderCache::resolvePath((string) ($entry['folder_path'] ?? '')), $resolvedCurrent) === 0) {
+                    return true;
+                }
+                return mail_message_involves_user($entry, $threadCorrespondents);
+            }));
+        }
     }
 
     if ($entries === []) {

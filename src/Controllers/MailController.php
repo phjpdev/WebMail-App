@@ -780,6 +780,14 @@ class MailController
             $messages[] = $entry;
         }
 
+        // On the light (~30s) poll, cheaply re-derive the sidebar badges from the
+        // SHARED index (DB only, no IMAP) so a read/unread done in another account
+        // propagates here within a poll cycle instead of only on the 2-min
+        // live-sync. The non-light path already reconciles (with IMAP STATUS).
+        if ($light && trim($_GET['q'] ?? '') === '') {
+            $this->reconcileSidebarBadgesFromIndex(dbOnly: true);
+        }
+
         echo json_encode([
             'total' => $list['total'],
             'page' => $list['page'],
@@ -817,31 +825,48 @@ class MailController
         echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCounts()]);
     }
 
-    private function reconcileSidebarBadgesFromIndex(): void
+    /**
+     * Refresh this session's sidebar badges from the SHARED index so a read/unread
+     * in another account (shared mailbox) shows up here. $dbOnly skips the IMAP
+     * STATUS pass for cold folders, making it a cheap index-only reconcile suitable
+     * for the frequent (~30s) poll path — the read state itself is index truth, so
+     * no IMAP round-trip is needed to pick up another account's read.
+     */
+    private function reconcileSidebarBadgesFromIndex(bool $dbOnly = false): void
     {
         $folderData = FolderCache::load(skipUnreadRefresh: true);
-        $refreshPaths = [];
 
-        foreach ($folderData['folders'] ?? [] as $folder) {
-            $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || !folder_shows_unread_badge($path)) {
-                continue;
+        if (!$dbOnly) {
+            $refreshPaths = [];
+            foreach ($folderData['folders'] ?? [] as $folder) {
+                $path = (string) ($folder['path'] ?? '');
+                if ($path === '' || !folder_shows_unread_badge($path)) {
+                    continue;
+                }
+                if (!folder_badge_uses_index_truth($path)) {
+                    continue;
+                }
+                if (!MailCacheService::hasFolderData($path)) {
+                    $refreshPaths[] = $path;
+                }
             }
-            if (!folder_badge_uses_index_truth($path)) {
-                continue;
-            }
-            if (!MailCacheService::hasFolderData($path)) {
-                $refreshPaths[] = $path;
-            }
-        }
 
-        if ($refreshPaths !== []) {
-            FolderCache::refreshPaths(array_values(array_unique($refreshPaths)));
+            if ($refreshPaths !== []) {
+                FolderCache::refreshPaths(array_values(array_unique($refreshPaths)));
+            }
         }
 
         foreach ($folderData['folders'] ?? [] as $folder) {
             $path = (string) ($folder['path'] ?? '');
             if ($path === '' || !folder_badge_uses_index_truth($path)) {
+                continue;
+            }
+            // In the frequent DB-only path, don't clobber a badge that's
+            // optimistically ahead of a not-yet-synced index (pending new mail) —
+            // only reconcile settled folders. That still lets another account's
+            // READ (which lowers the shared index count) propagate here, without
+            // prematurely dropping a fresh new-mail bump.
+            if ($dbOnly && FolderCache::isPendingBadgePath($path)) {
                 continue;
             }
             MailCacheService::reconcileBadgeFromIndex($path);
@@ -1791,6 +1816,12 @@ class MailController
                 $movedTotal = 0;
                 foreach ($movesByFolder as $fromIndexPath => $folderUids) {
                     $fromResolved = FolderCache::resolvePath($fromIndexPath);
+                    // Before relocate deletes the source rows: when rescuing into the
+                    // filter inbox, record the messages' Message-IDs as processed so
+                    // the filter won't route them straight back out (e.g. to Junk).
+                    if (strcasecmp($targetPath, $filterInbox) === 0) {
+                        FilterService::preserveManualInboxPlacementFromIndex($fromIndexPath, $folderUids, $filterInbox);
+                    }
                     $relocated = MailCacheService::relocateCachedMessages($fromIndexPath, $targetIndexPath, $folderUids);
                     mail_mark_uids_removed($fromResolved, $folderUids);
                     mail_clear_removed_uids($targetIndexPath, $folderUids);
@@ -1799,9 +1830,6 @@ class MailController
                     }
                     if ($relocated === 0 && !is_trash_folder($targetPath)) {
                         MailCacheService::invalidateFolder($targetPath);
-                    }
-                    if (strcasecmp($targetPath, $filterInbox) === 0) {
-                        FilterService::preserveManualInboxPlacementFromIndex($targetIndexPath, $folderUids);
                     }
 
                     MailCacheService::reconcileBadgeFromIndex($fromIndexPath);
@@ -2085,6 +2113,68 @@ class MailController
     }
 
     /**
+     * Rescue spam-tagged messages into the inbox by rewriting them clean (strip the
+     * ***SPAM*** subject + X-Spam headers) and dropping the tagged original, so the
+     * host's own spam sieve stops re-junking them. Returns the uids NOT handled here
+     * (not spam-tagged) for the normal move path.
+     *
+     * @param list<int> $uids
+     * @param array<string, list<int>> $removed
+     * @param list<int> $allMovedUids
+     * @return list<int>
+     */
+    private function unspamRescueOnServer(
+        string $fromPath,
+        string $inboxPath,
+        array $uids,
+        array &$removed,
+        array &$allMovedUids,
+        int &$movedTotal,
+    ): array {
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return $uids;
+        }
+
+        $resolvedInbox = FolderCache::resolvePath($inboxPath);
+        $remaining = [];
+
+        foreach ($uids as $uid) {
+            $uid = (int) $uid;
+            $headers = $imap->fetchFilterHeaders($fromPath, $uid);
+            if ($headers === null || !mail_headers_indicate_spam($headers)) {
+                $remaining[] = $uid;
+                continue;
+            }
+
+            $raw = $imap->fetchRawMessage($fromPath, $uid);
+            if ($raw === null || $raw === '') {
+                $remaining[] = $uid;
+                continue;
+            }
+
+            $wasSeen = $imap->isSeen($fromPath, $uid);
+            $cleaned = mail_unspam_raw_message($raw);
+            if (!$imap->appendMessage($resolvedInbox, $cleaned, $wasSeen ? '\\Seen' : null)) {
+                app_log('Un-spam rescue append failed for uid ' . $uid . ': ' . $imap->getLastError());
+                $remaining[] = $uid;
+                continue;
+            }
+
+            // The cleaned copy is now in the inbox; drop the tagged original.
+            $imap->deleteMessage($fromPath, $uid);
+            MailCacheService::removeMessages($fromPath, [$uid]);
+            $removed[$fromPath] = array_merge($removed[$fromPath] ?? [], [$uid]);
+            $allMovedUids[] = $uid;
+            $movedTotal++;
+        }
+
+        ImapService::closeShared();
+
+        return $remaining;
+    }
+
+    /**
      * @param list<int> $uids
      */
     private function executeMoveOnServer(
@@ -2129,6 +2219,14 @@ class MailController
         $movedTotal = 0;
         $removed = [];
         $allMovedUids = [];
+
+        // Rescuing into the filter inbox: un-spam any server-tagged messages by
+        // rewriting them without the ***SPAM*** subject prefix + X-Spam headers, so
+        // the mail host's own spam sieve won't bounce them straight back to Junk.
+        // Non-spam uids fall through to the normal move below.
+        if ($filterInbox !== '' && strcasecmp(FolderCache::resolvePath($targetPath), FolderCache::resolvePath($filterInbox)) === 0) {
+            $uids = $this->unspamRescueOnServer($folderPath, $targetPath, $uids, $removed, $allMovedUids, $movedTotal);
+        }
 
         foreach (array_chunk($uids, 50) as $chunk) {
             $chunkMoved = false;

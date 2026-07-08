@@ -1229,10 +1229,18 @@ class MailCacheService
         // seen 1->0 and the unread badge would reappear. A deliberate mark-unread
         // sets the shared index seen=0 directly, so read reliability wins here.
 
+        // Reply-chain headers for Gmail-style threading. Stored (when present) so
+        // mail_build_correspondent_conversation_thread can group by the actual
+        // reply relationship instead of by subject. COALESCE-keep on re-sync so an
+        // overview that omits them doesn't wipe values we already have.
+        $messageId = mail_normalize_thread_id((string) ($msg['message_id'] ?? ''));
+        $inReplyTo = mail_normalize_thread_id((string) ($msg['in_reply_to'] ?? ''));
+        $references = trim((string) ($msg['references'] ?? ''));
+
         Database::query(
             'INSERT INTO mail_index
-                (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, flagged, has_attachment, size, synced_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, flagged, has_attachment, size, message_id, in_reply_to, references_ids, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE
                 from_addr = VALUES(from_addr),
                 to_addrs = COALESCE(NULLIF(VALUES(to_addrs), \'\'), to_addrs),
@@ -1243,6 +1251,9 @@ class MailCacheService
                 flagged = VALUES(flagged),
                 has_attachment = VALUES(has_attachment),
                 size = VALUES(size),
+                message_id = COALESCE(NULLIF(VALUES(message_id), \'\'), message_id),
+                in_reply_to = COALESCE(NULLIF(VALUES(in_reply_to), \'\'), in_reply_to),
+                references_ids = COALESCE(NULLIF(VALUES(references_ids), \'\'), references_ids),
                 synced_at = NOW()',
             [
                 $folderPath,
@@ -1256,6 +1267,9 @@ class MailCacheService
                 !empty($msg['flagged']) ? 1 : 0,
                 !empty($msg['has_attachment']) ? 1 : 0,
                 (int) ($msg['size'] ?? 0),
+                $messageId !== '' ? $messageId : null,
+                $inReplyTo !== '' ? $inReplyTo : null,
+                $references !== '' ? $references : null,
             ]
         );
     }
