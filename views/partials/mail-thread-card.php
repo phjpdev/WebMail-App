@@ -103,9 +103,49 @@ $hasQuoted = $isLatest && !$collapsed && !$showThreadHistoryToggle && ($quotedPl
         </div>
 
         <?php if (!empty($attachments)): ?>
-        <div class="attachments attachments--message">
-            <strong>Attachments</strong>
-            <ul>
+        <?php
+        // Gmail-style attachment cards: image thumbnails, file-type icons for the
+        // rest, human-readable sizes, hover download button.
+        $fmtAttSize = static function (int $b): string {
+            if ($b >= 1048576) {
+                return number_format($b / 1048576, 1) . ' MB';
+            }
+            if ($b >= 1024) {
+                return number_format($b / 1024, 0) . ' KB';
+            }
+            return $b > 0 ? $b . ' B' : '';
+        };
+        $attKindOf = static function (string $mime, string $filename): string {
+            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+            // Fall back to the extension: stored mimes are often a generic
+            // application/octet-stream. (svg deliberately excluded from inline
+            // image preview — same-origin inline svg can carry scripts.)
+            if (str_starts_with($mime, 'image/')
+                || in_array($ext, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'], true)) {
+                return 'image';
+            }
+            if ($mime === 'application/pdf' || $ext === 'pdf') {
+                return 'pdf';
+            }
+            if (in_array($ext, ['doc', 'docx', 'rtf', 'odt'], true)) {
+                return 'doc';
+            }
+            if (in_array($ext, ['xls', 'xlsx', 'csv', 'ods'], true)) {
+                return 'sheet';
+            }
+            if (in_array($ext, ['zip', 'rar', '7z', 'gz', 'tar'], true)) {
+                return 'zip';
+            }
+            return 'file';
+        };
+        $attCount = count($attachments);
+        ?>
+        <div class="attachments attachments--cards">
+            <div class="attachments-cards-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                <?= $attCount ?> <?= $attCount === 1 ? 'Attachment' : 'Attachments' ?>
+            </div>
+            <div class="attachment-cards">
                 <?php foreach ($attachments as $att): ?>
                     <?php
                     $attId = (string) ($att['id'] ?? '');
@@ -122,25 +162,43 @@ $hasQuoted = $isLatest && !$collapsed && !$showThreadHistoryToggle && ($quotedPl
                     } else {
                         $baseUrl = '';
                     }
-                    $isPreview = str_starts_with($mime, 'image/') || $mime === 'application/pdf';
+                    $kind = $attKindOf($mime, $filename);
+                    $canInline = $kind === 'image' || $kind === 'pdf';
+                    $openUrl = $baseUrl !== '' && $canInline ? $baseUrl . '&disposition=inline' : $baseUrl;
+                    $sizeLabel = $fmtAttSize($size);
+                    $ext = strtoupper((string) pathinfo($filename, PATHINFO_EXTENSION));
                     ?>
-                    <li>
-                        <?php if ($baseUrl !== ''): ?>
-                        <a href="<?= e($baseUrl) ?>"><?= e($filename) ?><?= $size > 0 ? ' (' . number_format($size / 1024, 1) . ' KB)' : '' ?></a>
-                        <?php if ($isPreview): ?>
-                            · <a href="<?= e($baseUrl . '&disposition=inline') ?>" target="_blank" rel="noopener">Preview</a>
-                        <?php endif; ?>
+                    <div class="attachment-card attachment-card--<?= e($kind) ?>">
+                        <?php if ($openUrl !== ''): ?>
+                        <a class="attachment-card-open" href="<?= e($openUrl) ?>"<?= $canInline ? ' target="_blank" rel="noopener"' : '' ?> title="<?= e($filename) ?>">
                         <?php else: ?>
-                        <?= e($filename) ?><?= $size > 0 ? ' (' . number_format($size / 1024, 1) . ' KB)' : '' ?>
+                        <span class="attachment-card-open" title="<?= e($filename) ?>">
                         <?php endif; ?>
-                    </li>
-                    <?php if ($baseUrl !== '' && str_starts_with($mime, 'image/')): ?>
-                    <li class="attachment-preview">
-                        <img src="<?= e($baseUrl . '&disposition=inline') ?>" alt="<?= e($filename) ?>" loading="lazy">
-                    </li>
-                    <?php endif; ?>
+                            <span class="attachment-card-thumb">
+                                <?php if ($kind === 'image' && $baseUrl !== ''): ?>
+                                    <img src="<?= e($baseUrl . '&disposition=inline') ?>" alt="<?= e($filename) ?>" loading="lazy">
+                                <?php else: ?>
+                                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                                    <?php if ($ext !== ''): ?><span class="attachment-card-ext"><?= e(mb_substr($ext, 0, 4)) ?></span><?php endif; ?>
+                                <?php endif; ?>
+                            </span>
+                            <span class="attachment-card-footer">
+                                <span class="attachment-card-name"><?= e($filename) ?></span>
+                                <?php if ($sizeLabel !== ''): ?><span class="attachment-card-size"><?= e($sizeLabel) ?></span><?php endif; ?>
+                            </span>
+                        <?php if ($openUrl !== ''): ?>
+                        </a>
+                        <?php else: ?>
+                        </span>
+                        <?php endif; ?>
+                        <?php if ($baseUrl !== ''): ?>
+                        <a class="attachment-card-download" href="<?= e($baseUrl) ?>" title="Download" aria-label="Download <?= e($filename) ?>">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                        </a>
+                        <?php endif; ?>
+                    </div>
                 <?php endforeach; ?>
-            </ul>
+            </div>
         </div>
         <?php endif; ?>
 

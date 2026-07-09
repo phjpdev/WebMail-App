@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
     <link rel="icon" href="<?= e(url('assets/img/logo.png')) ?>" type="image/png">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=150">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=151">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
