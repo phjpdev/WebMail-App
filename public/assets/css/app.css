@@ -5695,6 +5695,13 @@ body:has(.mail-workspace) {
     display: none;
 }
 
+/* The command-bar buttons set an explicit display, which would override the
+   browser's [hidden] rule — restore the hidden behaviour so JS-toggled buttons
+   (e.g. the Trash-only Restore) actually stay hidden. */
+.mail-cmd-btn[hidden] {
+    display: none !important;
+}
+
 .mail-cmd-btn {
     display: inline-flex;
     align-items: center;
