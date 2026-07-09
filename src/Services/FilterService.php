@@ -281,6 +281,14 @@ class FilterService
                 // a second IMAP STATUS sweep here.
             }
 
+            // Crash-safety: re-run deferred move/delete journal entries whose
+            // background continuation died mid-run (host killed the PHP process).
+            try {
+                self::resumePendingOps();
+            } catch (\Throwable $e) {
+                app_log('Pending ops resume failed: ' . $e->getMessage());
+            }
+
             $totals['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
             $totals['done'] = true;
             if ($pathsToRefresh !== []) {
@@ -311,6 +319,133 @@ class FilterService
             flock($lock, LOCK_UN);
             fclose($lock);
         }
+    }
+
+    /**
+     * Re-execute deferred move/delete journal entries that never finished (their
+     * background continuation died mid-run). Deletes are retried by uid (a no-op
+     * for uids already gone); moves re-sync the source folder first — that
+     * restores index rows for messages still on the server — then move each
+     * journaled Message-ID's current uid. Ops give up after 3 attempts.
+     */
+    private static function resumePendingOps(): void
+    {
+        try {
+            $rows = Database::query(
+                "SELECT id, op_type, source_json, target_folder, message_ids_json, attempts
+                 FROM mail_pending_ops
+                 WHERE status = 'pending' AND attempts < 3
+                   AND updated_at < (NOW() - INTERVAL 120 SECOND)
+                 ORDER BY id ASC
+                 LIMIT 5"
+            )->fetchAll();
+
+            // Housekeeping: drop finished entries after a day.
+            Database::query(
+                "DELETE FROM mail_pending_ops
+                 WHERE status IN ('done', 'failed') AND updated_at < (NOW() - INTERVAL 1 DAY)"
+            );
+        } catch (\Throwable) {
+            return; // journal table missing — feature disabled
+        }
+
+        if ($rows === []) {
+            return;
+        }
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return;
+        }
+
+        foreach ($rows as $op) {
+            $opId = (int) $op['id'];
+            $sources = json_decode((string) ($op['source_json'] ?? ''), true);
+            $sources = is_array($sources) ? $sources : [];
+            $ok = true;
+
+            try {
+                if ((string) $op['op_type'] === 'delete') {
+                    foreach ($sources as $folder => $uids) {
+                        $uids = array_values(array_filter(array_map('intval', (array) $uids)));
+                        if ($uids !== []) {
+                            $imap->deleteMessages((string) $folder, $uids);
+                        }
+                    }
+                } else {
+                    $target = (string) ($op['target_folder'] ?? '');
+                    $messageIds = json_decode((string) ($op['message_ids_json'] ?? ''), true);
+                    $messageIds = array_values(array_filter(array_map(
+                        static fn ($id) => mail_normalize_thread_id((string) $id),
+                        is_array($messageIds) ? $messageIds : []
+                    )));
+
+                    if ($target !== '' && $messageIds !== []) {
+                        // Refresh the target first so half-move detection sees truth.
+                        MailCacheService::resyncFolderAfterMove($imap, $target, [], 30);
+                        $targetIdx = MailCacheService::indexFolderPath(FolderCache::resolvePath($target));
+                        foreach (array_keys($sources) as $folder) {
+                            $folder = (string) $folder;
+                            // Server truth back into the index (also restores rows
+                            // the optimistic relocate removed but never moved).
+                            MailCacheService::syncFolderHeaders($imap, $folder);
+                            foreach ($messageIds as $mid) {
+                                $srcIdx = MailCacheService::indexFolderPath(FolderCache::resolvePath($folder));
+                                $row = Database::fetchOne(
+                                    'SELECT imap_uid FROM mail_index
+                                     WHERE folder_path = ? AND message_id IS NOT NULL
+                                       AND LOWER(REPLACE(REPLACE(message_id, \'<\', \'\'), \'>\', \'\')) = ?
+                                     LIMIT 1',
+                                    [$srcIdx, $mid]
+                                );
+                                if ($row === null) {
+                                    continue; // already moved (or gone) — nothing to redo
+                                }
+                                // Half-move: the copy already sits in the target —
+                                // deleting the source copy completes the move (a
+                                // re-move here would duplicate it in the target).
+                                $inTarget = Database::fetchOne(
+                                    'SELECT 1 FROM mail_index
+                                     WHERE folder_path = ? AND message_id IS NOT NULL
+                                       AND LOWER(REPLACE(REPLACE(message_id, \'<\', \'\'), \'>\', \'\')) = ?
+                                     LIMIT 1',
+                                    [$targetIdx, $mid]
+                                );
+                                if ($inTarget !== null) {
+                                    $srcUid = (int) $row['imap_uid'];
+                                    if ((int) ($imap->deleteMessages($folder, [$srcUid])['deleted'] ?? 0) > 0) {
+                                        MailCacheService::removeMessages($srcIdx, [$srcUid]);
+                                    } else {
+                                        $ok = false;
+                                    }
+                                    continue;
+                                }
+                                if (!$imap->moveMessage($folder, (int) $row['imap_uid'], $target)) {
+                                    $ok = false;
+                                }
+                            }
+                        }
+                        MailCacheService::resyncFolderAfterMove($imap, $target, [], 30);
+                        MailCacheService::reconcileBadgeFromIndex($target);
+                    }
+                }
+            } catch (\Throwable $e) {
+                app_log('Pending op ' . $opId . ' resume failed: ' . $e->getMessage());
+                $ok = false;
+            }
+
+            Database::query(
+                "UPDATE mail_pending_ops
+                 SET attempts = attempts + 1,
+                     status = CASE WHEN ? = 1 THEN 'done'
+                                   WHEN attempts + 1 >= 3 THEN 'failed'
+                                   ELSE 'pending' END
+                 WHERE id = ?",
+                [$ok ? 1 : 0, $opId]
+            );
+        }
+
+        ImapService::closeShared();
     }
 
     /**

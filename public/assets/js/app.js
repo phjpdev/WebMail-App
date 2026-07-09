@@ -3197,6 +3197,74 @@
         if (card) card.setAttribute('data-total-messages', '0');
     }
 
+    // Stateful toast for deferred server work (move/delete): shows a sticky
+    // "Moving to Trash…" with a spinner, polls the ops journal, then flips to
+    // "✓ Moved" or an error. Truthful without blocking the UI (Gmail-style).
+    function trackPendingOp(opId, labels) {
+        labels = labels || {};
+        var stack = document.getElementById('toast-stack');
+        if (!opId || !stack) {
+            if (labels.done) showToast('success', labels.done);
+            return;
+        }
+
+        var toast = document.createElement('div');
+        toast.className = 'toast toast-success toast-progress';
+        toast.setAttribute('role', 'status');
+        var spin = document.createElement('span');
+        spin.className = 'toast-spinner';
+        spin.setAttribute('aria-hidden', 'true');
+        toast.appendChild(spin);
+        var text = document.createElement('span');
+        text.textContent = labels.progress || 'Working…';
+        toast.appendChild(text);
+        stack.appendChild(toast);
+
+        var finished = false;
+        function dismiss() {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }
+        function finish(ok) {
+            if (finished) return;
+            finished = true;
+            dismiss();
+            if (ok) {
+                if (labels.done) showToast('success', labels.done, 3500);
+                refreshUnreadBadges(false);
+            } else {
+                showToast('error', labels.fail || 'The action could not be completed. The messages have been restored.', 8000);
+                scheduleMailPoll(true, false);
+            }
+        }
+
+        var delays = [1500, 2500, 4000, 6000, 8000];
+        var step = 0;
+        function poll() {
+            fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(opId)), {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' }
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                if (finished) return;
+                if (data && data.status === 'done') { finish(true); return; }
+                if (data && data.status === 'failed') { finish(false); return; }
+                next();
+            }).catch(next);
+        }
+        function next() {
+            if (finished) return;
+            if (step >= delays.length) {
+                // Still running (big bulk op / slow host). Stop polling and show the
+                // neutral success — the journal + filter resume guarantee completion.
+                finished = true;
+                dismiss();
+                if (labels.done) showToast('success', labels.done, 3500);
+                return;
+            }
+            window.setTimeout(poll, delays[step++]);
+        }
+        next();
+    }
+
     function showToast(type, message, duration) {
         var stack = document.getElementById('toast-stack');
         if (!stack || !message) return;
@@ -5166,7 +5234,9 @@
             return;
         }
         if (action === 'delete' && !selectAllInFolder && !uids.length) {
-            showToast('error', 'No messages selected to delete.');
+            showToast('error', selectionIncludedSyncingRows()
+                ? 'This message is still syncing — try again in a few seconds.'
+                : 'No messages selected to delete.');
             return;
         }
         var selectionCount = effectiveSelectionCount();
@@ -5194,7 +5264,8 @@
             var deleteOpts = deleteConfirmOptions(selectionCount);
             showConfirmAction(Object.assign({}, deleteOpts, {
                 loadingLabel: deleteLoadingMessage(selectionCount),
-                successMessage: deleteSuccessMessage(selectionCount),
+                // Completion feedback comes from the stateful op toast
+                // ("Moving to Trash…" → "✓ Moved"), not a premature static toast.
                 action: function () {
                     return runBulkCommandExecute(action, selections, folderEnc, triggerBtn);
                 }
@@ -5452,6 +5523,9 @@
                     scheduleMailPoll(true, false);
                 }
             }
+            if (options.opToast) {
+                trackPendingOp(data && data.op_id, options.opToast);
+            }
             return data;
         }).catch(function (err) {
             if (!options.suppressErrorToast) {
@@ -5594,9 +5668,9 @@
 
         if (action === 'delete' || action === 'move') {
             if (!allInFolder && !uids.length) {
-                var emptyMsg = action === 'delete'
-                    ? 'No messages selected to delete.'
-                    : 'No messages selected to move.';
+                var emptyMsg = selectionIncludedSyncingRows()
+                    ? 'This message is still syncing — try again in a few seconds.'
+                    : (action === 'delete' ? 'No messages selected to delete.' : 'No messages selected to move.');
                 showToast('error', emptyMsg);
                 return Promise.reject(new Error(emptyMsg));
             }
@@ -5627,16 +5701,27 @@
                 return fireListMutation(actionPath, payload, {
                     suppressErrorToast: true,
                     rollbackUids: uids.slice(),
-                    rollbackAllInFolder: allInFolder
+                    rollbackAllInFolder: allInFolder,
+                    opToast: {
+                        progress: deleteLoadingMessage(selectionCount),
+                        done: deleteSuccessMessage(selectionCount),
+                        fail: isTrashFolder()
+                            ? 'Some messages could not be deleted. Please try again.'
+                            : 'Some messages could not be moved to Trash. They have been restored.'
+                    }
                 }).finally(function () {
                     listMutationInFlight = false;
                     endListMutationQuiet(800);
                 });
             }
-            showToast('success', successMsg);
             fireListMutation(actionPath, payload, {
                 rollbackUids: uids.slice(),
-                rollbackAllInFolder: allInFolder
+                rollbackAllInFolder: allInFolder,
+                opToast: {
+                    progress: selectionCount === 1 ? 'Moving message…' : 'Moving ' + selectionCount + ' messages…',
+                    done: successMsg,
+                    fail: 'Some messages could not be moved. They have been restored.'
+                }
             }).finally(function () {
                 listMutationInFlight = false;
                 endListMutationQuiet(800);
@@ -5661,8 +5746,11 @@
 
         document.querySelectorAll('.mail-check:checked').forEach(function (cb) {
             var row = cb.closest('.mail-row, .mail-card');
+            // Optimistic rows (still syncing to the server) have no real uid yet —
+            // they can't be acted on. selectionIncludedSyncingRows() reports them.
+            if (row && row.getAttribute('data-optimistic') === '1') return;
             var uid = parseInt(cb.value, 10);
-            if (!uid || seen[uid]) return;
+            if (!uid || uid < 0 || seen[uid]) return;
             seen[uid] = true;
             selections.push({
                 uid: uid,
@@ -5674,9 +5762,9 @@
         var active = document.querySelector(
             '.mail-row.is-selected, .mail-row.is-focused, .mail-card.is-selected, .mail-card.is-focused'
         );
-        if (active) {
+        if (active && active.getAttribute('data-optimistic') !== '1') {
             var activeUid = parseInt(active.getAttribute('data-uid'), 10);
-            if (activeUid) {
+            if (activeUid && activeUid > 0) {
                 selections.push({
                     uid: activeUid,
                     folderB64: active.getAttribute('data-folder-b64') || listFolderEnc
@@ -5685,6 +5773,19 @@
         }
 
         return selections;
+    }
+
+    function selectionIncludedSyncingRows() {
+        var found = false;
+        document.querySelectorAll('.mail-check:checked').forEach(function (cb) {
+            var row = cb.closest('.mail-row, .mail-card');
+            if (row && row.getAttribute('data-optimistic') === '1') found = true;
+        });
+        if (found) return true;
+        var active = document.querySelector(
+            '.mail-row.is-selected, .mail-row.is-focused, .mail-card.is-selected, .mail-card.is-focused'
+        );
+        return !!(active && active.getAttribute('data-optimistic') === '1');
     }
 
     function selectedMailUids() {
@@ -7202,6 +7303,11 @@
 
     function dispatchMessageAction(kind, sourceFolderEnc, uid, extra, triggerBtn) {
         extra = extra || {};
+        // Optimistic rows (negative uid) are still syncing — nothing real to act on.
+        if (parseInt(uid, 10) <= 0) {
+            showToast('error', 'This message is still syncing — try again in a few seconds.');
+            return Promise.resolve(false);
+        }
         var confirmCfg = null;
         if (kind === 'trash') {
             confirmCfg = deleteConfirmOptions(1);
@@ -7216,13 +7322,11 @@
         if (confirmCfg) {
             var actionOpts = {
                 loadingLabel: kind === 'trash' ? deleteLoadingMessage(1) : 'Moving to Spam…',
+                // Completion feedback comes from the stateful op toast.
                 action: function () {
                     return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn);
                 }
             };
-            if (kind === 'trash') {
-                actionOpts.successMessage = deleteSuccessMessage(1);
-            }
             return showConfirmAction(Object.assign({}, confirmCfg, actionOpts))
                 .then(function (ok) { return !!ok; });
         }
@@ -7319,18 +7423,24 @@
 
             if (kind === 'trash') {
                 clearReadingPaneIfShowingUids([uid]);
-                return fireListMutation('message/' + kind, movePayload, { suppressErrorToast: true })
-                    .finally(function () { endListMutationQuiet(800); });
-            }
-
-            if (kind === 'spam') {
-                showToast('success', 'Message moved to Spam.');
-            } else if (kind === 'move') {
-                showToast('success', 'Message moved.');
+                return fireListMutation('message/' + kind, movePayload, {
+                    suppressErrorToast: true,
+                    opToast: {
+                        progress: deleteLoadingMessage(1),
+                        done: deleteSuccessMessage(1),
+                        fail: isTrashFolder()
+                            ? 'The message could not be deleted. Please try again.'
+                            : 'The message could not be moved to Trash. It has been restored.'
+                    }
+                }).finally(function () { endListMutationQuiet(800); });
             }
 
             clearReadingPaneIfShowingUids([uid]);
-            fireListMutation('message/' + kind, movePayload);
+            fireListMutation('message/' + kind, movePayload, {
+                opToast: kind === 'spam'
+                    ? { progress: 'Moving to Spam…', done: 'Message moved to Spam.', fail: 'The message could not be moved to Spam. It has been restored.' }
+                    : { progress: 'Moving message…', done: 'Message moved.', fail: 'The message could not be moved. It has been restored.' }
+            });
             return Promise.resolve(true);
         }
 

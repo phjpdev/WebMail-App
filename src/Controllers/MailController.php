@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Auth;
+use App\Database;
 use App\HtmlSanitizer;
 use App\Services\AliasService;
 use App\Services\FilterService;
@@ -170,7 +171,11 @@ class MailController
         $folderData = FolderCache::load(skipUnreadRefresh: true);
         $badgePending = FolderCache::isPendingBadgePath($folderPath)
             || MailCacheService::badgeAheadOfIndex($folderPath)
-            || mail_get_post_send_preview($folderPath) !== null;
+            || mail_get_post_send_preview($folderPath) !== null
+            // Messages were just moved INTO this folder (delete → Trash / move):
+            // mark the cached list stale so the client force-syncs and swaps the
+            // optimistic arrival rows for the real ones.
+            || mail_get_pending_arrivals($folderPath) !== [];
 
         if (
             !$this->shouldSkipPostSendFilter()
@@ -258,6 +263,17 @@ class MailController
             } else {
                 $imapConnected = false;
                 $imapError = $imap->getLastError();
+            }
+        }
+
+        // Mail server unreachable (host IMAP outage): serve the cached list
+        // read-only instead of an empty folder — the user keeps seeing their
+        // mail, with the connection error shown, and polling recovers later.
+        if (!$imapConnected && $query === '' && empty($list['messages'])) {
+            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            if ($cached !== null) {
+                $list = $cached;
+                $list['from_cache'] = true;
             }
         }
 
@@ -526,6 +542,23 @@ class MailController
     }
 
     /**
+     * Completion status of a deferred move/delete (from the pending-ops journal),
+     * so the client's toast can report the truth: "Moving…" → "Moved" / "failed".
+     */
+    public function opStatus(): void
+    {
+        requireAuth();
+        releaseSessionLock();
+
+        $status = mail_ops_journal_status((int) ($_GET['id'] ?? 0));
+        if ($status === null) {
+            json_response(['ok' => false, 'status' => 'unknown'], 404);
+        }
+
+        json_response(['ok' => true, 'status' => $status['status'], 'detail' => $status['detail']]);
+    }
+
+    /**
      * Warm only the active folder and inbox on bootstrap — not every sidebar folder.
      *
      * @param list<array{path: string, name: string}> $folders
@@ -618,6 +651,9 @@ class MailController
                     || MailCacheService::badgeAheadOfIndex($folderPath)
                     || FolderCache::isPendingBadgePath($folderPath)
                     || mail_get_post_send_preview($folderPath) !== null
+                    // Messages just moved INTO this folder are still optimistic
+                    // rows — sync headers so the real rows replace them.
+                    || mail_get_pending_arrivals($folderPath) !== []
                 )
             )
             || ($forceRefresh && !MailCacheService::hasFolderData($folderPath))
@@ -1814,6 +1850,7 @@ class MailController
         if (wants_json()) {
             try {
                 $movedTotal = 0;
+                $arrivalRows = [];
                 foreach ($movesByFolder as $fromIndexPath => $folderUids) {
                     $fromResolved = FolderCache::resolvePath($fromIndexPath);
                     // Before relocate deletes the source rows: when rescuing into the
@@ -1822,6 +1859,14 @@ class MailController
                     if (strcasecmp($targetPath, $filterInbox) === 0) {
                         FilterService::preserveManualInboxPlacementFromIndex($fromIndexPath, $folderUids, $filterInbox);
                     }
+                    // Capture optimistic rows for the TARGET list before the source
+                    // rows are deleted — this is what makes a deleted message appear
+                    // in Trash (or any move target) instantly instead of after the
+                    // deferred IMAP move + next sync.
+                    $arrivalRows = array_merge(
+                        $arrivalRows,
+                        mail_capture_move_arrival_rows($fromIndexPath, $folderUids)
+                    );
                     $relocated = MailCacheService::relocateCachedMessages($fromIndexPath, $targetIndexPath, $folderUids);
                     mail_mark_uids_removed($fromResolved, $folderUids);
                     mail_clear_removed_uids($targetIndexPath, $folderUids);
@@ -1836,6 +1881,19 @@ class MailController
                     $movedTotal += count($folderUids);
                 }
 
+                $opMessageIds = array_values(array_filter(array_map(
+                    static fn (array $r): string => (string) ($r['message_id'] ?? ''),
+                    $arrivalRows
+                )));
+                $opId = mail_ops_journal_create('move', $movesByFolder, $targetPath, $opMessageIds);
+                // Tag each optimistic row with its op so the list merge can drop
+                // ghosts (op settled but the real row never appeared).
+                foreach ($arrivalRows as &$arrivalRow) {
+                    $arrivalRow['op_id'] = $opId;
+                }
+                unset($arrivalRow);
+                mail_queue_pending_arrivals($targetIndexPath, $arrivalRows);
+
                 if ($targetIndexPath !== '' && strcasecmp($targetIndexPath, $indexFolderPath) !== 0) {
                     MailCacheService::reconcileBadgeFromIndex($targetIndexPath);
                 }
@@ -1848,11 +1906,15 @@ class MailController
                     'errors' => 0,
                     'uids' => array_values($uids),
                     'target' => $targetPath,
+                    'op_id' => $opId,
                     'unread_counts' => $counts,
-                ]), function () use ($movesByFolder, $targetPath, $targetIndexPath, $siblingMode, $filterInbox): void {
+                ]), function () use ($movesByFolder, $targetPath, $targetIndexPath, $siblingMode, $filterInbox, $opId, $opMessageIds): void {
+                    $requested = 0;
+                    $moved = 0;
                     foreach ($movesByFolder as $fromIndexPath => $folderUids) {
                         $fromResolved = FolderCache::resolvePath($fromIndexPath);
-                        $this->executeMoveOnServer(
+                        $requested += count($folderUids);
+                        $moved += $this->executeMoveOnServer(
                             $fromResolved,
                             $folderUids,
                             $targetPath,
@@ -1861,6 +1923,148 @@ class MailController
                             $targetIndexPath,
                         );
                     }
+
+                    // Truth check + half-move repair. The host's IMAP is known to
+                    // "half-move": the copy lands in the target but the source
+                    // delete/expunge silently fails, leaving the message in BOTH
+                    // folders while reporting success. After executeMoveOnServer's
+                    // final source sync re-mirrored the server: for any of this op's
+                    // Message-IDs still in a SOURCE folder, check the TARGET — if the
+                    // copy is there, FINISH the move by deleting the source copy
+                    // (repair); only when the target has no copy is it a real failure.
+                    $targetIdx = MailCacheService::indexFolderPath(FolderCache::resolvePath($targetPath));
+                    $stillInSource = 0;
+                    $repaired = 0;
+                    $repairImap = null;
+                    foreach (array_keys($movesByFolder) as $fromIndexPath) {
+                        $fromResolved = FolderCache::resolvePath((string) $fromIndexPath);
+                        $srcIndex = MailCacheService::indexFolderPath($fromResolved);
+                        foreach ($opMessageIds as $mid) {
+                            $mid = mail_normalize_thread_id((string) $mid);
+                            if ($mid === '') {
+                                continue;
+                            }
+                            try {
+                                $row = Database::fetchOne(
+                                    'SELECT imap_uid FROM mail_index
+                                     WHERE folder_path = ? AND message_id IS NOT NULL
+                                       AND LOWER(REPLACE(REPLACE(message_id, \'<\', \'\'), \'>\', \'\')) = ?
+                                     LIMIT 1',
+                                    [$srcIndex, $mid]
+                                );
+                            } catch (\Throwable) {
+                                $row = null;
+                            }
+                            if ($row === null) {
+                                continue; // gone from source — moved cleanly
+                            }
+
+                            $inTarget = null;
+                            try {
+                                $inTarget = Database::fetchOne(
+                                    'SELECT 1 FROM mail_index
+                                     WHERE folder_path = ? AND message_id IS NOT NULL
+                                       AND LOWER(REPLACE(REPLACE(message_id, \'<\', \'\'), \'>\', \'\')) = ?
+                                     LIMIT 1',
+                                    [$targetIdx, $mid]
+                                );
+                            } catch (\Throwable) {
+                                $inTarget = null;
+                            }
+
+                            $srcUid = (int) $row['imap_uid'];
+                            if ($inTarget !== null) {
+                                // Copy landed — delete the leftover source copy.
+                                $repairImap ??= new ImapService();
+                                if ($repairImap->connect()) {
+                                    $repairImap->deleteMessages($fromResolved, [$srcUid]);
+                                    $repaired++;
+                                }
+                            } else {
+                                // Didn't move at all — the host has been seen accepting a
+                                // batch move and silently applying it to only some uids.
+                                // Retry this one individually.
+                                $repairImap ??= new ImapService();
+                                if ($repairImap->connect()) {
+                                    $repairImap->moveMessage($fromResolved, $srcUid, $targetPath);
+                                    $repaired++;
+                                }
+                            }
+                        }
+                    }
+
+                    // FINAL verification against LIVE server state. This host has
+                    // returned "success" for batch AND per-uid moves without acting,
+                    // so command results (and repair bookkeeping) prove nothing: list
+                    // each source folder and count the op's Message-IDs still there.
+                    $stillInSource = 0;
+                    $verified = true;
+                    $verifyImap = $repairImap ?? new ImapService();
+                    if ($opMessageIds !== [] && $verifyImap->connect()) {
+                        foreach (array_keys($movesByFolder) as $fromIndexPath) {
+                            $fromResolved = FolderCache::resolvePath((string) $fromIndexPath);
+                            $srcList = $verifyImap->listMessages($fromResolved, 1, 200);
+                            if (!empty($srcList['failed'])) {
+                                $verified = false;
+                                break;
+                            }
+                            $srcMids = [];
+                            foreach ($srcList['messages'] as $srcMsg) {
+                                $m = mail_normalize_thread_id((string) ($srcMsg['message_id'] ?? ''));
+                                if ($m !== '') {
+                                    $srcMids[$m] = true;
+                                }
+                            }
+                            foreach ($opMessageIds as $mid) {
+                                $mid = mail_normalize_thread_id((string) $mid);
+                                if ($mid !== '' && isset($srcMids[$mid])) {
+                                    $stillInSource++;
+                                }
+                            }
+                            // Re-mirror the source index to the live truth so the UI
+                            // shows exactly what the server has.
+                            try {
+                                MailCacheService::syncFolderHeaders($verifyImap, $fromResolved);
+                                MailCacheService::reconcileBadgeFromIndex($fromResolved);
+                            } catch (\Throwable $e) {
+                                app_log('Verify source sync failed: ' . $e->getMessage());
+                            }
+                        }
+                    } elseif ($opMessageIds !== []) {
+                        $verified = false;
+                    }
+
+                    if ($repaired > 0 || $stillInSource === 0) {
+                        // Index the target so the list (and arrival ghost-kill) sees
+                        // the moved messages as real rows.
+                        try {
+                            if ($verifyImap->connect()) {
+                                MailCacheService::resyncFolderAfterMove($verifyImap, $targetIdx, [], 50);
+                                MailCacheService::reconcileBadgeFromIndex($targetIdx);
+                            }
+                        } catch (\Throwable $e) {
+                            app_log('Post-repair target sync failed: ' . $e->getMessage());
+                        }
+                    }
+                    ImapService::closeShared();
+
+                    if (!$verified) {
+                        // Could not confirm against the live server (outage window):
+                        // leave the op PENDING — FilterService::resumePendingOps will
+                        // re-verify and finish or retry it within a couple of minutes.
+                        app_log('Move op ' . $opId . ' left pending: source unverifiable (mail server unreachable).');
+
+                        return;
+                    }
+
+                    $ok = $stillInSource === 0 && ($moved > 0 || $repaired > 0 || $requested === 0);
+                    mail_ops_journal_finish(
+                        $opId,
+                        $ok,
+                        $ok
+                            ? ($repaired > 0 ? sprintf('repaired %d half-moved', $repaired) : '')
+                            : sprintf('%d of %d moved; %d still in source (verified live)', $moved, $requested, $stillInSource)
+                    );
                 });
             } catch (\Throwable $e) {
                 app_log('performMove json failed: ' . $e->getMessage());
@@ -2170,6 +2374,7 @@ class MailController
 
     /**
      * @param list<int> $uids
+     * @return int messages actually moved on the server
      */
     private function executeMoveOnServer(
         string $folderPath,
@@ -2178,35 +2383,35 @@ class MailController
         string $siblingMode = 'none',
         string $filterInbox = '',
         string $targetIndexPath = '',
-    ): void {
+    ): int {
         $uids = array_values(array_unique(array_filter(
             array_map('intval', $uids),
             static fn (int $u): bool => $u > 0
         )));
 
         if ($uids === []) {
-            return;
+            return 0;
         }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
             app_log('Background move failed: ' . $imap->getLastError());
 
-            return;
+            return 0;
         }
 
         $targetPath = ensure_employee_messages_folder_exists(FolderCache::resolvePath($targetPath));
         if ($targetPath === '') {
             ImapService::closeShared();
 
-            return;
+            return 0;
         }
 
         if (!$imap->folderExistsOnServer($targetPath) && !$imap->ensureFolderPath($targetPath)) {
             app_log('Background move: could not create target folder ' . $targetPath);
             ImapService::closeShared();
 
-            return;
+            return 0;
         }
         ImapService::closeShared();
 
@@ -2275,12 +2480,12 @@ class MailController
         }
 
         if ($movedTotal === 0) {
-            return;
+            return 0;
         }
 
         $imap = new ImapService();
         if (!$imap->connect()) {
-            return;
+            return $movedTotal;
         }
 
         $resolvedTarget = FolderCache::resolvePath($targetPath);
@@ -2301,25 +2506,33 @@ class MailController
             }
         }
 
-        if (!is_trash_folder($targetPath)) {
-            try {
-                $syncPath = $targetIndexPath !== '' ? $targetIndexPath : $targetPath;
-                MailCacheService::resyncFolderAfterMove($imap, $syncPath, $allMovedUids, 30);
-                MailCacheService::reconcileBadgeFromIndex($syncPath);
-            } catch (\Throwable $e) {
-                app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
-                MailCacheService::invalidateFolder($targetPath);
-            }
+        // Resync the target for EVERY destination — including Trash. Trash used to
+        // be skipped here, which left its cached list stale after a delete: the
+        // user saw "moved to Trash" but an empty Trash until the ~2-min cache TTL
+        // expired. The resync also swaps the optimistic pending-arrival rows for
+        // the real ones on the next poll.
+        try {
+            $syncPath = $targetIndexPath !== '' ? $targetIndexPath : $targetPath;
+            MailCacheService::resyncFolderAfterMove($imap, $syncPath, $allMovedUids, 30);
+            MailCacheService::reconcileBadgeFromIndex($syncPath);
+        } catch (\Throwable $e) {
+            app_log('Post-move cache sync failed for ' . $targetPath . ': ' . $e->getMessage());
+            MailCacheService::invalidateFolder($targetPath);
         }
 
         try {
-            MailCacheService::syncFolderHeaders($imap, $folderPath, 15);
+            // Full-depth sync (not a small limit): the truth-check that follows
+            // resolves the op's Message-IDs against this index — a shallow sync
+            // would hide older not-actually-moved messages from verification.
+            MailCacheService::syncFolderHeaders($imap, $folderPath);
             MailCacheService::reconcileBadgeFromIndex($folderPath);
         } catch (\Throwable $e) {
             app_log('Post-move source sync failed for ' . $folderPath . ': ' . $e->getMessage());
         }
 
         ImapService::closeShared();
+
+        return $movedTotal;
     }
 
     /**
@@ -2349,14 +2562,23 @@ class MailController
                 $counts = FolderCache::bumpUnread($resolvedFolderPath, 0);
             }
 
+            $opId = mail_ops_journal_create('delete', [$resolvedFolderPath => array_values($uids)], null);
+
             json_response_then($this->appendCorrespondentFolderPrune($resolvedFolderPath, [
                 'ok' => true,
                 'deleted' => count($uids),
                 'errors' => 0,
                 'uids' => array_values($uids),
+                'op_id' => $opId,
                 'unread_counts' => $counts,
-            ]), function () use ($resolvedFolderPath, $uids): void {
-                $this->executeDeleteOnServer($resolvedFolderPath, $uids);
+            ]), function () use ($resolvedFolderPath, $uids, $opId): void {
+                $deleted = $this->executeDeleteOnServer($resolvedFolderPath, $uids);
+                $requested = count(array_unique(array_filter(array_map('intval', $uids))));
+                mail_ops_journal_finish(
+                    $opId,
+                    $deleted >= $requested,
+                    $deleted >= $requested ? '' : sprintf('%d of %d deleted', $deleted, $requested)
+                );
             });
         }
 
@@ -2389,7 +2611,10 @@ class MailController
     /**
      * @param list<int> $uids
      */
-    private function executeDeleteOnServer(string $folderPath, array $uids): void
+    /**
+     * @return int messages actually deleted on the server
+     */
+    private function executeDeleteOnServer(string $folderPath, array $uids): int
     {
         $uids = array_values(array_unique(array_filter(
             array_map('intval', $uids),
@@ -2397,9 +2622,10 @@ class MailController
         )));
 
         if ($uids === []) {
-            return;
+            return 0;
         }
 
+        $deletedTotal = 0;
         foreach (array_chunk($uids, 100) as $chunk) {
             $imap = new ImapService();
             if (!$imap->connect()) {
@@ -2410,10 +2636,13 @@ class MailController
             $result = $imap->deleteMessages($folderPath, $chunk);
             $deletedUids = $result['uids'] ?? [];
             if ($deletedUids !== []) {
+                $deletedTotal += count($deletedUids);
                 mail_clear_removed_uids($folderPath, $deletedUids);
             }
             ImapService::closeShared();
         }
+
+        return $deletedTotal;
     }
 
     /**

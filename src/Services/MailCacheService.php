@@ -1097,6 +1097,11 @@ class MailCacheService
 
         $limit = $limit ?? (int) (config('app')['mail_cache_header_limit'] ?? 200);
         $list = $imap->listMessages($folderPath, 1, $limit);
+        if (!empty($list['failed'])) {
+            // The IMAP call broke (flaky host) — do NOT record a "successful"
+            // zero-message sync, or the folder renders empty for the cache TTL.
+            return 0;
+        }
         $imapTotal = (int) ($list['total'] ?? 0);
         $messages = $list['messages'];
 
@@ -1147,6 +1152,10 @@ class MailCacheService
 
         $limit = $limit ?? (int) (config('app')['mail_cache_header_limit'] ?? 200);
         $list = $imap->listMessages($folderPath, 1, $limit);
+        if (!empty($list['failed'])) {
+            // Broken IMAP call — don't rebuild the cache from a false empty.
+            return 0;
+        }
         $serverUids = [];
 
         foreach ($list['messages'] as $msg) {

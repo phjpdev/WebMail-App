@@ -2748,6 +2748,340 @@ function mail_clear_post_send_preview(string $folderPath): void
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Pending arrivals: optimistic list rows for a folder a message was just moved
+ * INTO (e.g. delete → Trash). The real IMAP move runs deferred, so without
+ * these the target folder looks unchanged until its next sync — the user sees
+ * a "moved to Trash" toast but an empty Trash. Rows are captured from the
+ * source index BEFORE the cache relocate deletes them, merged into the target
+ * list by the shared view pipeline (marked optimistic, non-clickable), and
+ * replaced by the real rows once the deferred move + resync land (matched by
+ * Message-ID). Session-scoped with a short TTL so a failed move self-clears.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Capture optimistic list rows for messages about to be moved out of a folder.
+ * MUST run before relocateCachedMessages deletes the source index rows.
+ *
+ * @param list<int> $uids
+ * @return list<array<string, mixed>>
+ */
+function mail_capture_move_arrival_rows(string $fromIndexPath, array $uids): array
+{
+    $fromIndexPath = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($fromIndexPath)
+    );
+    $uids = array_values(array_unique(array_filter(array_map('intval', $uids), static fn (int $u): bool => $u > 0)));
+    if ($fromIndexPath === '' || $uids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($uids), '?'));
+    try {
+        $rows = App\Database::query(
+            "SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged,
+                    i.has_attachment, i.message_id, b.plain_body, b.html_body
+             FROM mail_index i
+             LEFT JOIN mail_bodies b ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
+             WHERE i.folder_path = ? AND i.imap_uid IN ({$placeholders})",
+            array_merge([$fromIndexPath], $uids)
+        )->fetchAll();
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $arrivals = [];
+    foreach ($rows as $row) {
+        $messageId = trim((string) ($row['message_id'] ?? ''));
+        // Deterministic negative uid so re-renders keep the same row identity.
+        $seed = $messageId !== '' ? $messageId : $fromIndexPath . '#' . $row['imap_uid'] . '#' . time();
+        $arrivals[] = [
+            'uid' => -abs(crc32('arrival:' . $seed)),
+            'from' => (string) ($row['from_addr'] ?? ''),
+            'subject' => (string) ($row['subject'] ?? '(no subject)'),
+            'date' => (string) ($row['msg_date'] ?? ''),
+            'sort_date' => (string) ($row['msg_date'] ?? ''),
+            'seen' => !empty($row['seen']),
+            'flagged' => !empty($row['flagged']),
+            'has_attachment' => !empty($row['has_attachment']),
+            'snippet' => mail_list_snippet($row['plain_body'] ?? null, $row['html_body'] ?? null),
+            'message_id' => $messageId,
+            'optimistic' => true,
+        ];
+    }
+
+    return $arrivals;
+}
+
+/**
+ * Queue optimistic arrival rows for a target folder (session, ~4 min TTL).
+ *
+ * @param list<array<string, mixed>> $rows
+ */
+function mail_queue_pending_arrivals(string $targetPath, array $rows): void
+{
+    $key = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($targetPath)
+    );
+    if ($key === '' || $rows === []) {
+        return;
+    }
+
+    ensure_session_writable();
+    $store = $_SESSION['_mail_pending_arrivals'] ?? [];
+    if (!is_array($store)) {
+        $store = [];
+    }
+
+    $entry = (is_array($store[$key] ?? null)) ? $store[$key] : ['rows' => []];
+    $byUid = [];
+    foreach ((array) ($entry['rows'] ?? []) as $row) {
+        if (is_array($row)) {
+            $byUid[(int) ($row['uid'] ?? 0)] = $row;
+        }
+    }
+    foreach ($rows as $row) {
+        // Per-row expiry stamp: the entry-level TTL gets refreshed by every later
+        // move into this folder, which used to keep STALE rows (e.g. from a failed
+        // op) alive indefinitely. Each row now dies on its own clock.
+        $row['queued_at'] = time();
+        $byUid[(int) ($row['uid'] ?? 0)] = $row;
+    }
+
+    $store[$key] = ['until' => time() + 240, 'rows' => array_values($byUid)];
+    $_SESSION['_mail_pending_arrivals'] = $store;
+}
+
+/**
+ * Pending arrival rows for a folder (expired entries pruned).
+ *
+ * @return list<array<string, mixed>>
+ */
+function mail_get_pending_arrivals(string $folderPath): array
+{
+    $store = $_SESSION['_mail_pending_arrivals'] ?? null;
+    if (!is_array($store) || $store === []) {
+        return [];
+    }
+
+    $key = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
+    $entry = $store[$key] ?? null;
+    if (!is_array($entry) || time() > (int) ($entry['until'] ?? 0)) {
+        return [];
+    }
+
+    // Per-row expiry: a row lives at most 240s from ITS OWN queue time — the
+    // entry TTL above is refreshed by later moves and must not extend old rows.
+    // Rows without a stamp (queued before this fix) are treated as expired.
+    return array_values(array_filter(
+        (array) ($entry['rows'] ?? []),
+        static fn ($row) => is_array($row)
+            && (time() - (int) ($row['queued_at'] ?? 0)) <= 240
+    ));
+}
+
+/**
+ * Merge pending arrival rows into a folder list, dropping any whose REAL row
+ * has landed (matched by Message-ID, falling back to subject+date). Runs inside
+ * the shared list pipeline so full page loads, fragments and sync polls all
+ * render identically.
+ *
+ * @param array{messages: list<array<string, mixed>>, total?: int} $list
+ * @return array{messages: list<array<string, mixed>>, total?: int}
+ */
+function mail_merge_pending_arrivals_into_list(string $folderPath, array $list): array
+{
+    $arrivals = mail_get_pending_arrivals($folderPath);
+    if ($arrivals === []) {
+        return $list;
+    }
+
+    $messages = is_array($list['messages'] ?? null) ? $list['messages'] : [];
+
+    $realIds = [];
+    $realSubjectDates = [];
+    foreach ($messages as $msg) {
+        if (!is_array($msg) || (int) ($msg['uid'] ?? 0) <= 0) {
+            continue;
+        }
+        $mid = mail_normalize_thread_id((string) ($msg['message_id'] ?? ''));
+        if ($mid !== '') {
+            $realIds[$mid] = true;
+        }
+        $realSubjectDates[strtolower(trim((string) ($msg['subject'] ?? ''))) . '|' . mail_message_timestamp($msg['date'] ?? '')] = true;
+    }
+
+    $landed = [];
+    $pendingRows = [];
+    foreach ($arrivals as $row) {
+        $mid = mail_normalize_thread_id((string) ($row['message_id'] ?? ''));
+        $sdKey = strtolower(trim((string) ($row['subject'] ?? ''))) . '|' . mail_message_timestamp($row['date'] ?? '');
+        if (($mid !== '' && isset($realIds[$mid])) || isset($realSubjectDates[$sdKey])) {
+            $landed[] = (int) ($row['uid'] ?? 0);
+            continue;
+        }
+        $pendingRows[] = $row;
+    }
+
+    // Ghost-kill: an arrival whose journal op has SETTLED (done/failed a few
+    // seconds ago — the target resync ran before the op was marked) but whose
+    // real row still isn't in the list is a ghost: the move failed, or the real
+    // row was deleted before a render matched it. Drop it so users can't act on
+    // a row that no longer represents anything.
+    if ($pendingRows !== []) {
+        $opIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $r): int => (int) ($r['op_id'] ?? 0),
+            $pendingRows
+        ))));
+        if ($opIds !== []) {
+            $settled = [];
+            try {
+                $placeholders = implode(',', array_fill(0, count($opIds), '?'));
+                foreach (App\Database::query(
+                    "SELECT id FROM mail_pending_ops
+                     WHERE id IN ({$placeholders})
+                       AND status <> 'pending'
+                       AND updated_at < (NOW() - INTERVAL 5 SECOND)",
+                    $opIds
+                )->fetchAll() as $r) {
+                    $settled[(int) $r['id']] = true;
+                }
+            } catch (\Throwable) {
+                $settled = [];
+            }
+            if ($settled !== []) {
+                $keep = [];
+                foreach ($pendingRows as $row) {
+                    if (isset($settled[(int) ($row['op_id'] ?? 0)])) {
+                        $landed[] = (int) ($row['uid'] ?? 0);
+                        continue;
+                    }
+                    $keep[] = $row;
+                }
+                $pendingRows = $keep;
+            }
+        }
+    }
+
+    if ($landed !== []) {
+        mail_drop_pending_arrivals($folderPath, $landed);
+    }
+
+    if ($pendingRows !== []) {
+        $list['messages'] = mail_resort_list_by_message_date(array_merge($messages, $pendingRows));
+        $list['total'] = (int) ($list['total'] ?? count($messages)) + count($pendingRows);
+    }
+
+    return $list;
+}
+
+/**
+ * Remove specific arrival rows (by their negative uid) once the real row landed.
+ *
+ * @param list<int> $uids
+ */
+function mail_drop_pending_arrivals(string $folderPath, array $uids): void
+{
+    $store = $_SESSION['_mail_pending_arrivals'] ?? null;
+    if (!is_array($store)) {
+        return;
+    }
+
+    $key = \App\Services\MailCacheService::indexFolderPath(
+        \App\Services\FolderCache::resolvePath($folderPath)
+    );
+    $entry = $store[$key] ?? null;
+    if (!is_array($entry)) {
+        return;
+    }
+
+    ensure_session_writable();
+    $drop = array_fill_keys(array_map('intval', $uids), true);
+    $rows = array_values(array_filter(
+        (array) ($entry['rows'] ?? []),
+        static fn ($row) => is_array($row) && !isset($drop[(int) ($row['uid'] ?? 0)])
+    ));
+
+    if ($rows === []) {
+        unset($store[$key]);
+    } else {
+        $store[$key]['rows'] = $rows;
+    }
+    $_SESSION['_mail_pending_arrivals'] = $store;
+}
+
+/* --------------------------------------------------------------------------
+ * Pending-ops journal: every deferred move/delete is recorded BEFORE the
+ * instant response and marked done/failed by the background worker. Gives the
+ * client a truthful completion signal (stateful toast) and lets the filter
+ * resume operations whose PHP process died mid-run (crash-safe bulk deletes).
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @param array<string, list<int>> $sourceMap folder => uids
+ * @return int op id (0 when journaling is unavailable)
+ */
+function mail_ops_journal_create(string $opType, array $sourceMap, ?string $targetFolder, array $messageIds = []): int
+{
+    try {
+        App\Database::query(
+            'INSERT INTO mail_pending_ops (op_type, source_json, target_folder, message_ids_json, status)
+             VALUES (?, ?, ?, ?, \'pending\')',
+            [
+                $opType,
+                json_encode_safe($sourceMap),
+                $targetFolder,
+                $messageIds !== [] ? json_encode_safe(array_values($messageIds)) : null,
+            ]
+        );
+
+        $row = App\Database::fetchOne('SELECT LAST_INSERT_ID() AS id');
+
+        return (int) ($row['id'] ?? 0);
+    } catch (\Throwable $e) {
+        app_log('Ops journal create failed: ' . $e->getMessage());
+
+        return 0;
+    }
+}
+
+function mail_ops_journal_finish(int $opId, bool $ok, string $detail = ''): void
+{
+    if ($opId <= 0) {
+        return;
+    }
+    try {
+        App\Database::query(
+            'UPDATE mail_pending_ops SET status = ?, detail = ?, attempts = attempts + 1 WHERE id = ?',
+            [$ok ? 'done' : 'failed', $detail !== '' ? mb_substr($detail, 0, 500) : null, $opId]
+        );
+    } catch (\Throwable $e) {
+        app_log('Ops journal finish failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * @return array{status: string, detail: string}|null
+ */
+function mail_ops_journal_status(int $opId): ?array
+{
+    if ($opId <= 0) {
+        return null;
+    }
+    try {
+        $row = App\Database::fetchOne('SELECT status, detail FROM mail_pending_ops WHERE id = ? LIMIT 1', [$opId]);
+    } catch (\Throwable) {
+        return null;
+    }
+
+    return $row === null ? null : [
+        'status' => (string) ($row['status'] ?? 'pending'),
+        'detail' => (string) ($row['detail'] ?? ''),
+    ];
+}
+
 /**
  * Reconcile correspondent-folder badges that share unread state with the employee inbox.
  */
@@ -7697,6 +8031,13 @@ function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, b
 
     $list['messages'] = $messages;
     $list['total'] = count($messages);
+
+    // Show messages just moved INTO this folder (delete → Trash, move → target)
+    // immediately as optimistic rows, before the deferred IMAP move + resync
+    // land. Skipped during search — arrivals belong to the plain folder view.
+    if (trim($_GET['q'] ?? '') === '') {
+        $list = mail_merge_pending_arrivals_into_list($folderPath, $list);
+    }
 
     return $list;
 }

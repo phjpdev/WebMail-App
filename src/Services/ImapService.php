@@ -49,6 +49,21 @@ class ImapService
             return false;
         }
 
+        // Circuit breaker: after a connect failure every request would otherwise
+        // pay the full open-timeout again (folder opens appear frozen during a
+        // mail-server outage). For a short window after a failure, fail fast so
+        // the app serves cached lists instantly instead of hanging.
+        $breaker = base_path('storage/imap-down.flag');
+        $downSince = @filemtime($breaker);
+        if ($downSince !== false) {
+            if (time() - $downSince < 20) {
+                $this->lastError = 'IMAP connection failed recently — retry pending (mail server unreachable).';
+
+                return false;
+            }
+            @unlink($breaker);
+        }
+
         $config = config('mail');
         $mailbox = $config['mailbox_email'];
         $password = $config['mailbox_password'];
@@ -90,10 +105,14 @@ class ImapService
             $errors = imap_errors() ?: [];
             $this->lastError = 'IMAP connection failed: ' . implode('; ', $errors);
             app_log($this->lastError);
+            // Trip the breaker so requests in the next ~20s fail fast from cache
+            // instead of each hanging on the open-timeout.
+            @touch(base_path('storage/imap-down.flag'));
 
             return false;
         }
 
+        @unlink(base_path('storage/imap-down.flag'));
         $this->connection = $connection;
         self::$sharedConnection = $connection;
         self::registerShutdown();
@@ -237,11 +256,19 @@ class ImapService
             'total_pages' => 0,
         ];
 
+        // 'failed' distinguishes "the IMAP call broke" from "the folder is truly
+        // empty" — cache writers must NOT record a successful zero-message sync
+        // on failure, or a flaky server blanks folder lists for the cache TTL.
         if (!$this->openFolder($path)) {
-            return $empty;
+            return $empty + ['failed' => true];
         }
 
-        $total = imap_num_msg($this->connection) ?: 0;
+        $total = @imap_num_msg($this->connection);
+        if ($total === false) {
+            // Half-dead connection (ping ok, commands failing) — a failure, not
+            // an empty folder.
+            return $empty + ['failed' => true];
+        }
         if ($total === 0) {
             return $empty;
         }
@@ -254,7 +281,7 @@ class ImapService
 
         $overview = imap_fetch_overview($this->connection, "$start:$end");
         if ($overview === false) {
-            return $empty;
+            return $empty + ['failed' => true];
         }
 
         $overview = array_reverse($overview);

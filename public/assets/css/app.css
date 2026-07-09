@@ -748,6 +748,38 @@ a:hover {
     border: 1px solid #f1bbbc;
 }
 
+/* Stateful op toast: sticky "Moving to Trash…" with a spinner until the deferred
+   server work completes, then swapped for the ✓/error toast. */
+.toast-progress {
+    background: #f3f2f1;
+    color: #323130;
+    border: 1px solid #d2d0ce;
+}
+
+.toast-spinner {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    margin-top: 0.1rem;
+    border: 2px solid rgba(0, 0, 0, 0.15);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+/* Optimistic list rows (message still syncing to the server): visible but
+   clearly "in transit" — dimmed, non-selectable, checkbox disabled. */
+.mail-row--optimistic {
+    opacity: 0.62;
+    cursor: default;
+}
+
+.mail-row--optimistic .mail-row-check,
+.mail-row--optimistic .mail-kebab {
+    pointer-events: none;
+    opacity: 0.35;
+}
+
 .toast-close {
     flex-shrink: 0;
     margin-left: auto;
