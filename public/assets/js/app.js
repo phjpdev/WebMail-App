@@ -2471,9 +2471,70 @@
         openMessageInPaneNow(reloadUid, false, true);
     }
 
+    function composeSerializeState(form) {
+        var f = function (n) {
+            var el = form.querySelector('[name="' + n + '"]');
+            return el ? String(el.value || '') : '';
+        };
+        return JSON.stringify([f('to'), f('cc'), f('bcc'), f('subject'), f('body')]);
+    }
+
+    function composeHasContent(form) {
+        var f = function (n) {
+            var el = form.querySelector('[name="' + n + '"]');
+            return el ? String(el.value || '').trim() : '';
+        };
+        return !!(f('to') || f('subject') || f('body'));
+    }
+
+    // Gmail-style: closing the compose panel with the X must never silently lose
+    // typed content — save it as a draft (unless it's empty or unchanged since
+    // open/last save). Explicit Discard still discards.
+    function autoSaveComposeOnClose() {
+        var body = document.getElementById('compose-panel-body');
+        var form = body ? body.querySelector('form') : null;
+        if (!form) return;
+        try { syncComposeEditor(form); } catch (err) { /* editor not ready */ }
+        if (!composeHasContent(form)) return;
+        if (form.dataset.initialState && form.dataset.initialState === composeSerializeState(form)) return;
+
+        var params = new URLSearchParams();
+        try {
+            new FormData(form).forEach(function (v, k) {
+                if (typeof v === 'string') params.append(k, v);
+            });
+        } catch (err) {
+            return;
+        }
+        params.set('_csrf', csrf);
+        fetch(apiUrl('compose/draft'), {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                Accept: 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRF-Token': csrf || ''
+            },
+            body: params.toString()
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data && data.ok) {
+                showToast('success', 'Draft saved.', 2500);
+                refreshUnreadBadges(false);
+            }
+        }).catch(function () {});
+    }
+
     function bindComposeFormAjax(form) {
         if (!form || form.dataset.ajaxBound) return;
         form.dataset.ajaxBound = '1';
+
+        // Snapshot the opening state so closing an untouched compose (or an
+        // unchanged draft) doesn't create needless drafts.
+        try {
+            syncComposeEditor(form);
+            form.dataset.initialState = composeSerializeState(form);
+        } catch (err) { /* non-fatal */ }
 
         form.addEventListener('click', function (e) {
             var cancel = e.target.closest('[data-compose-cancel]');
@@ -2594,6 +2655,9 @@
                             }
                             var previousUid = parseInt(draftUidField.value || '0', 10);
                             draftUidField.value = String(data.draft_uid);
+                            // Saved: refresh the snapshot so closing without further
+                            // edits doesn't trigger a redundant auto-save.
+                            try { form.dataset.initialState = composeSerializeState(form); } catch (err) {}
                             if (draftPaneEl && previousUid && previousUid !== data.draft_uid) {
                                 removeRowByUid(previousUid);
                             }
@@ -2696,7 +2760,10 @@
         initComposeForm(document);
         var closeBtn = document.getElementById('compose-panel-close');
         if (closeBtn) {
-            closeBtn.addEventListener('click', function () { closeComposePanel(true); });
+            closeBtn.addEventListener('click', function () {
+                autoSaveComposeOnClose();
+                closeComposePanel(true);
+            });
         }
     }
 
