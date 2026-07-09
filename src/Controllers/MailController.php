@@ -298,8 +298,11 @@ class MailController
 
         if ($imapConnected && $query === '') {
             if ($preferCache && !$explicitRefresh) {
-                // Fast folder switch: keep session badge; client poll reconciles after sync.
-                $folderUnread = (int) ($folderData['unread_counts'][$folderPath] ?? 0);
+                // Fast folder switch: count from the local index (one cheap SQL
+                // COUNT), not the session badge — the session number can be stale
+                // and briefly renders a wrong header count until a poll heals it.
+                $folderUnread = MailCacheService::countBadgeFromIndex($folderPath);
+                FolderCache::setUnreadCount($folderPath, $folderUnread);
             } elseif ($this->shouldSkipPostSendFilter()) {
                 $folderUnread = FolderCache::sessionUnreadCountRaw($folderPath);
             } else {

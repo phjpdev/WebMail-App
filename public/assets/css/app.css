@@ -22,9 +22,10 @@
     --color-unread-accent: #0078d4;
     --mail-unread-bar-width: 5px;
 
-    /* Mail list — read vs unread text */
-    --color-mail-read-from: var(--color-text-secondary);
-    --color-mail-read-subject: var(--color-text-muted);
+    /* Mail list — read vs unread text. Read rows fade top→bottom: sender
+       darkest (scannable), subject medium, snippet lightest. */
+    --color-mail-read-from: var(--color-text);
+    --color-mail-read-subject: var(--color-text-secondary);
     --color-mail-read-date: var(--color-text-muted);
     --color-mail-unread-bg: #f3f2f1;
     --color-mail-unread-bg-hover: #edebe9;
@@ -1329,7 +1330,7 @@ mark.search-hit {
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--color-mail-read-from, var(--color-text-secondary));
-    font-weight: 400;
+    font-weight: 500;
 }
 
 .mail-card-date {
@@ -5431,6 +5432,20 @@ body:has(.mail-workspace) {
     border-color: var(--color-primary);
 }
 
+/* All-read folders: a quiet "12 messages" label instead of a pill, so the
+   header is always informative without shouting. */
+.page-header--mail .page-header-count--muted {
+    min-width: 0;
+    height: auto;
+    padding: 0;
+    border: none;
+    background: none;
+    border-radius: 0;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--color-text-muted);
+}
+
 .page-header-count--hidden {
     display: none !important;
 }
@@ -6065,7 +6080,7 @@ body:has(.mail-workspace) {
     white-space: nowrap;
     font-size: 0.8125rem;
     color: var(--color-mail-read-from, var(--color-text-secondary));
-    font-weight: 400;
+    font-weight: 500;
 }
 
 .mail-row--outlook:not(.mail-unread) .mail-row-date {

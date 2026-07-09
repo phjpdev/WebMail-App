@@ -797,7 +797,7 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
         $movePath = mail_resolve_move_target_path($path);
         $out[] = [
             'path' => $movePath,
-            'name' => (string) ($folder['name'] ?? $path),
+            'name' => sidebar_tidy_folder_label((string) ($folder['name'] ?? $path)),
         ];
     }
 
@@ -6292,7 +6292,7 @@ function sidebar_folder_label(array $folder, string $bucket): string
         return 'Inbox';
     }
 
-    return preg_replace('/^INBOX\./', '', $folder['name']);
+    return sidebar_tidy_folder_label((string) preg_replace('/^INBOX\./', '', $folder['name']));
 }
 
 /**
@@ -6574,8 +6574,23 @@ function sidebar_folder_tree_label(array $folder): string
     if ($parentPath !== null && isset($employeeRoots[strtolower($parentPath)])) {
         $leaf = substr($path, strlen($parentPath) + strlen($delimiter));
         if (is_string($leaf) && $leaf !== '') {
-            return $leaf;
+            return sidebar_tidy_folder_label($leaf);
         }
+    }
+
+    return sidebar_tidy_folder_label($label);
+}
+
+/**
+ * Present a folder label neatly: capitalise a lowercase initial letter (a raw
+ * "ankesh" leaf → "Ankesh") without disturbing already-cased or multi-word
+ * admin-set display names.
+ */
+function sidebar_tidy_folder_label(string $label): string
+{
+    $first = substr($label, 0, 1);
+    if ($first >= 'a' && $first <= 'z') {
+        return strtoupper($first) . substr($label, 1);
     }
 
     return $label;

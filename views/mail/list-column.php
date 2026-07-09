@@ -34,7 +34,7 @@
         <?php if ($headerUnread > 0): ?>
         <span class="page-header-count page-header-count--unread" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="<?= $headerUnread ?>" title="<?= e($headerTitle) ?>"><?= $headerUnread ?></span>
         <?php else: ?>
-        <span class="page-header-count page-header-count--hidden" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="0" title="<?= e($headerTitle) ?>" hidden aria-hidden="true"></span>
+        <span class="page-header-count page-header-count--muted<?= (int) $totalMessages === 0 ? ' page-header-count--hidden' : '' ?>" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="0" title="<?= e($headerTitle) ?>"<?= (int) $totalMessages === 0 ? ' hidden aria-hidden="true"' : '' ?>><?= e($headerTitle) ?></span>
         <?php endif; ?>
     </div>
 </section>

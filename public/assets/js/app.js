@@ -200,7 +200,8 @@
             uid: String(uid)
         }).then(function (data) {
             setRowSeen(uid, true);
-            if (wasUnread) bumpFolderUnread(-1);
+            // Badges update from the server's authoritative counts below only —
+            // no local estimate (per client: correct number over instant number).
             if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
                 applyUnreadCounts(data.unread_counts);
             }
@@ -634,7 +635,6 @@
                 syncReadSeenButton(readCard);
             }
             noteRecentlyMarkedRead(uid);
-            if (rowWasUnread) bumpFolderUnread(-1);
             if (!data.was_unread && rowWasUnread) {
                 persistMarkRead(uid, rowWasUnread);
             }
@@ -2868,20 +2868,31 @@
         var u = typeof unread === 'number' ? unread : 0;
         label.setAttribute('data-total', String(typeof total === 'number' ? total : 0));
         label.setAttribute('data-unread', String(u));
+        var t = typeof total === 'number' ? total : 0;
         if (u > 0) {
             label.hidden = false;
             label.removeAttribute('aria-hidden');
             label.classList.add('page-header-count--unread');
-            label.classList.remove('page-header-count--hidden');
+            label.classList.remove('page-header-count--hidden', 'page-header-count--muted');
             label.textContent = String(u);
             label.title = u + ' unread';
+        } else if (t > 0) {
+            // All read: quiet "N messages" (or "N drafts") label, never blank.
+            var noun = currentFolderKind() === 'draft' ? ' draft' : ' message';
+            var text = t + noun + (t === 1 ? '' : 's');
+            label.hidden = false;
+            label.removeAttribute('aria-hidden');
+            label.classList.remove('page-header-count--unread', 'page-header-count--hidden');
+            label.classList.add('page-header-count--muted');
+            label.textContent = text;
+            label.title = text;
         } else {
             label.hidden = true;
             label.setAttribute('aria-hidden', 'true');
-            label.classList.remove('page-header-count--unread');
+            label.classList.remove('page-header-count--unread', 'page-header-count--muted');
             label.classList.add('page-header-count--hidden');
             label.textContent = '';
-            label.title = (typeof total === 'number' ? total : 0) + ' message' + (total === 1 ? '' : 's');
+            label.title = '0 messages';
         }
     }
 
@@ -4364,6 +4375,38 @@
                 groupBadge.remove();
             }
         });
+
+        // Heal the folder HEADER count from the same authoritative counts. The
+        // sidebar badge self-corrects on every poll via this function; the header
+        // count label used to move only by optimistic deltas, so any drift there
+        // was permanent — the header ("Erik 3") could disagree with the sidebar
+        // ("Erik 1"). Now both reflect server truth for the open folder.
+        var headerPlain = getListCard() ? (getListCard().getAttribute('data-folder-plain') || '') : '';
+        if (headerPlain
+            && !isDraftFolder()
+            && folderShowsUnreadBadge(headerPlain)
+            && countsIncludeFolder(counts, headerPlain)) {
+            var headerLabel = document.getElementById('mail-count-label');
+            if (headerLabel) {
+                var headerTotal = parseInt(headerLabel.getAttribute('data-total') || '0', 10) || 0;
+                updateMailCount(headerTotal, folderUnreadLookup(lookup, headerPlain));
+            }
+        }
+    }
+
+    // True when the counts payload actually carries the folder (so a partial
+    // payload never wrongly zeroes the header). The server sends both the
+    // "INBOX.Erik" and "INBOX.Erik.Inbox" key forms, so a direct hit is normal.
+    function countsIncludeFolder(counts, path) {
+        if (!counts || !path) return false;
+        var lower = path.toLowerCase();
+        if (counts[path] != null || counts[lower] != null) return true;
+        var m = /^INBOX\.([^.]+)\.Inbox$/i.exec(path);
+        if (m) {
+            var container = 'INBOX.' + m[1];
+            if (counts[container] != null || counts[container.toLowerCase()] != null) return true;
+        }
+        return false;
     }
 
     function sidebarMailboxRootKey(path) {
@@ -5877,9 +5920,9 @@
 
         if (isInstantListAction) {
             showToast('success', successMsg);
-            if (action === 'mark-read' || action === 'mark-unread') {
-                bumpFolderUnread(seenDelta);
-            }
+            // mark-read/mark-unread: badge counts update only when the server
+            // response arrives (applyUnreadCounts inside fireAndForgetAction) —
+            // the client asked for the correct number over an instant estimate.
             finishBulkSelectionUi(action, allInFolder, uids);
             fireAndForgetAction(actionPath, payload);
         }
@@ -7635,7 +7678,8 @@
                 readCard.setAttribute('data-seen', '1');
                 syncReadSeenButton(readCard);
             }
-            if (wasUnread) bumpFolderUnread(-1);
+            // Badge counts update only from the server response (applyUnreadCounts
+            // in fireAndForgetAction) — correct number over instant estimate.
             showToast('success', 'Marked as read.');
             var readPayload = new URLSearchParams();
             readPayload.set('_csrf', csrf);
@@ -7648,7 +7692,6 @@
                 readCard.setAttribute('data-seen', '0');
                 syncReadSeenButton(readCard);
             }
-            if (!wasUnread) bumpFolderUnread(1);
             showToast('success', 'Marked as unread.');
             var unreadPayload = new URLSearchParams();
             unreadPayload.set('_csrf', csrf);
