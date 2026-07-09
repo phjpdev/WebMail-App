@@ -767,6 +767,69 @@ a:hover {
     animation: spin 0.7s linear infinite;
 }
 
+/* Searching state: the magnifier in the header search box becomes a spinner
+   while the search request is in flight. */
+.header-search-form.is-searching .search-field-icon svg {
+    display: none;
+}
+
+.header-search-form.is-searching .search-field-icon::after {
+    content: '';
+    display: block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+/* Search results: match highlighting, result count, clear link, empty state. */
+mark.search-hit {
+    background: #fff2a8;
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+[data-theme="dark"] mark.search-hit {
+    background: #8a6d00;
+    color: #fff;
+}
+
+.search-result-count {
+    margin: 0.2rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+}
+
+.search-result-scope {
+    opacity: 0.85;
+}
+
+.search-clear-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: auto;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-primary);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.search-clear-link:hover {
+    text-decoration: underline;
+}
+
+.empty-state--search .empty-state-hint {
+    max-width: 340px;
+    margin: 0.35rem auto 0.9rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+}
+
 /* Optimistic list rows (message still syncing to the server): visible but
    clearly "in transit" — dimmed, non-selectable, checkbox disabled. */
 .mail-row--optimistic {

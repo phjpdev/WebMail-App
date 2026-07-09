@@ -38,10 +38,12 @@ $rowFolderB64 = encode_folder_path($rowFolder);
                 <?php if ($rowDisplay['is_draft']): ?>
                     <span class="mail-row-draft-badge">[Draft]</span>
                 <?php endif; ?>
-                <span class="mail-row-from" title="<?= e($fromDisplay) ?>"><?= e($fromDisplay) ?></span>
+                <span class="mail-row-from" title="<?= e($fromDisplay) ?>"><?= !empty($msg['_hl_from']) ? $msg['_hl_from'] : e($fromDisplay) ?></span>
             </div>
-            <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject'] ?? '(no subject)') ?></div>
-            <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= $snippet !== '' ? e($snippet) : '' ?></div>
+            <?php /* _hl_* fields are pre-escaped server-side with <mark> highlights
+                (search results only) — safe to output raw. */ ?>
+            <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= !empty($msg['_hl_subject']) ? $msg['_hl_subject'] : e($msg['subject'] ?? '(no subject)') ?></div>
+            <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= !empty($msg['_hl_snippet']) ? $msg['_hl_snippet'] : ($snippet !== '' ? e($snippet) : '') ?></div>
         </div>
         <span class="mail-row-meta">
             <?php if (!empty($msg['has_attachment'])): ?>

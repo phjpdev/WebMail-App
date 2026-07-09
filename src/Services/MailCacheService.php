@@ -2283,7 +2283,7 @@ class MailCacheService
 
         $like = '%' . $query . '%';
         $placeholders = implode(',', array_fill(0, count($accessiblePaths), '?'));
-        $params = array_merge($accessiblePaths, [$like, $like, $like, $like]);
+        $params = array_merge($accessiblePaths, [$like, $like, $like, $like, $like]);
 
         $countRow = Database::fetchOne(
             "SELECT COUNT(*) AS c
@@ -2295,6 +2295,7 @@ class MailCacheService
                     i.subject LIKE ?
                     OR i.from_addr LIKE ?
                     OR i.to_addrs LIKE ?
+                    OR i.cc_addrs LIKE ?
                     OR b.plain_body LIKE ?
                )",
             $params
@@ -2323,6 +2324,7 @@ class MailCacheService
                     i.subject LIKE ?
                     OR i.from_addr LIKE ?
                     OR i.to_addrs LIKE ?
+                    OR i.cc_addrs LIKE ?
                     OR b.plain_body LIKE ?
                )
              ORDER BY i.msg_date DESC, i.imap_uid DESC
@@ -2339,6 +2341,8 @@ class MailCacheService
 
             $msg = self::indexRowToMessage($row, $folderPath);
             $msg['_folder_path'] = $folderPath;
+            // Raw body text for search-context snippets (avoids a per-row re-query).
+            $msg['_plain'] = (string) ($row['plain_body'] ?? '');
 
             $filtered = employee_filter_correspondent_list($folderPath, [
                 'messages' => [$msg],

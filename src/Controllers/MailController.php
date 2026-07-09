@@ -64,6 +64,25 @@ class MailController
         foreach ($list['messages'] as &$msg) {
             $folderPath = (string) ($msg['_folder_path'] ?? '');
             $msg['_folder_label'] = folder_display_name($folders, $folderPath);
+
+            // Professional search UX: show WHY a message matched. When the query
+            // hit the body, replace the default snippet with the matching context;
+            // highlight the query in both subject and snippet (<mark>).
+            $plain = (string) ($msg['_plain'] ?? '');
+            if ($plain === '') {
+                $body = MailCacheService::getBody($folderPath, (int) ($msg['uid'] ?? 0));
+                $plain = (string) ($body['plain'] ?? '');
+            }
+            $context = mail_search_context_snippet($plain, $query);
+            if ($context !== null) {
+                $msg['snippet'] = $context;
+            }
+            $msg['_hl_subject'] = mail_search_highlight((string) ($msg['subject'] ?? '(no subject)'), $query);
+            $msg['_hl_snippet'] = mail_search_highlight((string) ($msg['snippet'] ?? ''), $query);
+            $fromDisplay = (string) ($msg['list_from'] ?? '');
+            if ($fromDisplay !== '' && mb_stripos($fromDisplay, $query) !== false) {
+                $msg['_hl_from'] = mail_search_highlight($fromDisplay, $query);
+            }
         }
         unset($msg);
 

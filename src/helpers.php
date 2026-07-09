@@ -3128,6 +3128,58 @@ function mail_ops_journal_status(int $opId): ?array
 }
 
 /**
+ * Escape text for HTML and wrap every case-insensitive match of $query in
+ * <mark class="search-hit"> for search-result highlighting.
+ */
+function mail_search_highlight(string $text, string $query): string
+{
+    $text = trim($text);
+    if ($text === '' || trim($query) === '') {
+        return e($text);
+    }
+
+    $parts = preg_split('/(' . preg_quote(trim($query), '/') . ')/iu', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
+    if ($parts === false || count($parts) < 2) {
+        return e($text);
+    }
+
+    $out = '';
+    foreach ($parts as $i => $part) {
+        $out .= ($i % 2 === 1)
+            ? '<mark class="search-hit">' . e($part) . '</mark>'
+            : e($part);
+    }
+
+    return $out;
+}
+
+/**
+ * Snippet centred on the first case-insensitive match of $query in the body,
+ * so search results show WHY they matched instead of just the body's start.
+ * Null when the body doesn't contain the query.
+ */
+function mail_search_context_snippet(string $plain, string $query, int $radius = 70): ?string
+{
+    $plain = trim(preg_replace('/\s+/u', ' ', $plain) ?? '');
+    $query = trim($query);
+    if ($plain === '' || $query === '') {
+        return null;
+    }
+
+    $pos = mb_stripos($plain, $query);
+    if ($pos === false) {
+        return null;
+    }
+
+    $start = max(0, $pos - $radius);
+    $len = mb_strlen($query) + $radius * 2;
+    $snippet = mb_substr($plain, $start, $len);
+
+    return ($start > 0 ? '…' : '') . trim($snippet)
+        . ($start + $len < mb_strlen($plain) ? '…' : '');
+}
+
+/**
  * Reconcile correspondent-folder badges that share unread state with the employee inbox.
  */
 function mail_reconcile_linked_correspondent_badges(string $folderPath): void

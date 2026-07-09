@@ -5024,6 +5024,26 @@
         return input && input.value ? input.value.trim() : '';
     }
 
+    // Instant feedback while the search request runs (body searches can take
+    // seconds on the IMAP fallback): spinner in the search field + a clear
+    // "Searching mail…" overlay until the results page loads.
+    function initGlobalSearchFeedback() {
+        var form = document.getElementById('global-search-form');
+        if (!form) return;
+        form.addEventListener('submit', function () {
+            var input = document.getElementById('global-search');
+            var q = input && input.value ? input.value.trim() : '';
+            if (!q) return;
+            form.classList.add('is-searching');
+            showAppBusy('Searching mail…');
+        });
+        // Back/forward cache restore would otherwise leave a stuck overlay.
+        window.addEventListener('pageshow', function () {
+            form.classList.remove('is-searching');
+            hideAppBusy();
+        });
+    }
+
     function isGlobalSearchView() {
         var card = document.querySelector('.mail-list-card[data-global-search="1"]');
         return !!card;
@@ -8207,6 +8227,7 @@
         initAjaxFolderNav();
         initStatusPage();
         initSidebarBadgesOnLoad();
+        initGlobalSearchFeedback();
         initMailBootstrap();
         initLiveSync();  // gentle variant: one lightweight request every 2 min
         initComposePanel();

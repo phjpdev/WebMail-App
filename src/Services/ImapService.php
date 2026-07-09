@@ -1044,6 +1044,8 @@ class ImapService
         $criteriaList = [
             'SUBJECT "' . $escaped . '"',
             'FROM "' . $escaped . '"',
+            'TO "' . $escaped . '"',
+            'CC "' . $escaped . '"',
             'TEXT "' . $escaped . '"',
         ];
 
@@ -1082,8 +1084,9 @@ class ImapService
         $uids = [];
         foreach ($overview as $row) {
             $from = isset($row->from) ? strtolower($this->decodeMimeHeader($row->from)) : '';
+            $to = isset($row->to) ? strtolower($this->decodeMimeHeader($row->to)) : '';
             $subject = isset($row->subject) ? strtolower($this->decodeMimeHeader($row->subject)) : '';
-            if (str_contains($from, $needle) || str_contains($subject, $needle)) {
+            if (str_contains($from, $needle) || str_contains($to, $needle) || str_contains($subject, $needle)) {
                 $uids[] = (int) ($row->uid ?? 0);
             }
         }
