@@ -3241,23 +3241,32 @@
         }
 
         return {
-            // Response arrived: follow the journal op until it truly completes. Big
-            // bulk ops with per-message repairs can run well past 30s on this host,
-            // so poll until done/failed (max ~2 min) — never declare success early.
+            // Response arrived: follow the journal op(s) until they truly complete.
+            // Accepts one op id or an array (restore can span several origin
+            // folders). Big bulk ops with per-message repairs can run well past
+            // 30s on this host, so poll until done/failed (max ~2 min) — never
+            // declare success early.
             attach: function (opId) {
                 if (finished) return;
-                if (!opId) { finish(true); return; }
+                var ids = (Array.isArray(opId) ? opId : [opId]).filter(function (v) { return !!v; });
+                if (!ids.length) { finish(true); return; }
                 var startedAt = Date.now();
                 var delays = [1500, 2500, 4000, 6000];
                 var step = 0;
                 function poll() {
-                    fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(opId)), {
-                        credentials: 'same-origin',
-                        headers: { Accept: 'application/json' }
-                    }).then(function (r) { return r.json(); }).then(function (data) {
+                    Promise.all(ids.map(function (id) {
+                        return fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(id)), {
+                            credentials: 'same-origin',
+                            headers: { Accept: 'application/json' }
+                        }).then(function (r) { return r.json(); }).catch(function () { return null; });
+                    })).then(function (results) {
                         if (finished) return;
-                        if (data && data.status === 'done') { finish(true); return; }
-                        if (data && data.status === 'failed') { finish(false); return; }
+                        var anyFailed = results.some(function (d) { return d && d.status === 'failed'; });
+                        if (anyFailed) { finish(false); return; }
+                        ids = ids.filter(function (id, i) {
+                            return !(results[i] && results[i].status === 'done');
+                        });
+                        if (!ids.length) { finish(true); return; }
                         next();
                     }).catch(next);
                 }
@@ -5172,6 +5181,14 @@
             if (btn) btn.disabled = !hasSelection;
         });
 
+        // Restore lives only in Trash: moves the selection back to the folders
+        // the messages were deleted from.
+        var restoreBtn = toolbar.querySelector('[data-cmd="restore"]');
+        if (restoreBtn) {
+            restoreBtn.hidden = !isTrashFolder();
+            restoreBtn.disabled = !hasSelection;
+        }
+
         function setMobileCmd(cmd, enabled, visible) {
             var btn = toolbar.querySelector('[data-cmd="' + cmd + '"]');
             if (!btn) return;
@@ -5246,13 +5263,14 @@
 
         var folderEnc = currentMailFolderEnc();
         if (!folderEnc) return;
-        if ((action === 'delete' || action === 'move') && !guardFolderListReady(action === 'delete' ? 'Delete' : 'Move')) {
+        if ((action === 'delete' || action === 'move' || action === 'restore')
+            && !guardFolderListReady(action === 'delete' ? 'Delete' : (action === 'restore' ? 'Restore' : 'Move'))) {
             return;
         }
-        if (action === 'delete' && !selectAllInFolder && !uids.length) {
+        if ((action === 'delete' || action === 'restore') && !selectAllInFolder && !uids.length) {
             showToast('error', selectionIncludedSyncingRows()
                 ? 'This message is still syncing — try again in a few seconds.'
-                : 'No messages selected to delete.');
+                : ('No messages selected to ' + (action === 'restore' ? 'restore.' : 'delete.')));
             return;
         }
         var selectionCount = effectiveSelectionCount();
@@ -5540,7 +5558,7 @@
                 }
             }
             if (options.opToastHandle) {
-                options.opToastHandle.attach(data && data.op_id);
+                options.opToastHandle.attach(data && (data.op_ids || data.op_id));
             }
             return data;
         }).catch(function (err) {
@@ -5614,6 +5632,11 @@
                 payload.set('unread_delta', String(folderRemovalDelta(uids, false)));
             }
             successMsg = deleteSuccessMessage(selectionCount);
+        } else if (action === 'restore') {
+            actionPath = 'message/bulk-restore';
+            successMsg = selectionCount === 1
+                ? 'Message restored to its original folder.'
+                : 'Selected messages restored to their original folders.';
         } else if (action === 'move') {
             var target = document.getElementById('cmd-move-target');
             if (!target || !target.value) {
@@ -5680,15 +5703,16 @@
             return;
         }
 
-        var instantActions = ['delete', 'move', 'mark-read', 'mark-unread', 'flag', 'unflag'];
+        var instantActions = ['delete', 'move', 'restore', 'mark-read', 'mark-unread', 'flag', 'unflag'];
         var isInstantListAction = instantActions.indexOf(action) >= 0;
         var moveTarget = action === 'move' ? (document.getElementById('cmd-move-target') || {}).value || '' : '';
 
-        if (action === 'delete' || action === 'move') {
+        if (action === 'delete' || action === 'move' || action === 'restore') {
             if (!allInFolder && !uids.length) {
                 var emptyMsg = selectionIncludedSyncingRows()
                     ? 'This message is still syncing — try again in a few seconds.'
-                    : (action === 'delete' ? 'No messages selected to delete.' : 'No messages selected to move.');
+                    : (action === 'delete' ? 'No messages selected to delete.'
+                        : (action === 'restore' ? 'No messages selected to restore.' : 'No messages selected to move.'));
                 showToast('error', emptyMsg);
                 return Promise.reject(new Error(emptyMsg));
             }
@@ -5728,6 +5752,21 @@
                         fail: isTrashFolder()
                             ? 'Some messages could not be deleted. Please try again.'
                             : 'Some messages could not be moved to Trash. They have been restored.'
+                    })
+                }).finally(function () {
+                    listMutationInFlight = false;
+                    endListMutationQuiet(800);
+                });
+            }
+            if (action === 'restore') {
+                return fireListMutation(actionPath, payload, {
+                    suppressErrorToast: true,
+                    rollbackUids: uids.slice(),
+                    rollbackAllInFolder: allInFolder,
+                    opToastHandle: beginOpToast({
+                        progress: selectionCount === 1 ? 'Restoring message…' : 'Restoring ' + selectionCount + ' messages…',
+                        done: successMsg,
+                        fail: 'Some messages could not be restored. They remain in Trash.'
                     })
                 }).finally(function () {
                     listMutationInFlight = false;
@@ -7333,11 +7372,15 @@
         // to the WHOLE selection (Gmail-style). Users who select 4 messages and
         // pick "Move to…" on a row/pane control expect all 4 to move — not just
         // the one the control belongs to.
-        var multiSelections = (kind === 'move' || kind === 'trash') ? selectedMailSelections() : [];
+        var multiSelections = (kind === 'move' || kind === 'trash' || kind === 'restore') ? selectedMailSelections() : [];
         var actsOnSelection = multiSelections.length > 1
             && multiSelections.some(function (s) { return String(s.uid) === String(uid); });
         if (actsOnSelection) {
             var listFolderEnc = currentMailFolderEnc() || sourceFolderEnc;
+            if (kind === 'restore') {
+                runBulkCommandExecute('restore', multiSelections, listFolderEnc, triggerBtn);
+                return Promise.resolve(true);
+            }
             if (kind === 'move' && extra.target_folder) {
                 var moveSel = document.getElementById('cmd-move-target');
                 if (moveSel) {
@@ -7464,7 +7507,7 @@
             Object.keys(fields).forEach(function (k) { unflagPayload.set(k, fields[k]); });
             fireAndForgetAction('message/' + kind, unflagPayload);
             return Promise.resolve(true);
-        } else if (kind === 'spam' || kind === 'trash' || kind === 'move') {
+        } else if (kind === 'spam' || kind === 'trash' || kind === 'move' || kind === 'restore') {
             var affectsBadge = wasUnread || isDraftFolder();
             fields.unread_delta = affectsBadge ? 1 : 0;
 
@@ -7477,6 +7520,18 @@
             removeRowByUid(uid);
             if (affectsBadge) {
                 bumpFolderUnread(-1);
+            }
+
+            if (kind === 'restore') {
+                clearReadingPaneIfShowingUids([uid]);
+                return fireListMutation('message/restore', movePayload, {
+                    suppressErrorToast: true,
+                    opToastHandle: beginOpToast({
+                        progress: 'Restoring message…',
+                        done: 'Message restored to its original folder.',
+                        fail: 'The message could not be restored. It remains in Trash.'
+                    })
+                }).finally(function () { endListMutationQuiet(800); });
             }
 
             if (kind === 'trash') {
@@ -7556,6 +7611,7 @@
             folder: '<path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
             spam: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
             trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M9 7V4h6v3"/>',
+            restore: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/>',
             chevron: '<path d="M9 6l6 6-6 6"/>'
         };
 
@@ -7806,6 +7862,10 @@
                 });
             }
             addItem('Move to Spam', ICONS.spam, function () { dispatchMessageAction('spam', sourceFolderEnc, uid); });
+
+            if (isTrashFolder()) {
+                addItem('Restore to original folder', ICONS.restore, function () { dispatchMessageAction('restore', sourceFolderEnc, uid); });
+            }
 
             addSep();
             addItem(isTrashFolder() ? 'Delete permanently' : 'Delete', ICONS.trash, function () { dispatchMessageAction('trash', sourceFolderEnc, uid); }, true);

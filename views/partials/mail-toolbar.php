@@ -41,6 +41,13 @@
                 <span class="mail-cmd-label">Delete</span>
             </button>
 
+            <?php /* Trash only (toggled by JS): move selection back to the folders
+               the messages were deleted from (Outlook-style restore). */ ?>
+            <button type="button" class="mail-cmd-btn mail-cmd-btn--restore" data-cmd="restore" disabled hidden title="Restore to original folder">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>
+                <span class="mail-cmd-label">Restore</span>
+            </button>
+
             <div class="mail-cmd-move" id="mail-cmd-move">
                 <label class="sr-only" for="cmd-move-target">Move to folder</label>
                 <div class="mail-cmd-move-select-wrap" aria-hidden="true">

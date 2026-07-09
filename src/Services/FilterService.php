@@ -340,10 +340,11 @@ class FilterService
                  LIMIT 5"
             )->fetchAll();
 
-            // Housekeeping: drop finished entries after a day.
+            // Housekeeping: keep finished entries 30 days — move ops double as the
+            // "original folder" record for Restore-from-Trash (by Message-ID).
             Database::query(
                 "DELETE FROM mail_pending_ops
-                 WHERE status IN ('done', 'failed') AND updated_at < (NOW() - INTERVAL 1 DAY)"
+                 WHERE status IN ('done', 'failed') AND updated_at < (NOW() - INTERVAL 30 DAY)"
             );
         } catch (\Throwable) {
             return; // journal table missing — feature disabled
