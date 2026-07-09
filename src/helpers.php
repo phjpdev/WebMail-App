@@ -2925,11 +2925,15 @@ function mail_merge_pending_arrivals_into_list(string $folderPath, array $list):
         $pendingRows[] = $row;
     }
 
-    // Ghost-kill: an arrival whose journal op has SETTLED (done/failed a few
-    // seconds ago — the target resync ran before the op was marked) but whose
-    // real row still isn't in the list is a ghost: the move failed, or the real
-    // row was deleted before a render matched it. Drop it so users can't act on
-    // a row that no longer represents anything.
+    // Ghost-kill: an arrival whose journal op has SETTLED but whose real row
+    // never materialised is a ghost. Rules:
+    //   op FAILED  → drop (the message was restored to its source folder).
+    //   op DONE    → drop ONLY if the real row exists in this folder's INDEX
+    //                (it may be on another list page). If the op is done but the
+    //                index doesn't have it yet — the post-move target sync failed
+    //                on the flaky host — KEEP the placeholder; the arrivals-pending
+    //                header-sync hook will pull the real row in shortly. Dropping
+    //                early here made freshly-moved messages vanish on refresh.
     if ($pendingRows !== []) {
         $opIds = array_values(array_unique(array_filter(array_map(
             static fn (array $r): int => (int) ($r['op_id'] ?? 0),
@@ -2940,23 +2944,64 @@ function mail_merge_pending_arrivals_into_list(string $folderPath, array $list):
             try {
                 $placeholders = implode(',', array_fill(0, count($opIds), '?'));
                 foreach (App\Database::query(
-                    "SELECT id FROM mail_pending_ops
+                    "SELECT id, status FROM mail_pending_ops
                      WHERE id IN ({$placeholders})
                        AND status <> 'pending'
                        AND updated_at < (NOW() - INTERVAL 5 SECOND)",
                     $opIds
                 )->fetchAll() as $r) {
-                    $settled[(int) $r['id']] = true;
+                    $settled[(int) $r['id']] = (string) $r['status'];
                 }
             } catch (\Throwable) {
                 $settled = [];
             }
             if ($settled !== []) {
+                // Which of this folder's index rows carry the arrivals' Message-IDs?
+                $indexMids = [];
+                $candidateMids = [];
+                foreach ($pendingRows as $row) {
+                    $st = $settled[(int) ($row['op_id'] ?? 0)] ?? null;
+                    if ($st === 'done') {
+                        $mid = mail_normalize_thread_id((string) ($row['message_id'] ?? ''));
+                        if ($mid !== '') {
+                            $candidateMids[] = $mid;
+                        }
+                    }
+                }
+                if ($candidateMids !== []) {
+                    $key = \App\Services\MailCacheService::indexFolderPath(
+                        \App\Services\FolderCache::resolvePath($folderPath)
+                    );
+                    try {
+                        $ph = implode(',', array_fill(0, count($candidateMids), '?'));
+                        foreach (App\Database::query(
+                            "SELECT message_id FROM mail_index
+                             WHERE folder_path = ? AND message_id IS NOT NULL
+                               AND LOWER(REPLACE(REPLACE(message_id, '<', ''), '>', '')) IN ({$ph})",
+                            array_merge([$key], $candidateMids)
+                        )->fetchAll() as $r) {
+                            $indexMids[mail_normalize_thread_id((string) $r['message_id'])] = true;
+                        }
+                    } catch (\Throwable) {
+                        $indexMids = [];
+                    }
+                }
+
                 $keep = [];
                 foreach ($pendingRows as $row) {
-                    if (isset($settled[(int) ($row['op_id'] ?? 0)])) {
+                    $st = $settled[(int) ($row['op_id'] ?? 0)] ?? null;
+                    if ($st === 'failed') {
                         $landed[] = (int) ($row['uid'] ?? 0);
                         continue;
+                    }
+                    if ($st === 'done') {
+                        $mid = mail_normalize_thread_id((string) ($row['message_id'] ?? ''));
+                        if ($mid === '' || isset($indexMids[$mid])) {
+                            // Real row is in the index (or unverifiable) — placeholder done.
+                            $landed[] = (int) ($row['uid'] ?? 0);
+                            continue;
+                        }
+                        // Done but index doesn't have it yet — keep showing it.
                     }
                     $keep[] = $row;
                 }

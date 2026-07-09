@@ -3197,72 +3197,88 @@
         if (card) card.setAttribute('data-total-messages', '0');
     }
 
-    // Stateful toast for deferred server work (move/delete): shows a sticky
-    // "Moving to Trash…" with a spinner, polls the ops journal, then flips to
-    // "✓ Moved" or an error. Truthful without blocking the UI (Gmail-style).
-    function trackPendingOp(opId, labels) {
+    // Stateful toast for deferred server work (move/delete). Created the INSTANT
+    // the user triggers the action (before the request even returns — responses
+    // can take seconds on this host), then attached to the ops journal entry and
+    // flipped to "✓ Moved" / an error when the server work truly completes.
+    function beginOpToast(labels) {
         labels = labels || {};
         var stack = document.getElementById('toast-stack');
-        if (!opId || !stack) {
-            if (labels.done) showToast('success', labels.done);
-            return;
+        var toast = null;
+        if (stack) {
+            toast = document.createElement('div');
+            toast.className = 'toast toast-success toast-progress';
+            toast.setAttribute('role', 'status');
+            var spin = document.createElement('span');
+            spin.className = 'toast-spinner';
+            spin.setAttribute('aria-hidden', 'true');
+            toast.appendChild(spin);
+            var text = document.createElement('span');
+            text.textContent = labels.progress || 'Working…';
+            toast.appendChild(text);
+            stack.appendChild(toast);
         }
-
-        var toast = document.createElement('div');
-        toast.className = 'toast toast-success toast-progress';
-        toast.setAttribute('role', 'status');
-        var spin = document.createElement('span');
-        spin.className = 'toast-spinner';
-        spin.setAttribute('aria-hidden', 'true');
-        toast.appendChild(spin);
-        var text = document.createElement('span');
-        text.textContent = labels.progress || 'Working…';
-        toast.appendChild(text);
-        stack.appendChild(toast);
 
         var finished = false;
         function dismiss() {
-            if (toast.parentNode) toast.parentNode.removeChild(toast);
+            if (toast && toast.parentNode) toast.parentNode.removeChild(toast);
         }
-        function finish(ok) {
+        function finish(ok, failMsg) {
             if (finished) return;
             finished = true;
             dismiss();
             if (ok) {
                 if (labels.done) showToast('success', labels.done, 3500);
                 refreshUnreadBadges(false);
+                // Refresh the open folder right away — if the user is looking at
+                // the target, the just-arrived messages appear without waiting for
+                // the next poll cycle.
+                scheduleMailPoll(true, false);
             } else {
-                showToast('error', labels.fail || 'The action could not be completed. The messages have been restored.', 8000);
+                showToast('error', failMsg || labels.fail || 'The action could not be completed. The messages have been restored.', 8000);
                 scheduleMailPoll(true, false);
             }
         }
 
-        var delays = [1500, 2500, 4000, 6000, 8000];
-        var step = 0;
-        function poll() {
-            fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(opId)), {
-                credentials: 'same-origin',
-                headers: { Accept: 'application/json' }
-            }).then(function (r) { return r.json(); }).then(function (data) {
+        return {
+            // Response arrived: follow the journal op until it truly completes. Big
+            // bulk ops with per-message repairs can run well past 30s on this host,
+            // so poll until done/failed (max ~2 min) — never declare success early.
+            attach: function (opId) {
                 if (finished) return;
-                if (data && data.status === 'done') { finish(true); return; }
-                if (data && data.status === 'failed') { finish(false); return; }
+                if (!opId) { finish(true); return; }
+                var startedAt = Date.now();
+                var delays = [1500, 2500, 4000, 6000];
+                var step = 0;
+                function poll() {
+                    fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(opId)), {
+                        credentials: 'same-origin',
+                        headers: { Accept: 'application/json' }
+                    }).then(function (r) { return r.json(); }).then(function (data) {
+                        if (finished) return;
+                        if (data && data.status === 'done') { finish(true); return; }
+                        if (data && data.status === 'failed') { finish(false); return; }
+                        next();
+                    }).catch(next);
+                }
+                function next() {
+                    if (finished) return;
+                    if (Date.now() - startedAt > 120000) {
+                        // Exceptionally long op: stop polling without claiming
+                        // success — the journal + resume guarantee completion and
+                        // the folder updates itself as messages land.
+                        finished = true;
+                        dismiss();
+                        showToast('success', 'Still finishing in the background — the folder will update automatically.', 6000);
+                        scheduleMailPoll(true, false);
+                        return;
+                    }
+                    window.setTimeout(poll, step < delays.length ? delays[step++] : 8000);
+                }
                 next();
-            }).catch(next);
-        }
-        function next() {
-            if (finished) return;
-            if (step >= delays.length) {
-                // Still running (big bulk op / slow host). Stop polling and show the
-                // neutral success — the journal + filter resume guarantee completion.
-                finished = true;
-                dismiss();
-                if (labels.done) showToast('success', labels.done, 3500);
-                return;
-            }
-            window.setTimeout(poll, delays[step++]);
-        }
-        next();
+            },
+            fail: function (msg) { finish(false, msg); }
+        };
     }
 
     function showToast(type, message, duration) {
@@ -5523,12 +5539,14 @@
                     scheduleMailPoll(true, false);
                 }
             }
-            if (options.opToast) {
-                trackPendingOp(data && data.op_id, options.opToast);
+            if (options.opToastHandle) {
+                options.opToastHandle.attach(data && data.op_id);
             }
             return data;
         }).catch(function (err) {
-            if (!options.suppressErrorToast) {
+            if (options.opToastHandle) {
+                options.opToastHandle.fail(err.message || 'Action failed.');
+            } else if (!options.suppressErrorToast) {
                 showToast('error', err.message || 'Action failed.');
             }
             if (options.rollbackUids || options.rollbackAllInFolder) {
@@ -5698,17 +5716,19 @@
             finishBulkSelectionUi(action, allInFolder, uids);
             clearReadingPaneIfShowingUids(uids);
             if (action === 'delete') {
+                // Start the progress toast NOW — the HTTP response alone can take
+                // seconds on this host, and the user needs instant feedback.
                 return fireListMutation(actionPath, payload, {
                     suppressErrorToast: true,
                     rollbackUids: uids.slice(),
                     rollbackAllInFolder: allInFolder,
-                    opToast: {
+                    opToastHandle: beginOpToast({
                         progress: deleteLoadingMessage(selectionCount),
                         done: deleteSuccessMessage(selectionCount),
                         fail: isTrashFolder()
                             ? 'Some messages could not be deleted. Please try again.'
                             : 'Some messages could not be moved to Trash. They have been restored.'
-                    }
+                    })
                 }).finally(function () {
                     listMutationInFlight = false;
                     endListMutationQuiet(800);
@@ -5717,11 +5737,11 @@
             fireListMutation(actionPath, payload, {
                 rollbackUids: uids.slice(),
                 rollbackAllInFolder: allInFolder,
-                opToast: {
+                opToastHandle: beginOpToast({
                     progress: selectionCount === 1 ? 'Moving message…' : 'Moving ' + selectionCount + ' messages…',
                     done: successMsg,
                     fail: 'Some messages could not be moved. They have been restored.'
-                }
+                })
             }).finally(function () {
                 listMutationInFlight = false;
                 endListMutationQuiet(800);
@@ -7308,6 +7328,44 @@
             showToast('error', 'This message is still syncing — try again in a few seconds.');
             return Promise.resolve(false);
         }
+
+        // Acting on a message that is part of a multi-selection applies the action
+        // to the WHOLE selection (Gmail-style). Users who select 4 messages and
+        // pick "Move to…" on a row/pane control expect all 4 to move — not just
+        // the one the control belongs to.
+        var multiSelections = (kind === 'move' || kind === 'trash') ? selectedMailSelections() : [];
+        var actsOnSelection = multiSelections.length > 1
+            && multiSelections.some(function (s) { return String(s.uid) === String(uid); });
+        if (actsOnSelection) {
+            var listFolderEnc = currentMailFolderEnc() || sourceFolderEnc;
+            if (kind === 'move' && extra.target_folder) {
+                var moveSel = document.getElementById('cmd-move-target');
+                if (moveSel) {
+                    var hasOpt = Array.prototype.some.call(moveSel.options, function (o) {
+                        return o.value === extra.target_folder;
+                    });
+                    if (!hasOpt) {
+                        var opt = document.createElement('option');
+                        opt.value = extra.target_folder;
+                        opt.textContent = extra.target_folder;
+                        moveSel.appendChild(opt);
+                    }
+                    moveSel.value = extra.target_folder;
+                    runBulkCommandExecute('move', multiSelections, listFolderEnc, triggerBtn);
+                    return Promise.resolve(true);
+                }
+            }
+            if (kind === 'trash') {
+                var bulkDeleteOpts = deleteConfirmOptions(multiSelections.length);
+                return showConfirmAction(Object.assign({}, bulkDeleteOpts, {
+                    loadingLabel: deleteLoadingMessage(multiSelections.length),
+                    action: function () {
+                        return runBulkCommandExecute('delete', multiSelections, listFolderEnc, triggerBtn);
+                    }
+                })).then(function (ok) { return !!ok; });
+            }
+        }
+
         var confirmCfg = null;
         if (kind === 'trash') {
             confirmCfg = deleteConfirmOptions(1);
@@ -7425,21 +7483,21 @@
                 clearReadingPaneIfShowingUids([uid]);
                 return fireListMutation('message/' + kind, movePayload, {
                     suppressErrorToast: true,
-                    opToast: {
+                    opToastHandle: beginOpToast({
                         progress: deleteLoadingMessage(1),
                         done: deleteSuccessMessage(1),
                         fail: isTrashFolder()
                             ? 'The message could not be deleted. Please try again.'
                             : 'The message could not be moved to Trash. It has been restored.'
-                    }
+                    })
                 }).finally(function () { endListMutationQuiet(800); });
             }
 
             clearReadingPaneIfShowingUids([uid]);
             fireListMutation('message/' + kind, movePayload, {
-                opToast: kind === 'spam'
+                opToastHandle: beginOpToast(kind === 'spam'
                     ? { progress: 'Moving to Spam…', done: 'Message moved to Spam.', fail: 'The message could not be moved to Spam. It has been restored.' }
-                    : { progress: 'Moving message…', done: 'Message moved.', fail: 'The message could not be moved. It has been restored.' }
+                    : { progress: 'Moving message…', done: 'Message moved.', fail: 'The message could not be moved. It has been restored.' })
             });
             return Promise.resolve(true);
         }
