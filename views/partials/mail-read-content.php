@@ -109,7 +109,12 @@ $messageAttachments = $message['attachments'] ?? [];
             $showThreadHistoryToggle = $threadHistorySegments !== [];
             $display = mail_thread_segment_display($segment, $replyFrom, $folderPath);
             $attachments = is_array($segment['attachments'] ?? null) ? $segment['attachments'] : [];
-            if ($attachments === [] && !empty($segment['is_current'])) {
+            // Fall back to the opened message's attachments only for the genuine
+            // opened message — NOT a pending reply preview, which defaults its uid
+            // to the opened message's and would otherwise wrongly show the
+            // original's attachment on the reply card (reply carries only its own
+            // uploaded files).
+            if ($attachments === [] && !empty($segment['is_current']) && empty($segment['is_pending_reply'])) {
                 $attachments = $messageAttachments;
             }
             $cardFolder = (string) ($segment['folder_path'] ?? $folderPath);

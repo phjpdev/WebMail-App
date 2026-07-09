@@ -10602,11 +10602,36 @@ function mail_render_thread_inline_history_html(
         $sent = format_mail_outlook_sent_datetime($segment['date'] ?? '');
         $to = $display['display_to'];
 
+        // Outlook-style "Attachments:" line — a compact reference so the quoted
+        // original clearly shows it carried a file (name + size).
+        $attLine = '';
+        $segAtts = is_array($segment['attachments'] ?? null) ? $segment['attachments'] : [];
+        if ($segAtts !== []) {
+            $attNames = [];
+            foreach ($segAtts as $att) {
+                if (!is_array($att)) {
+                    continue;
+                }
+                $fn = trim((string) ($att['filename'] ?? '')) ?: 'attachment';
+                $sz = (int) ($att['size'] ?? 0);
+                if ($sz >= 1048576) {
+                    $fn .= ' (' . number_format($sz / 1048576, 1) . ' MB)';
+                } elseif ($sz >= 1024) {
+                    $fn .= ' (' . number_format($sz / 1024) . ' KB)';
+                }
+                $attNames[] = $fn;
+            }
+            if ($attNames !== []) {
+                $attLine = '<div><strong>Attachments:</strong> ' . e(implode('; ', $attNames)) . '</div>';
+            }
+        }
+
         $meta = '<div class="mail-thread-inline-meta">'
             . '<div><strong>From:</strong> ' . e($fromLine) . '</div>'
             . '<div><strong>Sent:</strong> ' . e($sent) . '</div>'
             . '<div><strong>To:</strong> ' . e($to) . '</div>'
             . '<div><strong>Subject:</strong> ' . e($subject) . '</div>'
+            . $attLine
             . '</div>';
 
         $body = '';
@@ -10864,9 +10889,16 @@ function mail_split_html_quote(string $html): array
     }
 
     $patterns = [
+        // This app's own quoted history wrapper — check first so a reply splits
+        // exactly at the quote and the user's new content (which may itself
+        // contain a <blockquote> from the "indent" button) stays fully visible.
+        '/(<div[^>]*class=["\'][^"\']*mail-quoted[^"\']*["\'][^>]*>.*)$/is',
         '/(<div[^>]*id=["\']divRplyFwdMsg["\'][^>]*>.*)$/is',
         '/(<div[^>]*class=["\'][^"\']*gmail_quote[^"\']*["\'][^>]*>.*)$/is',
-        '/(<blockquote[^>]*>.*)$/is',
+        // Only CITATION blockquotes (Apple Mail etc.) mark quoted history — a
+        // bare/styled <blockquote> is user formatting (indent) and must NOT be
+        // collapsed, or the typed content vanishes from the received view.
+        '/(<blockquote[^>]*type=["\']?cite["\']?[^>]*>.*)$/is',
         '/(<br\s*\/?>\s*On .+? wrote:\s*<br\s*\/?>.*)$/is',
         '/(\s*On .+? wrote:\s*<br\s*\/?>.*)$/is',
         '/(\n\s*On .+? wrote:\s*\n.*)$/is',

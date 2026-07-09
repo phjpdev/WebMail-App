@@ -6327,7 +6327,55 @@
             return String(value || '').split(',')[0].replace(/["']/g, '').trim().toLowerCase();
         }
 
+        // Indent via CSS margin on the block — NOT execCommand('indent'), which
+        // wraps content in <blockquote>. A blockquote reads as "quoted text" to
+        // mail clients (and to our own reader), which used to hide the indented
+        // content. Margin indentation renders cleanly everywhere.
+        function blockAncestorOf(node) {
+            while (node && node !== editor) {
+                if (node.nodeType === 1) {
+                    var tag = node.tagName;
+                    if (tag === 'P' || tag === 'DIV' || tag === 'LI' || tag === 'OL' || tag === 'UL'
+                        || tag === 'BLOCKQUOTE' || tag === 'H1' || tag === 'H2' || tag === 'H3') {
+                        return node;
+                    }
+                }
+                node = node.parentNode;
+            }
+            return null;
+        }
+        function applyBlockIndent(dir) {
+            var sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+            var block = blockAncestorOf(sel.getRangeAt(0).commonAncestorContainer);
+            if (!block || block === editor) {
+                document.execCommand('formatBlock', false, 'div');
+                sel = window.getSelection();
+                if (sel.rangeCount) {
+                    block = blockAncestorOf(sel.getRangeAt(0).commonAncestorContainer);
+                }
+            }
+            if (!block || block === editor) return;
+            // Normalise any legacy blockquote to a plain div so it stops reading
+            // as a quote.
+            if (block.tagName === 'BLOCKQUOTE') {
+                var div = document.createElement('div');
+                div.innerHTML = block.innerHTML;
+                block.parentNode.replaceChild(div, block);
+                block = div;
+            }
+            var cur = parseFloat(block.style.marginLeft) || 0;
+            var next = Math.max(0, cur + dir * 2.5);
+            block.style.marginLeft = next > 0 ? next + 'em' : '';
+        }
+
         function runCommand(cmd, value) {
+            if (cmd === 'indent' || cmd === 'outdent') {
+                withSavedSelection(function () {
+                    applyBlockIndent(cmd === 'indent' ? 1 : -1);
+                });
+                return;
+            }
             withSavedSelection(function () {
                 try { document.execCommand('styleWithCSS', false, true); } catch (e) { /* legacy fallback */ }
                 if (cmd === 'createLink') {
