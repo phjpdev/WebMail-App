@@ -7397,10 +7397,40 @@
         if (!wrap || !input || wrap.dataset.uploadBound) return;
         wrap.dataset.uploadBound = '1';
 
+        var MAX_FILES = 5;
+        var MAX_BYTES = 10 * 1024 * 1024;
+        var picked = []; // source of truth; input.files is rebuilt from this
+
+        function fileSizeLabel(bytes) {
+            if (bytes >= 1048576) return (Math.round(bytes / 104857.6) / 10) + ' MB';
+            return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+        }
+
+        function fileKind(name) {
+            var ext = (String(name).split('.').pop() || '').toLowerCase();
+            if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].indexOf(ext) >= 0) return 'image';
+            if (ext === 'pdf') return 'pdf';
+            if (['doc', 'docx', 'rtf', 'odt'].indexOf(ext) >= 0) return 'doc';
+            if (['xls', 'xlsx', 'csv', 'ods'].indexOf(ext) >= 0) return 'sheet';
+            if (['zip', 'rar', '7z', 'gz', 'tar'].indexOf(ext) >= 0) return 'zip';
+            return 'file';
+        }
+
+        var CHIP_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+
+        function syncInput() {
+            try {
+                var dt = new DataTransfer();
+                picked.forEach(function (f) { dt.items.add(f); });
+                input.files = dt.files;
+            } catch (err) { /* very old browsers: keep native selection */ }
+            updateList();
+        }
+
         function updateList() {
             if (!list) return;
             list.innerHTML = '';
-            if (!input.files || input.files.length === 0) {
+            if (!picked.length) {
                 list.hidden = true;
                 wrap.classList.remove('has-files');
                 return;
@@ -7408,9 +7438,12 @@
             list.hidden = false;
             wrap.classList.add('has-files');
             var draftBar = wrap.classList.contains('file-upload--draft-bar');
-            Array.prototype.forEach.call(input.files, function (file) {
+            var removeBtn = function (i) {
+                return '<button type="button" class="file-upload-remove" data-remove-index="' + i +
+                    '" title="Remove attachment" aria-label="Remove ' + escapeHtml(picked[i].name) + '">&times;</button>';
+            };
+            picked.forEach(function (file, i) {
                 var li = document.createElement('li');
-                var sizeKb = Math.max(1, Math.round(file.size / 1024));
                 if (draftBar) {
                     li.className = 'compose-draft-attach-chip';
                     li.innerHTML =
@@ -7418,15 +7451,68 @@
                         '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' +
                         '</span>' +
                         '<span class="compose-draft-attach-chip-name" title="' + escapeHtml(file.name) + '">' + escapeHtml(file.name) + '</span>' +
-                        '<span class="compose-draft-attach-chip-size">' + sizeKb + ' KB</span>';
+                        '<span class="compose-draft-attach-chip-size">' + fileSizeLabel(file.size) + '</span>' +
+                        removeBtn(i);
                 } else {
-                    li.textContent = file.name + ' (' + sizeKb + ' KB)';
+                    li.className = 'attach-chip attach-chip--' + fileKind(file.name);
+                    li.innerHTML =
+                        '<span class="attach-chip-icon" aria-hidden="true">' + CHIP_ICON + '</span>' +
+                        '<span class="attach-chip-name" title="' + escapeHtml(file.name) + '">' + escapeHtml(file.name) + '</span>' +
+                        '<span class="attach-chip-size">' + fileSizeLabel(file.size) + '</span>' +
+                        removeBtn(i);
                 }
                 list.appendChild(li);
             });
         }
 
-        input.addEventListener('change', updateList);
+        // Gmail-style: adding files APPENDS to the current selection; oversize and
+        // over-count files are rejected up front with a clear message (instead of
+        // uploading megabytes just to get a server error back).
+        function acceptFiles(fileList) {
+            var tooBig = [];
+            var added = 0;
+            Array.prototype.forEach.call(fileList || [], function (f) {
+                if (f.size > MAX_BYTES) {
+                    tooBig.push(f.name);
+                    return;
+                }
+                if (picked.length >= MAX_FILES) {
+                    added = -1;
+                    return;
+                }
+                picked.push(f);
+                if (added >= 0) added++;
+            });
+            if (tooBig.length) {
+                showToast('error', 'Each attachment must be under 10 MB — not added: ' + tooBig.join(', '), 6000);
+            }
+            if (added === -1) {
+                showToast('error', 'Maximum ' + MAX_FILES + ' attachments allowed.', 5000);
+            }
+            syncInput();
+        }
+
+        if (list) {
+            list.addEventListener('click', function (e) {
+                var btn = e.target.closest('[data-remove-index]');
+                if (!btn) return;
+                e.preventDefault();
+                var i = parseInt(btn.getAttribute('data-remove-index'), 10);
+                if (i >= 0 && i < picked.length) {
+                    picked.splice(i, 1);
+                    syncInput();
+                }
+            });
+        }
+
+        input.addEventListener('change', function () {
+            var chosen = Array.prototype.slice.call(input.files || []);
+            // The native picker replaces the input's own list — merge into ours.
+            picked = picked.filter(function (f) {
+                return !chosen.some(function (c) { return c.name === f.name && c.size === f.size; });
+            });
+            acceptFiles(chosen);
+        });
 
         wrap.addEventListener('dragover', function (e) {
             e.preventDefault();
@@ -7441,8 +7527,7 @@
             e.preventDefault();
             wrap.classList.remove('is-dragover');
             if (e.dataTransfer && e.dataTransfer.files.length) {
-                input.files = e.dataTransfer.files;
-                updateList();
+                acceptFiles(e.dataTransfer.files);
             }
         });
     }
