@@ -6239,6 +6239,16 @@ body:has(.mail-workspace) {
     display: none;
 }
 
+/* Fail-safe: the compose panel and the reading-pane viewport (empty state /
+   open message) must never share the pane. Hiding the viewport is normally
+   driven by the .is-compose-open class, but a state race (a folder refresh or
+   pane render landing while compose is opening) can drop that class while the
+   panel stays visible — which split the pane in half. Key the hide off the
+   panel's ACTUAL visibility too so the two can never show at once. */
+.reading-pane:has(> .compose-panel:not([hidden])) .reading-pane-viewport {
+    display: none !important;
+}
+
 .compose-panel {
     display: flex;
     flex-direction: column;
