@@ -1102,6 +1102,24 @@ function mail_prune_empty_correspondent_folder(string $folderPath): ?array
         return null;
     }
 
+    // NEVER prune a REGISTERED folder (an employee/client folder in the `folders`
+    // table). Those are permanent — emptying one must not make it vanish from the
+    // sidebar. Only ephemeral auto-correspondent views (not in the registry) are
+    // prunable. (Bug: emptying Jack's folder removed it because for an employee
+    // session it looks like a "correspondent folder", but it's a real employee
+    // mailbox, id 133 / linked_user 21.)
+    try {
+        $registered = App\Database::fetchOne(
+            'SELECT 1 FROM folders WHERE active = 1 AND LOWER(imap_path) = LOWER(?) LIMIT 1',
+            [$folderPath]
+        );
+    } catch (\Throwable) {
+        $registered = 1; // on a DB error, be safe and never prune
+    }
+    if ($registered !== null || mail_linked_user_id_for_inbox($folderPath) !== null) {
+        return null;
+    }
+
     if (\App\Services\MailCacheService::countListableMessagesInIndex($folderPath) > 0) {
         return null;
     }
@@ -4517,17 +4535,13 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
  */
 function mail_group_messages_into_conversations(string $folderPath, array $messages): array
 {
-    // In a mixed-sender folder (the shared INBOX, Sent, Archive) two unrelated
-    // people can share a subject ("Test"), so split same-subject buckets by
-    // reference chain. A per-correspondent folder (INBOX.<name>.Inbox, a client
-    // folder) only ever holds one conversation partner, so same subject == same
-    // conversation even when the linking reply lives in another folder (Sent) —
-    // merge the whole subject bucket. This mirrors the reading pane's result
-    // without a cross-folder query. The check is session-independent
-    // (folder_icon_type is the same for admin and employees).
-    $iconType = folder_icon_type(\App\Services\FolderCache::resolvePath($folderPath));
-    $refineByChain = in_array($iconType, ['inbox', 'sent', 'archive'], true);
-
+    // Group by the actual REPLY CHAIN (Message-ID / In-Reply-To / References),
+    // NOT just the subject — so two independent emails that happen to share a
+    // subject ("Test") stay separate, while a genuine reply thread merges. The
+    // chain is bridged ACROSS folders: within a per-correspondent folder the
+    // reply that links "Test" and "Re: Test" often lives only in Sent, so we
+    // pull in those bridge messages' ids (one cheap index query) to reconnect
+    // the folder's rows. Same logic for every folder and every user.
     $components = [];
     $buckets = [];
     foreach ($messages as $msg) {
@@ -4543,65 +4557,101 @@ function mail_group_messages_into_conversations(string $folderPath, array $messa
         $buckets[$key][] = $msg;
     }
 
-    foreach ($buckets as $rows) {
-        $n = count($rows);
-        if ($n === 1) {
-            $components[] = $rows;
-            continue;
-        }
-
-        if (!$refineByChain) {
-            // Per-correspondent folder: the whole subject bucket is one thread.
-            $components[] = $rows;
-            continue;
-        }
-
-        // Union-find: rows join when their Message-ID/References sets intersect.
-        $parent = range(0, $n - 1);
-        $find = static function (int $i) use (&$parent): int {
-            while ($parent[$i] !== $i) {
-                $parent[$i] = $parent[$parent[$i]];
-                $i = $parent[$i];
-            }
-
-            return $i;
-        };
-        $union = static function (int $a, int $b) use (&$parent, $find): void {
-            $ra = $find($a);
-            $rb = $find($b);
-            if ($ra !== $rb) {
-                $parent[$rb] = $ra;
-            }
-        };
-
-        $idOwner = [];
-        $legacyAnchor = -1;
+    // Collect each row's id-set + every id seen, so we can fetch the bridges.
+    $rowIds = [];
+    $allIds = [];
+    foreach ($buckets as $key => $rows) {
         foreach ($rows as $i => $row) {
             $ids = mail_thread_ids_from_row($row);
-            if ($ids === []) {
-                // Legacy pool: rows lacking headers share one component per bucket.
-                if ($legacyAnchor === -1) {
-                    $legacyAnchor = $i;
-                } else {
-                    $union($legacyAnchor, $i);
-                }
-                continue;
-            }
+            $rowIds[$key . '|' . $i] = $ids;
             foreach (array_keys($ids) as $id) {
-                if (isset($idOwner[$id])) {
-                    $union($idOwner[$id], $i);
-                } else {
-                    $idOwner[$id] = $i;
-                }
+                $allIds[$id] = true;
             }
+        }
+    }
+
+    // Union-find over message-id STRINGS (not row indexes) so cross-folder
+    // bridges can connect ids the folder's own rows never mention directly.
+    $dsu = [];
+    $dfind = static function (string $x) use (&$dsu, &$dfind): string {
+        if (!isset($dsu[$x])) {
+            $dsu[$x] = $x;
+
+            return $x;
+        }
+        while ($dsu[$x] !== $x) {
+            $dsu[$x] = $dsu[$dsu[$x]];
+            $x = $dsu[$x];
         }
 
-        $byRoot = [];
-        foreach ($rows as $i => $row) {
-            $byRoot[$find($i)][] = $row;
+        return $x;
+    };
+    $dunionSet = static function (array $idSet) use (&$dsu, $dfind): void {
+        $keys = array_keys($idSet);
+        $count = count($keys);
+        for ($k = 1; $k < $count; $k++) {
+            $ra = $dfind($keys[0]);
+            $rb = $dfind($keys[$k]);
+            if ($ra !== $rb) {
+                $dsu[$rb] = $ra;
+            }
         }
-        foreach ($byRoot as $componentRows) {
-            $components[] = $componentRows;
+    };
+
+    // Every id within a single message belongs to one thread.
+    foreach ($rowIds as $ids) {
+        if ($ids !== []) {
+            $dunionSet($ids);
+        }
+    }
+
+    // Bridge: any message anywhere whose Message-ID or In-Reply-To is one of the
+    // folder's ids carries the link between a parent and its reply (the Sent
+    // copy of a reply has both). Unioning its id-set reconnects the chain.
+    if ($allIds !== []) {
+        $idList = array_slice(array_keys($allIds), 0, 500);
+        $ph = implode(',', array_fill(0, count($idList), '?'));
+        try {
+            $bridgeRows = App\Database::query(
+                "SELECT message_id, in_reply_to, references_ids FROM mail_index
+                 WHERE message_id IN ($ph) OR in_reply_to IN ($ph)",
+                array_merge($idList, $idList)
+            )->fetchAll();
+        } catch (\Throwable) {
+            $bridgeRows = [];
+        }
+        foreach ($bridgeRows as $br) {
+            $bids = mail_thread_ids_from_row($br);
+            if ($bids !== []) {
+                $dunionSet($bids);
+            }
+        }
+    }
+
+    // Split each subject bucket into thread components by the ids' DSU root.
+    foreach ($buckets as $key => $rows) {
+        if (count($rows) === 1) {
+            $components[] = $rows;
+            continue;
+        }
+        $byComp = [];
+        $legacy = [];
+        foreach ($rows as $i => $row) {
+            $ids = $rowIds[$key . '|' . $i] ?? [];
+            if ($ids === []) {
+                // Rows with no reference headers (pre-threading / cold overview):
+                // one shared legacy component per bucket, as before.
+                $legacy[] = $row;
+                continue;
+            }
+            $root = $dfind((string) array_key_first($ids));
+            $byComp[$root][] = $row;
+        }
+        foreach ($byComp as $comp) {
+            $components[] = $comp;
+        }
+        if ($legacy !== []) {
+            $components[] = $legacy;
         }
     }
 
@@ -10564,7 +10614,14 @@ function mail_build_conversation_thread(
             $folderPath,
             $uid,
         );
-        if ($correspondentThread !== []) {
+        // Use the correspondent thread only when it actually unified more than
+        // the opened message. When it collapses to a single segment it has
+        // DROPPED the message's inline quoted history (mail_build_correspondent…
+        // keeps only the visible part) — and for a reply-all the original the
+        // sender quoted often lives under a DIFFERENT correspondent (e.g. jack→
+        // harry when viewing billy↔harry), so it's the only copy of the original.
+        // Fall through to the generic builder, which keeps that quote.
+        if (count($correspondentThread) > 1) {
             return $correspondentThread;
         }
     }

@@ -2926,6 +2926,22 @@ class MailController
         $searchQuery = trim($_POST['q'] ?? '');
 
         if (($_POST['all_in_folder'] ?? '') === '1') {
+            // Refresh from the server FIRST. "Select all" is commonly used for a
+            // destructive permanent-delete, and a stale cache (e.g. a Trash the
+            // flaky host's deferred moves haven't caught up to) would silently
+            // make it miss messages — the user saw "delete all" leave some behind.
+            if ($searchQuery === '') {
+                try {
+                    $syncImap = new ImapService();
+                    if ($syncImap->connect()) {
+                        MailCacheService::syncFolderHeaders($syncImap, $resolvedPath);
+                        ImapService::closeShared();
+                    }
+                } catch (\Throwable $e) {
+                    app_log('all_in_folder pre-sync failed: ' . $e->getMessage());
+                }
+            }
+
             $list = mail_visible_folder_list($resolvedPath, $searchQuery);
             $uids = [];
             foreach ($list['messages'] as $msg) {

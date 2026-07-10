@@ -6718,12 +6718,71 @@
             syncEditorFields();
         });
 
+        // Clean pasted content: strip the source's styling (big headings,
+        // colours, fonts from a web page / chat) so it reads as normal email
+        // text. Keeps basic structure (paragraphs, lists, bold/italic, links).
+        editor.addEventListener('paste', function (e) {
+            var cd = e.clipboardData || window.clipboardData;
+            if (!cd) return;
+            var html = cd.getData('text/html');
+            var text = cd.getData('text/plain');
+            if (!html && !text) return;
+            e.preventDefault();
+            var out = html
+                ? cleanPastedHtml(html)
+                : escapeHtml(text).replace(/\r\n|\r|\n/g, '<br>');
+            try {
+                document.execCommand('insertHTML', false, out);
+            } catch (err) {
+                document.execCommand('insertText', false, text || '');
+            }
+            window.setTimeout(syncEditorFields, 0);
+        });
+
         var draftTimer;
         editor.addEventListener('input', function () {
             window.clearTimeout(draftTimer);
             draftTimer = window.setTimeout(syncEditorFields, 250);
         });
         editor.addEventListener('blur', syncEditorFields);
+    }
+
+    // Whitelist-clean pasted HTML: drop scripts/styles, strip every attribute
+    // (except link href), demote headings to bold, and unwrap anything not on
+    // the allow-list so the result adopts the email's own clean formatting.
+    function cleanPastedHtml(html) {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        tmp.querySelectorAll('script,style,meta,link,title,head,noscript,iframe,object,embed,img,svg,button,input')
+            .forEach(function (el) { el.remove(); });
+
+        // Headings render huge in an email — convert to a bold paragraph.
+        tmp.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(function (h) {
+            var div = document.createElement('div');
+            var strong = document.createElement('strong');
+            strong.innerHTML = h.innerHTML;
+            div.appendChild(strong);
+            h.parentNode.replaceChild(div, h);
+        });
+
+        var ALLOWED = { P: 1, BR: 1, DIV: 1, SPAN: 1, B: 1, STRONG: 1, I: 1, EM: 1, U: 1, A: 1, UL: 1, OL: 1, LI: 1, BLOCKQUOTE: 1 };
+        Array.prototype.slice.call(tmp.querySelectorAll('*')).forEach(function (el) {
+            var tag = el.tagName;
+            Array.prototype.slice.call(el.attributes).forEach(function (attr) {
+                if (!(tag === 'A' && attr.name.toLowerCase() === 'href')) {
+                    el.removeAttribute(attr.name);
+                }
+            });
+            if (!ALLOWED[tag]) {
+                var parent = el.parentNode;
+                if (!parent) return;
+                while (el.firstChild) {
+                    parent.insertBefore(el.firstChild, el);
+                }
+                parent.removeChild(el);
+            }
+        });
+        return tmp.innerHTML;
     }
 
     function avatarColor(email) {
