@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl --config __TRACKED_VAR__/ftp_up.cfg ftp://ftp.djgroupllc.net/public/assets/js/app.js -s -S --max-time 90 -I)",
+      "Bash(curl -s -S --max-time 30 \"https://mailbox.djgroupllc.net/assets/js/app.js?v=234\")",
+      "Bash(curl -s -S --max-time 20 \"https://mailbox.djgroupllc.net/login\")"
+    ]
+  }
+}

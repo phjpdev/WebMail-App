@@ -1170,12 +1170,35 @@
         var scope = root && root.querySelectorAll ? root : document;
         var unread = scope.querySelectorAll('.mail-row.mail-unread[data-uid], .mail-card.mail-unread[data-uid]');
         var warmed = 0;
-        for (var i = 0; i < unread.length && warmed < 3; i++) {
+        // Warm only the FIRST unread pane on folder open (was 3). prefetchPane
+        // already fetches the fully rendered pane (body included), so the extra
+        // warmMessageBodyForRow was a redundant SECOND IMAP hit per row — dropped.
+        // Fewer concurrent requests leaves the host's worker pool free for the
+        // fragment the user is actually waiting on. Hovering a row still warms it
+        // on demand via scheduleUnreadPanePrefetch.
+        for (var i = 0; i < unread.length && warmed < 1; i++) {
             var uid = parseInt(unread[i].getAttribute('data-uid'), 10);
             if (!uid || getPaneCache(uid)) continue;
-            warmMessageBodyForRow(unread[i]);
             prefetchPane(uid);
             warmed++;
+        }
+    }
+
+    // Run the list "enrichment" work (attachment icons, snippet previews, warming
+    // the first unread pane) when the browser is idle, so it never competes with
+    // the folder fragment / pane the user is waiting on. Capped so it still fires
+    // promptly on a quiet page.
+    function scheduleListEnrichment(root) {
+        var scope = root || document;
+        var run = function () {
+            scheduleAttachmentHints(scope);
+            scheduleListSnippets(scope);
+            prefetchUnreadInList(scope);
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(run, { timeout: 800 });
+        } else {
+            window.setTimeout(run, 250);
         }
     }
 
@@ -1215,9 +1238,7 @@
         bindComposePrefetchTriggers(document);
         initPerPageSelect();
         initMailSync();
-        scheduleAttachmentHints(document);
-        scheduleListSnippets(document);
-        prefetchUnreadInList(document);
+        scheduleListEnrichment(document);
 
         var loadingEl = document.getElementById('mail-list-loading');
         if (loadingEl && !loadingEl.hidden) {
@@ -1550,8 +1571,22 @@
 
     function prefetchComposeFromPane(card) {
         if (!card) return;
+        // Do NOT eagerly prefetch every compose form (Reply, Reply-all, Forward)
+        // on message open — each one is an IMAP body fetch, and firing all three
+        // per open saturates the host's limited PHP worker pool (that was the
+        // stack of multi-second reply?/reply-all?/forward? requests). Instead warm
+        // on hover/focus intent, so only the button the user actually reaches for
+        // is fetched — which still lands ~100-300ms before the click, keeping the
+        // "instant when clicked" feel without the storm.
         card.querySelectorAll('a.compose-panel-link[href]').forEach(function (a) {
-            prefetchComposeHtml(a.getAttribute('href'));
+            if (a.dataset.composePrefetchBound) return;
+            a.dataset.composePrefetchBound = '1';
+            var warm = function () {
+                var href = a.getAttribute('href');
+                if (href) prefetchComposeHtml(href);
+            };
+            a.addEventListener('mouseenter', warm);
+            a.addEventListener('focus', warm);
         });
     }
 
@@ -8673,7 +8708,6 @@
         initPerPageSelect();
         initContextMenu();
         initReadingPane();
-        prefetchUnreadInList(document);
         initAjaxFolderNav();
         initStatusPage();
         initSidebarBadgesOnLoad();
@@ -8685,7 +8719,6 @@
         initConfirmForms();
         initGlobalFormLoading();
         initMobileReadSwipe();
-        scheduleAttachmentHints(document);
-        scheduleListSnippets(document);
+        scheduleListEnrichment(document);
     });
 })();
