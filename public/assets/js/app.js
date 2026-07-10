@@ -828,6 +828,12 @@
 
     function openMessageInPane(uid, pushHistory) {
         if (!uid) return;
+        // Hold message opening while a destructive op is still finishing — opening
+        // a message fetches its body over IMAP and would contend with the op.
+        if (criticalOpActive) {
+            deferDuringCriticalOp(function () { openMessageInPane(uid, pushHistory); });
+            return;
+        }
         if (paneNavTimer) window.clearTimeout(paneNavTimer);
         paneNavPendingUid = uid;
         paneNavPendingHistory = !!pushHistory;
@@ -1432,6 +1438,14 @@
 
             e.preventDefault();
             var b64 = link.getAttribute('data-folder-b64');
+            // A destructive op is still finishing — don't switch folders now (that
+            // fires competing IMAP requests). Hold the switch and run it the moment
+            // the op settles.
+            if (criticalOpActive) {
+                deferDuringCriticalOp(function () { loadFolderAjax(b64, true); });
+                if (window.innerWidth < 900) closeSidebar();
+                return;
+            }
             loadFolderAjax(b64, true);
             if (window.innerWidth < 900) closeSidebar();
         });
@@ -2640,6 +2654,14 @@
             var draftAction = submitter && submitter.getAttribute('formaction');
             var actionPath = draftAction ? normalizeComposePath(draftAction) : 'compose/send';
             var isDraft = actionPath.indexOf('draft') >= 0;
+            // Don't send while a destructive op (delete/move/restore) is still
+            // finishing its background IMAP work — the two would contend on this
+            // connection-limited host. Draft saves are exempt (lightweight, local).
+            if (!isDraft && criticalOpActive) {
+                e.preventDefault();
+                showToast('error', 'Please wait for the current action to finish before sending…', 2500);
+                return;
+            }
             var loadingLabel = isDraft ? 'Saving…' : 'Sending…';
             var draftPaneEl = form.closest('.draft-editor-pane');
             var isPanelCompose = form.closest('#compose-panel') || form.closest('#mail-inline-compose') || draftPaneEl;
@@ -3461,8 +3483,57 @@
     // the user triggers the action (before the request even returns — responses
     // can take seconds on this host), then attached to the ops journal entry and
     // flipped to "✓ Moved" / an error when the server work truly completes.
+    // ── Critical-operation guard ─────────────────────────────────────────────
+    // A destructive IMAP mutation (delete / move / restore / spam) replies in
+    // ~1-2s but its verified IMAP moves keep running for several seconds after
+    // that (op-status polling tracks them). On this connection-limited mail host,
+    // firing ANOTHER IMAP action inside that window makes the in-progress one
+    // flake — that is what dropped one message from a 5-message restore. So while
+    // such an op is settling we block starting another mutation (and sending) and
+    // DEFER folder/message navigation until it finishes, with a hard safety
+    // timeout so the UI can never get stuck if op-status never resolves (it can
+    // time out on this host).
+    var criticalOpActive = false;
+    var criticalOpSafetyTimer = null;
+    var deferredNavAction = null;
+    var CRITICAL_OP_MAX_MS = 15000;
+
+    function beginCriticalOp() {
+        criticalOpActive = true;
+        if (criticalOpSafetyTimer) window.clearTimeout(criticalOpSafetyTimer);
+        criticalOpSafetyTimer = window.setTimeout(releaseCriticalOp, CRITICAL_OP_MAX_MS);
+    }
+
+    function releaseCriticalOp() {
+        if (criticalOpSafetyTimer) { window.clearTimeout(criticalOpSafetyTimer); criticalOpSafetyTimer = null; }
+        if (!criticalOpActive) return;
+        criticalOpActive = false;
+        var deferred = deferredNavAction;
+        deferredNavAction = null;
+        if (deferred) { try { deferred(); } catch (e) { /* ignore */ } }
+    }
+
+    // True (and shows a hint) when the caller must stand down because a mutation
+    // is still finishing.
+    function blockedByCriticalOp() {
+        if (!criticalOpActive) return false;
+        showToast('error', 'Please wait for the current action to finish…', 2500);
+        return true;
+    }
+
+    // Hold a folder/message navigation until the in-flight op settles instead of
+    // firing a competing IMAP request now. Only the latest intent is kept.
+    function deferDuringCriticalOp(navFn) {
+        var hadPending = !!deferredNavAction;
+        deferredNavAction = navFn;
+        if (!hadPending) showToast('success', 'Finishing your last action…', 1800);
+    }
+
     function beginOpToast(labels) {
         labels = labels || {};
+        // This toast tracks a destructive IMAP op whose background moves outlive
+        // the HTTP response — hold the guard for its whole lifetime.
+        beginCriticalOp();
         var stack = document.getElementById('toast-stack');
         var toast = null;
         if (stack) {
@@ -3486,6 +3557,7 @@
         function finish(ok, failMsg) {
             if (finished) return;
             finished = true;
+            releaseCriticalOp();
             dismiss();
             if (ok) {
                 if (labels.done) showToast('success', labels.done, 3500);
@@ -3537,6 +3609,7 @@
                         // success — the journal + resume guarantee completion and
                         // the folder updates itself as messages land.
                         finished = true;
+                        releaseCriticalOp();
                         dismiss();
                         showToast('success', 'Still finishing in the background — the folder will update automatically.', 6000);
                         scheduleMailPoll(true, false);
@@ -6042,6 +6115,14 @@
                 showToast('error', emptyMsg);
                 return Promise.reject(new Error(emptyMsg));
             }
+            // A previous destructive op is still finishing its background IMAP
+            // moves — don't fire another one into the same overloaded host.
+            if (criticalOpActive) {
+                showToast('error', 'Please wait for the current action to finish…', 2500);
+                return action === 'delete'
+                    ? Promise.reject(new Error('A previous action is still finishing.'))
+                    : undefined;
+            }
             if (listMutationInFlight) {
                 if (action === 'delete') {
                     return Promise.reject(new Error('Please wait for the current action to finish.'));
@@ -8005,6 +8086,7 @@
     // Move a whole conversation to Spam (kebab on a thread row). message/spam
     // accepts uids[]; optimistically drop the row and let the op resolve.
     function dispatchThreadSpam(sourceFolderEnc, threadUids, folderEnc, triggerBtn) {
+        if (blockedByCriticalOp()) return Promise.resolve(false);
         return showConfirmAction({
             title: threadUids.length === 1 ? 'Move to Spam?' : 'Move ' + threadUids.length + ' messages to Spam?',
             message: 'These messages will be moved to the Spam folder.',
@@ -8042,6 +8124,10 @@
         var paneCard = readCard && readCard.closest('#reading-pane-body') ? readCard : null;
         var destructive = kind === 'spam' || kind === 'trash' || kind === 'move';
         if (destructive && !paneCard && !guardFolderListReady(kind === 'trash' ? 'Delete' : (kind === 'spam' ? 'Move to Spam' : 'Move'))) {
+            return Promise.resolve(false);
+        }
+        // Don't start another destructive IMAP op while one is still finishing.
+        if ((destructive || kind === 'restore') && blockedByCriticalOp()) {
             return Promise.resolve(false);
         }
 
