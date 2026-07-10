@@ -962,6 +962,10 @@ class ComposeController
             // New message: signature below the cursor (Gmail-style), visible and editable.
             'body' => $sig !== '' ? "\n\n" . $sig : '',
             'body_html' => '',
+            // Passed separately so the editor can render the signature in its own
+            // block pinned to the BOTTOM of the message box (see compose-form.php),
+            // with a roomy writing area above it.
+            'signature_text' => $sig,
             'from_email' => $fromEmail,
         ];
     }
@@ -1014,6 +1018,7 @@ class ComposeController
             'subject' => $defaults['subject'] ?? '',
             'body' => $defaults['body'] ?? '',
             'body_html' => $defaults['body_html'] ?? '',
+            'signature_text' => $defaults['signature_text'] ?? '',
             'from_email' => $defaults['from_email'] ?? config('mail')['mailbox_email'],
             'folderPath' => $defaults['folderPath'] ?? '',
             'uid' => $defaults['uid'] ?? 0,

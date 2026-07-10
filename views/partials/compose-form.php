@@ -93,7 +93,20 @@ if ($outlookInline) {
 
     <div class="form-group">
         <label>Message</label>
-        <div id="body-editor" class="rich-editor" contenteditable="true"><?= !empty($body_html) ? \App\HtmlSanitizer::sanitize($body_html) : nl2br(e($body)) ?></div>
+        <?php
+        // A fresh new message renders the signature in its own block pinned to the
+        // BOTTOM of the box, with a roomy writing area above it. Only fires for a
+        // brand-new compose (not a restored draft, reply or forward), so those
+        // keep their existing inline body.
+        $sigBottom = $mode === 'compose' && empty($draftUid) && trim((string) ($signature_text ?? '')) !== '';
+        ?>
+        <div id="body-editor" class="rich-editor<?= $sigBottom ? ' rich-editor--sig-bottom' : '' ?>" contenteditable="true"><?php
+        if ($sigBottom):
+            ?><div class="compose-body-write"><br></div><div class="compose-body-sig"><?= nl2br(e($signature_text)) ?></div><?php
+        else:
+            echo !empty($body_html) ? \App\HtmlSanitizer::sanitize($body_html) : nl2br(e($body));
+        endif;
+        ?></div>
         <textarea id="body" name="body" rows="14" class="sr-only"><?= e($body) ?></textarea>
     </div>
 

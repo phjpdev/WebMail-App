@@ -3670,6 +3670,24 @@ mark.search-hit {
     outline: none;
 }
 
+/* New message: pin the signature to the BOTTOM of the message box with a roomy
+   writing area above it. The editor is a flex column; the writing block grows to
+   fill the box (so a click anywhere above the signature lands the caret there)
+   and the signature stays at the bottom. As the message grows the box scrolls and
+   the signature rides below the text — like every mail client. */
+.rich-editor--sig-bottom {
+    display: flex;
+    flex-direction: column;
+}
+.rich-editor--sig-bottom > .compose-body-write {
+    flex: 1 1 auto;
+    min-height: 1.5rem;
+}
+.rich-editor--sig-bottom > .compose-body-sig {
+    flex: 0 0 auto;
+    margin-top: auto;
+}
+
 /* Compose formatting ribbon: pinned at the top of the compose panel and
    revealed only once the message body gains focus (Outlook-style). Hidden
    otherwise so the panel stays clean. */

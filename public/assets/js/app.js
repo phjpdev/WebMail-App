@@ -2866,7 +2866,10 @@
                         try {
                             var sel = window.getSelection();
                             var range = document.createRange();
-                            range.selectNodeContents(bodyEditor);
+                            // Land the caret inside the writing block (above the
+                            // signature) when the sig-at-bottom layout is used.
+                            var writeArea = bodyEditor.querySelector('.compose-body-write') || bodyEditor;
+                            range.selectNodeContents(writeArea);
                             range.collapse(true);
                             sel.removeAllRanges();
                             sel.addRange(range);
