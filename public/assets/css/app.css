@@ -3708,6 +3708,13 @@ mark.search-hit {
     /* A little breathing room between the message and the signature. */
     padding-top: 1rem;
 }
+/* When a saved draft is reopened its editor is a plain .rich-editor (not
+   --sig-bottom, so no flex push), but the serialized body still carries the
+   .compose-body-sig block. Give it the same breathing room from the message so
+   the signature isn't jammed against the content — matching fresh compose. */
+.rich-editor:not(.rich-editor--sig-bottom) .compose-body-sig {
+    padding-top: 1rem;
+}
 
 /* Compose formatting ribbon: pinned at the top of the compose panel and
    revealed only once the message body gains focus (Outlook-style). Hidden
