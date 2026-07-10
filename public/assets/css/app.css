@@ -3694,12 +3694,19 @@ mark.search-hit {
     flex-direction: column;
 }
 .rich-editor--sig-bottom > .compose-body-write {
-    flex: 1 1 auto;
+    /* flex-shrink 0: the writing area grows with the message (the box scrolls)
+       instead of shrinking to fit — which used to squeeze the text and strand the
+       signature in the MIDDLE. Short message → it fills the box so the signature
+       sits at the bottom; long message → it grows and the box scrolls, signature
+       after the content. */
+    flex: 1 0 auto;
     min-height: 1.5rem;
 }
 .rich-editor--sig-bottom > .compose-body-sig {
     flex: 0 0 auto;
     margin-top: auto;
+    /* A little breathing room between the message and the signature. */
+    padding-top: 1rem;
 }
 
 /* Compose formatting ribbon: pinned at the top of the compose panel and
@@ -8019,6 +8026,11 @@ body:has(.mail-workspace) {
     border: none;
     font-size: 0.9375rem;
     line-height: 1.6;
+    /* Scroll long drafts inside the box instead of clipping them (the wrapper is
+       overflow:hidden, so without this the overflow was unreachable). */
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
 }
 
 .compose-draft-editor:focus {
