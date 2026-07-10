@@ -2826,6 +2826,32 @@
                 returnField.value = currentMailFolderEnc();
             }
             bindComposeFormAjax(form);
+
+            // New message: the signature is prefilled at the bottom of the body,
+            // so the user should type ABOVE it. The first time the body gains
+            // focus, drop the caret at the very top (above the signature) — that
+            // way whatever they type lands above the signature and the signature
+            // stays at the bottom of the message. Only a brand-new compose is
+            // adjusted: replies place their caret on load and draft editing should
+            // keep the caret where the user left off.
+            var modeField = form.querySelector('[name="mode"]');
+            var bodyEditor = form.querySelector('#body-editor');
+            if (modeField && modeField.value === 'compose' && bodyEditor && !bodyEditor.dataset.caretTopInit) {
+                bodyEditor.dataset.caretTopInit = '1';
+                bodyEditor.addEventListener('focus', function onFirstBodyFocus() {
+                    bodyEditor.removeEventListener('focus', onFirstBodyFocus);
+                    window.setTimeout(function () {
+                        try {
+                            var sel = window.getSelection();
+                            var range = document.createRange();
+                            range.selectNodeContents(bodyEditor);
+                            range.collapse(true);
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                        } catch (err) {}
+                    }, 0);
+                });
+            }
         }
     }
 

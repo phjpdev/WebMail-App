@@ -6320,7 +6320,9 @@ body:has(.mail-workspace) {
     flex-shrink: 0;
 }
 
-/* Message editor fills remaining height and scrolls inside (Gmail-style). */
+/* Message editor grows to fill spare height on a tall panel (flex:1); on a short
+   panel it keeps a usable min-height and the whole form scrolls (see
+   .compose-panel-inner--compose below). */
 .compose-panel-inner .compose-form > .form-group:has(.rich-editor) {
     flex: 1;
     min-height: 0;
@@ -6339,13 +6341,33 @@ body:has(.mail-workspace) {
 
 .compose-panel-inner .rich-editor {
     flex: 1;
-    min-height: 7rem;
+    /* Keep a usable writing area (was briefly 0, which let a busy panel collapse
+       the box to a single line). It grows past this to fill spare space on a tall
+       panel; when the panel is short the box stays this tall and the whole form
+       scrolls (.compose-panel-inner--compose) so the message is always visible. */
+    min-height: 9rem;
     max-height: none;
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;
     padding-bottom: 1rem;
     -webkit-overflow-scrolling: touch;
+}
+
+/* New message: the fixed rows (toolbar + Send as + To/Cc/Bcc + Subject +
+   Attachments + Send) plus a usable message box can be taller than the panel.
+   Let the whole form scroll in that case instead of squeezing the message box to
+   nothing or overlapping the rows below it. The form is natural height but at
+   least fills the panel, so the Send row still sits at the bottom when there's
+   room. */
+.compose-panel-inner--compose {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.compose-panel-inner--compose .compose-form {
+    flex: 0 0 auto;
+    min-height: 100%;
 }
 
 .compose-panel-inner .file-upload-label {
