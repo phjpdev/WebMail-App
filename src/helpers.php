@@ -4477,15 +4477,16 @@ function employee_merge_shared_mailbox_outbound_list(string $folderPath, array $
  */
 function mail_should_group_list_by_thread(string $folderPath): bool
 {
-    // Gmail convention, applied identically for every user (the old gate was
-    // session/role dependent, which made the same folder group for one account
-    // and not another): conversations everywhere EXCEPT Drafts, Trash and Junk.
-    $resolved = \App\Services\FolderCache::resolvePath($folderPath);
-    if ($resolved === '') {
-        return false;
-    }
-
-    return !is_draft_folder($resolved) && !is_trash_folder($resolved) && !is_spam_folder($resolved);
+    // FLAT LIST (chosen by the user): one row per message, never grouped into
+    // conversations. Grouping meant a single row could represent several messages,
+    // so selecting/moving/marking a row acted on all of them and the message-based
+    // unread badge counted more than the number of rows selected — repeatedly
+    // surprising ("selected 2, moved/marked 3"). A flat list makes every count
+    // match exactly what's on screen: select N rows → act on exactly N messages.
+    // (The reading pane still shows the full conversation when a message is opened;
+    // only the LIST is flat.) To restore Gmail-style grouping, return
+    // !is_draft_folder($r) && !is_trash_folder($r) && !is_spam_folder($r) instead.
+    return false;
 }
 
 /**
