@@ -7876,12 +7876,12 @@ body:has(.mail-workspace) {
 .compose-send-as-identity {
     display: flex;
     align-items: center;
-    gap: 0.625rem;
+    gap: 0.5rem;
     min-width: 0;
-    padding: 0.45rem 0.75rem;
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--color-surface-alt);
+    padding: 0;
+    /* Gmail-style: a light inline chip, not a boxed field. */
+    border: none;
+    background: transparent;
 }
 
 .compose-send-as-avatar {
@@ -8201,6 +8201,114 @@ body:has(.mail-workspace) {
 
 .compose-draft-action svg {
     flex-shrink: 0;
+}
+
+/* ── Gmail-style minimal — new-message compose panel ─────────────────────────
+   Turn the boxed fields into one light stack: hairline dividers instead of
+   borders, a compact inline send-as chip, and subtle fixed-width labels so the
+   whole form reads airy and professional. Scoped to the new-message panel, so
+   replies / forwards / drafts are untouched. */
+.compose-panel-inner--compose .compose-form {
+    gap: 0;
+}
+
+/* Send-as + Subject become label|field rows with a hairline divider under each,
+   matching the recipient rows. */
+.compose-panel-inner--compose .compose-send-as,
+.compose-panel-inner--compose .compose-subject-group {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0;
+    padding: 0.55rem 0.15rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+/* One subtle, fixed-width label column so To / Cc / Bcc / Subject / Send as all
+   line up. */
+.compose-panel-inner--compose .compose-send-as-label,
+.compose-panel-inner--compose .compose-subject-group > label,
+.compose-panel-inner--compose .compose-recipient-label {
+    flex: 0 0 4rem;
+    padding: 0;
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+}
+
+/* Compact inline send-as chip. */
+.compose-panel-inner--compose .compose-send-as-avatar {
+    width: 1.5rem;
+    height: 1.5rem;
+    font-size: 0.625rem;
+}
+.compose-panel-inner--compose .compose-send-as-text {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+.compose-panel-inner--compose .compose-send-as-email {
+    color: var(--color-text-muted);
+}
+.compose-panel-inner--compose .compose-send-as-control {
+    flex: 1;
+    min-width: 0;
+}
+.compose-panel-inner--compose .compose-send-as-control select {
+    border: none;
+    background: transparent;
+    padding: 0.2rem 1.5rem 0.2rem 0;
+    min-height: auto;
+    font-size: 0.875rem;
+}
+
+/* Recipient stack: drop the surrounding box, keep hairline dividers. */
+.compose-panel-inner--compose .compose-recipients {
+    border: none;
+    border-radius: 0;
+    margin: 0;
+    background: transparent;
+}
+.compose-panel-inner--compose .compose-recipient-row {
+    padding: 0.45rem 0.15rem;
+    gap: 0.75rem;
+    min-height: 2.4rem;
+    align-items: center;
+}
+.compose-panel-inner--compose .compose-recipient-row:last-child {
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+.compose-panel-inner--compose .compose-recipient-label {
+    padding-top: 0;
+}
+
+/* Subject input: borderless, sits inline in its row. */
+.compose-panel-inner--compose .compose-subject-group input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    padding: 0.2rem 0;
+    min-height: auto;
+    box-shadow: none;
+    font-size: 0.9375rem;
+}
+.compose-panel-inner--compose .compose-subject-group input:focus {
+    outline: none;
+    box-shadow: none;
+}
+
+/* Message label + a little breathing room after the subject divider. */
+.compose-panel-inner--compose .compose-form > .form-group:has(.rich-editor) {
+    padding-top: 0.6rem;
+}
+.compose-panel-inner--compose .compose-form > .form-group:has(.rich-editor) > label {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
 }
 
 .reading-pane-body:has(.draft-editor-pane) {

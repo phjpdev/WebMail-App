@@ -691,6 +691,34 @@ class MailController
             }
         }
 
+        // Fast folder-open: when the ONLY reason to touch IMAP is that the cache is
+        // stale (ordinary navigation — not an explicit refresh/filter, a post-send
+        // reconcile, or optimistic arrivals that must be replaced by real rows),
+        // serve the cached list immediately and refresh headers from IMAP in the
+        // BACKGROUND. On this host every request queues behind whatever is holding
+        // a PHP worker, and a synchronous IMAP header-sync holds one for 2–6s — so
+        // getting off IMAP here is the biggest win for folder-open latency. The
+        // client's light poll picks up the freshened list on its next tick.
+        if (
+            $needsHeaderSync
+            && !$forceFilter
+            && !$forceRefresh
+            && mail_get_post_send_preview($folderPath) === null
+            && mail_get_pending_arrivals($folderPath) === []
+        ) {
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage)
+                ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+            $this->echoFolderSyncJson($folderPath, $cached, light: true);
+            finish_background(static function () use ($folderPath): void {
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    MailCacheService::syncFolderHeaders($imap, $folderPath);
+                }
+            });
+
+            return;
+        }
+
         if ($forceFilter || (!$light && !$forceRefresh)) {
             $filterResult = $this->maybeRunFilter($folderPath, $forceFilter);
             if ($this->isFilterSource($folderPath) || ($filterResult['moved'] ?? 0) > 0) {

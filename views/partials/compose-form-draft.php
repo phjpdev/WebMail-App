@@ -51,7 +51,6 @@ if (!empty($body_html)) {
                 <span class="compose-draft-badge">Draft</span>
                 <h2 class="compose-draft-title"><?= e($subjectValue !== '' ? $subjectValue : '(no subject)') ?></h2>
             </div>
-            <p class="compose-draft-hint">Finish your message below, then send or save.</p>
         </header>
 
         <div class="compose-draft-fields">
