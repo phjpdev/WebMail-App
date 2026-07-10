@@ -3369,10 +3369,12 @@
                 if (!span) {
                     span = document.createElement('span');
                     span.className = 'mail-row-thread-count';
-                    subjEl.appendChild(document.createTextNode(' '));
-                    subjEl.appendChild(span);
+                    // Prefix the subject so the count is always visible, even when
+                    // the subject is long enough to truncate.
+                    subjEl.insertBefore(span, subjEl.firstChild);
                 }
-                span.textContent = '(' + count + ')';
+                span.textContent = String(count);
+                span.title = count + ' messages in this conversation';
             } else if (span) {
                 span.remove();
             }
@@ -4472,7 +4474,7 @@
             : '';
         var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
         var threadCountHtml = (msg.thread_count || 1) > 1
-            ? ' <span class="mail-row-thread-count">(' + parseInt(msg.thread_count, 10) + ')</span>'
+            ? '<span class="mail-row-thread-count" title="' + parseInt(msg.thread_count, 10) + ' messages in this conversation">' + parseInt(msg.thread_count, 10) + '</span>'
             : '';
 
         row.innerHTML =
@@ -4484,7 +4486,7 @@
                     '<div class="mail-row-line1">' + draftBadge +
                         '<span class="mail-row-from">' + escapeHtml(fromText) + '</span>' +
                     '</div>' +
-                    '<div class="mail-row-subject">' + escapeHtml(msg.subject) + threadCountHtml + '</div>' +
+                    '<div class="mail-row-subject">' + threadCountHtml + escapeHtml(msg.subject) + '</div>' +
                     snippetHtml +
                 '</div>' +
                 '<span class="mail-row-meta">' + attachHtml + flagHtml +
@@ -4536,7 +4538,7 @@
             : '';
         var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
         var cardThreadCountHtml = (msg.thread_count || 1) > 1
-            ? ' <span class="mail-row-thread-count">(' + parseInt(msg.thread_count, 10) + ')</span>'
+            ? '<span class="mail-row-thread-count" title="' + parseInt(msg.thread_count, 10) + ' messages in this conversation">' + parseInt(msg.thread_count, 10) + '</span>'
             : '';
 
         a.innerHTML =
@@ -4549,7 +4551,7 @@
                     '<span class="mail-card-meta">' + attachHtml + flagHtml +
                         '<span class="mail-card-date">' + escapeHtml(msg.date) + '</span></span>' +
                 '</div>' +
-                '<div class="mail-card-subject">' + escapeHtml(msg.subject) + cardThreadCountHtml + '</div>' +
+                '<div class="mail-card-subject">' + cardThreadCountHtml + escapeHtml(msg.subject) + '</div>' +
                 snippetHtml +
             '</div>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button>';
@@ -6006,12 +6008,30 @@
         payload.set('folder', folderEnc);
         var allInFolder = selectAllInFolder;
         if (!allInFolder) {
-            // Compare CHECKED ROW count against the folder total (both are
-            // conversation-level now) — the expanded uid list can exceed the
-            // conversation total without meaning "everything is selected".
+            // Only treat this as "the whole folder" when EVERY rendered row is
+            // checked AND the page holds the entire folder. The list renders each
+            // row TWICE — a desktop row and a mobile card sharing one uid — and
+            // checking a box syncs both copies, so raw checkbox/row counts
+            // double-count. Compare UNIQUE checked uids to UNIQUE rendered uids so
+            // a partial selection (e.g. 3 of 4 rows) is never promoted to a
+            // move-everything.
+            var checkedUidSet = {};
+            document.querySelectorAll('.mail-check:checked').forEach(function (c) {
+                var cu = parseInt(c.value, 10);
+                if (cu > 0) checkedUidSet[cu] = 1;
+            });
+            var renderedUidSet = {};
+            document.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]').forEach(function (r) {
+                if (r.getAttribute('data-optimistic') === '1') return;
+                var rru = parseInt(r.getAttribute('data-uid'), 10);
+                if (rru > 0) renderedUidSet[rru] = 1;
+            });
             var totalMsgs = folderMessageTotal();
-            var checkedRows = document.querySelectorAll('.mail-check:checked').length;
-            if (totalMsgs > 0 && checkedRows >= totalMsgs) {
+            var checkedRowCount = Object.keys(checkedUidSet).length;
+            var renderedRowCount = Object.keys(renderedUidSet).length;
+            if (renderedRowCount > 0
+                && checkedRowCount >= renderedRowCount
+                && (totalMsgs <= 0 || renderedRowCount >= totalMsgs)) {
                 allInFolder = true;
             }
         }
@@ -6213,6 +6233,19 @@
         var seen = {};
         var selections = [];
 
+        // Map every rendered row's OWN uid → whether that row is checked. A thread
+        // uid that is ANOTHER row's own uid must only be acted on when that row is
+        // also checked — otherwise expanding one conversation could move a
+        // separate, UNCHECKED row that a grouping edge case put in the same thread
+        // (that's how "move 3" once moved all 4 and emptied the folder).
+        var ownRowChecked = {};
+        document.querySelectorAll('.mail-row[data-uid], .mail-card[data-uid]').forEach(function (r) {
+            var ru = parseInt(r.getAttribute('data-uid'), 10);
+            if (!ru || ru < 0) return;
+            var rcb = r.querySelector('.mail-check');
+            ownRowChecked[ru] = !!(rcb && rcb.checked);
+        });
+
         document.querySelectorAll('.mail-check:checked').forEach(function (cb) {
             var row = cb.closest('.mail-row, .mail-card');
             // Optimistic rows (still syncing to the server) have no real uid yet —
@@ -6227,6 +6260,13 @@
             var folderB64 = row ? (row.getAttribute('data-folder-b64') || listFolderEnc) : listFolderEnc;
             rowUids.forEach(function (threadUid) {
                 if (!threadUid || threadUid < 0 || seen[threadUid]) return;
+                // Guard: never act on a uid that belongs to a DIFFERENT rendered
+                // row the user left unchecked.
+                if (threadUid !== uid
+                    && Object.prototype.hasOwnProperty.call(ownRowChecked, threadUid)
+                    && !ownRowChecked[threadUid]) {
+                    return;
+                }
                 seen[threadUid] = true;
                 selections.push({ uid: threadUid, folderB64: folderB64 });
             });

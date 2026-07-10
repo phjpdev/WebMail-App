@@ -819,15 +819,29 @@ a:hover {
 }
 
 /* Gmail-style conversation count after the subject: "Subject (3)". */
+/* Conversation size badge — a prominent pill so it's obvious a row holds more
+   than one message (acting on it acts on the whole conversation). */
 .mail-row-thread-count {
-    color: var(--color-text-secondary);
-    font-weight: 400;
-    font-size: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    margin-right: 0.4rem;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background: var(--color-accent-soft, #e8f0fe);
+    color: var(--color-accent, #1a73e8);
+    font-weight: 700;
+    font-size: 0.6875rem;
+    line-height: 1.45;
+    vertical-align: middle;
+    flex-shrink: 0;
 }
 
 .mail-unread .mail-row-thread-count {
-    font-weight: 600;
-    color: var(--color-text);
+    background: var(--color-accent, #1a73e8);
+    color: #fff;
+    font-weight: 700;
 }
 
 /* Searching state: the magnifier in the header search box becomes a spinner
@@ -6348,14 +6362,15 @@ body:has(.mail-workspace) {
     flex-shrink: 0;
 }
 
-/* Message editor grows to fill spare height on a tall panel (flex:1); on a short
-   panel it keeps a usable min-height and the whole form scrolls (see
-   .compose-panel-inner--compose below). */
+/* Message row fills the form's middle (flex:1, 0 basis). Clip a squeezed editor
+   to its track so it can never overlap the rows below (the editor scrolls
+   internally). */
 .compose-panel-inner .compose-form > .form-group:has(.rich-editor) {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 .compose-panel-inner .compose-form > .form-group:has(.rich-editor) > label {
@@ -6368,18 +6383,18 @@ body:has(.mail-workspace) {
 }
 
 .compose-panel-inner .rich-editor {
+    /* Fill the middle of the form. `flex: 1` (a 0 basis) reliably fills the space,
+       unlike flex-basis:auto which sizes to content and left dead space below the
+       Send row. The editor scrolls internally when the message is long, and keeps
+       a usable min-height when the panel is short. */
     flex: 1;
-    /* Keep a usable writing area (was briefly 0, which let a busy panel collapse
-       the box to a single line). It grows past this to fill spare space on a tall
-       panel; when the panel is short the box stays this tall and the whole form
-       scrolls (.compose-panel-inner--compose) so the message is always visible. */
-    min-height: 9rem;
+    min-height: 6rem;
     max-height: none;
     overflow-y: auto;
     overflow-x: hidden;
+    overflow-wrap: anywhere;
     overscroll-behavior: contain;
     padding-bottom: 1rem;
-    -webkit-overflow-scrolling: touch;
 }
 
 /* New message: the fixed rows (toolbar + Send as + To/Cc/Bcc + Subject +
@@ -6394,8 +6409,11 @@ body:has(.mail-workspace) {
 }
 
 .compose-panel-inner--compose .compose-form {
-    flex: 0 0 auto;
-    min-height: 100%;
+    /* Fill the panel (flex:1, 0 basis) so the editor fills the space and the Send
+       row sits at the very bottom — no dead space below it. The editor scrolls
+       internally for long messages, so the form never needs to overflow. */
+    flex: 1;
+    min-height: 0;
 }
 
 .compose-panel-inner .file-upload-label {

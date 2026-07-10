@@ -154,7 +154,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                             <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
                         </span>
                     </div>
-                    <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject']) ?><?php if ($cardThreadCount > 1): ?> <span class="mail-row-thread-count">(<?= $cardThreadCount ?>)</span><?php endif; ?></div>
+                    <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?php if ($cardThreadCount > 1): ?><span class="mail-row-thread-count" title="<?= $cardThreadCount ?> messages in this conversation"><?= $cardThreadCount ?></span><?php endif; ?><?= e($msg['subject']) ?></div>
                     <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= $snippet !== '' ? e($snippet) : '' ?></div>
                 </div>
                 <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>

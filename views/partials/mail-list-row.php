@@ -54,7 +54,7 @@ $rowThreadKey = (string) ($msg['thread_key'] ?? mail_normalize_thread_subject((s
             </div>
             <?php /* _hl_* fields are pre-escaped server-side with <mark> highlights
                 (search results only) — safe to output raw. */ ?>
-            <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= !empty($msg['_hl_subject']) ? $msg['_hl_subject'] : e($msg['subject'] ?? '(no subject)') ?><?php if ($rowThreadCount > 1): ?> <span class="mail-row-thread-count">(<?= $rowThreadCount ?>)</span><?php endif; ?></div>
+            <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?php if ($rowThreadCount > 1): ?><span class="mail-row-thread-count" title="<?= $rowThreadCount ?> messages in this conversation"><?= $rowThreadCount ?></span><?php endif; ?><?= !empty($msg['_hl_subject']) ? $msg['_hl_subject'] : e($msg['subject'] ?? '(no subject)') ?></div>
             <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= !empty($msg['_hl_snippet']) ? $msg['_hl_snippet'] : ($snippet !== '' ? e($snippet) : '') ?></div>
         </div>
         <span class="mail-row-meta">
