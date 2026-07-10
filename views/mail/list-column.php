@@ -102,6 +102,12 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
             $rowFolder = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) ($msg['list_folder'] ?? $folderPath)));
             $rowFolderB64 = encode_folder_path($rowFolder);
             $msgUid = (int) $msg['uid'];
+            $cardThreadUids = array_values(array_filter(array_map('intval', is_array($msg['thread_uids'] ?? null) ? $msg['thread_uids'] : [$msgUid]), static fn (int $u): bool => $u > 0));
+            if ($cardThreadUids === []) {
+                $cardThreadUids = [$msgUid];
+            }
+            $cardThreadCount = max(1, (int) ($msg['thread_count'] ?? count($cardThreadUids)));
+            $cardThreadKey = (string) ($msg['thread_key'] ?? mail_normalize_thread_subject((string) ($msg['subject'] ?? '')));
             ?>
             <div class="mail-card<?= !$msg['seen'] ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= is_draft_folder($folderPath) ? ' mail-card--draft' : '' ?><?= !empty($msg['optimistic']) ? ' mail-row--optimistic' : '' ?>"
                role="option" tabindex="0" aria-selected="false"
@@ -111,6 +117,11 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                <?php if (empty($msg['optimistic'])): ?>
                data-href="<?= e(message_url($rowFolder, $msgUid)) ?>"
                data-folder-b64="<?= e($rowFolderB64) ?>"
+               <?php if ($cardThreadKey !== ''): ?>
+               data-thread-key="<?= e($cardThreadKey) ?>"
+               <?php endif; ?>
+               data-thread-uids="<?= e(implode(',', $cardThreadUids)) ?>"
+               data-thread-count="<?= $cardThreadCount ?>"
                data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($rowFolder) . '&uid=' . $msgUid)) ?>"
                data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($rowFolder) . '&uid=' . $msgUid)) ?>"
                data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($rowFolder) . '&uid=' . $msgUid)) ?>"
@@ -143,7 +154,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
                             <span class="mail-card-date"><?= e(format_mail_date($msg['date'])) ?></span>
                         </span>
                     </div>
-                    <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject']) ?></div>
+                    <div class="mail-card-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= e($msg['subject']) ?><?php if ($cardThreadCount > 1): ?> <span class="mail-row-thread-count">(<?= $cardThreadCount ?>)</span><?php endif; ?></div>
                     <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= $snippet !== '' ? e($snippet) : '' ?></div>
                 </div>
                 <button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">&#8942;</button>

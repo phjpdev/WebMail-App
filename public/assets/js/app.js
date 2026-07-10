@@ -194,14 +194,8 @@
         var listCard = getListCard();
         var folderEnc = listCard ? listCard.getAttribute('data-folder-path') : '';
         if (!folderEnc) return;
-        noteRecentlyMarkedRead(uid);
-        ajaxAction('message/mark-read', {
-            folder: folderEnc,
-            uid: String(uid)
-        }).then(function (data) {
-            setRowSeen(uid, true);
-            // Badges update from the server's authoritative counts below only —
-            // no local estimate (per client: correct number over instant number).
+
+        function applyCounts(data) {
             if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
                 applyUnreadCounts(data.unread_counts);
             }
@@ -212,6 +206,45 @@
                     : 0;
                 updateMailCount(totalMsgs, data.folder_unread);
             }
+        }
+
+        // Conversation: opening it marks EVERY message of the thread in this
+        // folder read (Gmail). Bulk endpoint is idempotent and includes the
+        // opened uid.
+        var row = rowForUid(uid);
+        var threadUids = row ? rowThreadUids(row) : [uid];
+        if (threadUids.length > 1) {
+            threadUids.forEach(function (u) { noteRecentlyMarkedRead(u); });
+            var payload = new URLSearchParams();
+            payload.set('_csrf', csrf);
+            payload.set('folder', folderEnc);
+            threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
+            fetch(apiUrl('message/bulk-mark-read'), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    Accept: 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-CSRF-Token': csrf || ''
+                },
+                body: payload.toString()
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                setRowSeen(uid, true);
+                applyCounts(data);
+            }).catch(function () {});
+            return;
+        }
+
+        noteRecentlyMarkedRead(uid);
+        ajaxAction('message/mark-read', {
+            folder: folderEnc,
+            uid: String(uid)
+        }).then(function (data) {
+            setRowSeen(uid, true);
+            // Badges update from the server's authoritative counts below only —
+            // no local estimate (per client: correct number over instant number).
+            applyCounts(data);
         }).catch(function () {});
     }
 
@@ -635,8 +668,15 @@
                 syncReadSeenButton(readCard);
             }
             noteRecentlyMarkedRead(uid);
+            // Conversation row: the server marked only the OPENED message
+            // (data.was_unread); the thread's other unread messages in this
+            // folder still need marking. Bulk mark-read is idempotent.
+            var openedRow = rowForUid(uid);
+            var isThread = openedRow && rowThreadCount(openedRow) > 1;
             if (!data.was_unread && rowWasUnread) {
                 persistMarkRead(uid, rowWasUnread);
+            } else if (data.was_unread && isThread) {
+                persistMarkRead(uid, true);
             }
         }
         if (data.unread_counts && Object.keys(data.unread_counts).length) {
@@ -2787,6 +2827,7 @@
                 openMessageInPane(uid, true);
                 return;
             }
+            beaconThreadMarkRead(row);
             showLoading();
             window.location = row.getAttribute('data-href');
         });
@@ -2802,11 +2843,42 @@
                 if (e.key === 'Enter' || e.key === ' ') {
                     if (e.target.closest('.mail-kebab') || e.target.closest('.mail-card-check') || e.target.closest('.mail-row-check')) return;
                     e.preventDefault();
+                    beaconThreadMarkRead(row);
                     showLoading();
                     window.location = row.getAttribute('data-href');
                 }
             });
         }
+    }
+
+    // Full-page navigation to an unread conversation: the target page marks only
+    // the opened message; best-effort mark the rest of the thread read too so
+    // the badge is right when we come back. keepalive survives the navigation.
+    function beaconThreadMarkRead(row) {
+        if (!row || row.getAttribute('data-seen') !== '0') return;
+        var threadUids = rowThreadUids(row);
+        if (threadUids.length <= 1) return;
+        var listCard = getListCard();
+        var folderEnc = listCard ? listCard.getAttribute('data-folder-path') : '';
+        if (!folderEnc) return;
+        threadUids.forEach(function (u) { noteRecentlyMarkedRead(u); });
+        var payload = new URLSearchParams();
+        payload.set('_csrf', csrf);
+        payload.set('folder', folderEnc);
+        threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
+        try {
+            fetch(apiUrl('message/bulk-mark-read'), {
+                method: 'POST',
+                credentials: 'same-origin',
+                keepalive: true,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-CSRF-Token': csrf || ''
+                },
+                body: payload.toString()
+            });
+        } catch (e) { /* best effort */ }
     }
 
     document.querySelectorAll('.mail-row[data-href], .mail-card[data-href]').forEach(bindMailRow);
@@ -3170,6 +3242,55 @@
         if (tk) return tk.toLowerCase();
         var subjEl = row.querySelector('.mail-row-subject, .mail-card-subject');
         return normalizeThreadSubject(subjEl ? subjEl.textContent : '').toLowerCase();
+    }
+
+    // All uids of the conversation this row represents (this folder only,
+    // newest first). Falls back to the row's own uid for per-message rows.
+    function rowThreadUids(row) {
+        if (!row) return [];
+        var attr = row.getAttribute('data-thread-uids') || '';
+        var uids = attr.split(',').map(function (v) { return parseInt(v, 10); })
+            .filter(function (u) { return u > 0; });
+        if (uids.length) return uids;
+        var own = parseInt(row.getAttribute('data-uid'), 10);
+        return own > 0 ? [own] : [];
+    }
+
+    function rowThreadCount(row) {
+        if (!row) return 1;
+        var n = parseInt(row.getAttribute('data-thread-count') || '1', 10);
+        return n > 1 ? n : 1;
+    }
+
+    function rowForUid(uid) {
+        return rowsForUid(uid)[0] || null;
+    }
+
+    // Keep a known row's conversation metadata (thread uids, count, and the
+    // "(N)" subject span) in sync with the latest poll snapshot.
+    function syncRowThreadMeta(m) {
+        if (!m || m.optimistic) return;
+        var count = parseInt(m.thread_count, 10) || 1;
+        var uidsAttr = (m.thread_uids && m.thread_uids.length ? m.thread_uids : [m.uid]).join(',');
+        rowsForUid(m.uid).forEach(function (row) {
+            if (row.getAttribute('data-optimistic') === '1') return;
+            row.setAttribute('data-thread-uids', uidsAttr);
+            row.setAttribute('data-thread-count', String(count));
+            var subjEl = row.querySelector('.mail-row-subject, .mail-card-subject');
+            if (!subjEl) return;
+            var span = subjEl.querySelector('.mail-row-thread-count');
+            if (count > 1) {
+                if (!span) {
+                    span = document.createElement('span');
+                    span.className = 'mail-row-thread-count';
+                    subjEl.appendChild(document.createTextNode(' '));
+                    subjEl.appendChild(span);
+                }
+                span.textContent = '(' + count + ')';
+            } else if (span) {
+                span.remove();
+            }
+        });
     }
 
     function removeSupersededThreadRows(msg, keepUid) {
@@ -4192,6 +4313,8 @@
         } else {
             row.setAttribute('data-href', msg.url);
             if (msg.folder_b64) row.setAttribute('data-folder-b64', msg.folder_b64);
+            row.setAttribute('data-thread-uids', (msg.thread_uids || [msg.uid]).join(','));
+            row.setAttribute('data-thread-count', String(msg.thread_count || 1));
             if (msg.reply_url) row.setAttribute('data-reply-url', msg.reply_url);
             if (msg.reply_all_url) row.setAttribute('data-reply-all-url', msg.reply_all_url);
             if (msg.forward_url) row.setAttribute('data-forward-url', msg.forward_url);
@@ -4211,6 +4334,9 @@
                 '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>'
             : '';
         var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
+        var threadCountHtml = (msg.thread_count || 1) > 1
+            ? ' <span class="mail-row-thread-count">(' + parseInt(msg.thread_count, 10) + ')</span>'
+            : '';
 
         row.innerHTML =
             '<div class="mail-row-check" onclick="event.stopPropagation()">' +
@@ -4221,7 +4347,7 @@
                     '<div class="mail-row-line1">' + draftBadge +
                         '<span class="mail-row-from">' + escapeHtml(fromText) + '</span>' +
                     '</div>' +
-                    '<div class="mail-row-subject">' + escapeHtml(msg.subject) + '</div>' +
+                    '<div class="mail-row-subject">' + escapeHtml(msg.subject) + threadCountHtml + '</div>' +
                     snippetHtml +
                 '</div>' +
                 '<span class="mail-row-meta">' + attachHtml + flagHtml +
@@ -4254,6 +4380,8 @@
         } else {
             a.setAttribute('data-href', msg.url);
             if (msg.folder_b64) a.setAttribute('data-folder-b64', msg.folder_b64);
+            a.setAttribute('data-thread-uids', (msg.thread_uids || [msg.uid]).join(','));
+            a.setAttribute('data-thread-count', String(msg.thread_count || 1));
             if (msg.reply_url) a.setAttribute('data-reply-url', msg.reply_url);
             if (msg.reply_all_url) a.setAttribute('data-reply-all-url', msg.reply_all_url);
             if (msg.forward_url) a.setAttribute('data-forward-url', msg.forward_url);
@@ -4270,6 +4398,9 @@
             ? '<span class="mail-row-attach" title="Has attachment" aria-label="Has attachment"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>'
             : '';
         var flagHtml = msg.flagged ? '<span class="flag-dot mail-row-flag" title="Important">\u2605</span>' : '';
+        var cardThreadCountHtml = (msg.thread_count || 1) > 1
+            ? ' <span class="mail-row-thread-count">(' + parseInt(msg.thread_count, 10) + ')</span>'
+            : '';
 
         a.innerHTML =
             '<div class="mail-card-check mail-row-check" onclick="event.stopPropagation()">' +
@@ -4281,7 +4412,7 @@
                     '<span class="mail-card-meta">' + attachHtml + flagHtml +
                         '<span class="mail-card-date">' + escapeHtml(msg.date) + '</span></span>' +
                 '</div>' +
-                '<div class="mail-card-subject">' + escapeHtml(msg.subject) + '</div>' +
+                '<div class="mail-card-subject">' + escapeHtml(msg.subject) + cardThreadCountHtml + '</div>' +
                 snippetHtml +
             '</div>' +
             '<button type="button" class="mail-kebab" aria-label="Message actions" title="Actions">\u22EE</button>';
@@ -4940,6 +5071,7 @@
                                 setRowSeen(m.uid, !!m.seen);
                             }
                             setRowFlagged(m.uid, !!m.flagged);
+                            syncRowThreadMeta(m);
                         } else {
                             newMessages.push(m);
                         }
@@ -5737,9 +5869,12 @@
         payload.set('folder', folderEnc);
         var allInFolder = selectAllInFolder;
         if (!allInFolder) {
+            // Compare CHECKED ROW count against the folder total (both are
+            // conversation-level now) — the expanded uid list can exceed the
+            // conversation total without meaning "everything is selected".
             var totalMsgs = folderMessageTotal();
-            var selectedCount = selectedMailUids().length;
-            if (totalMsgs > 0 && selectedCount >= totalMsgs) {
+            var checkedRows = document.querySelectorAll('.mail-check:checked').length;
+            if (totalMsgs > 0 && checkedRows >= totalMsgs) {
                 allInFolder = true;
             }
         }
@@ -5940,10 +6075,15 @@
             if (row && row.getAttribute('data-optimistic') === '1') return;
             var uid = parseInt(cb.value, 10);
             if (!uid || uid < 0 || seen[uid]) return;
-            seen[uid] = true;
-            selections.push({
-                uid: uid,
-                folderB64: row ? (row.getAttribute('data-folder-b64') || listFolderEnc) : listFolderEnc
+            // Conversation rows expand to every message of the thread in this
+            // folder (Gmail: acting on the row acts on the whole conversation).
+            var rowUids = row ? rowThreadUids(row) : [uid];
+            if (!rowUids.length) rowUids = [uid];
+            var folderB64 = row ? (row.getAttribute('data-folder-b64') || listFolderEnc) : listFolderEnc;
+            rowUids.forEach(function (threadUid) {
+                if (!threadUid || threadUid < 0 || seen[threadUid]) return;
+                seen[threadUid] = true;
+                selections.push({ uid: threadUid, folderB64: folderB64 });
             });
         });
         if (selections.length) return selections;
@@ -5954,9 +6094,13 @@
         if (active && active.getAttribute('data-optimistic') !== '1') {
             var activeUid = parseInt(active.getAttribute('data-uid'), 10);
             if (activeUid && activeUid > 0) {
-                selections.push({
-                    uid: activeUid,
-                    folderB64: active.getAttribute('data-folder-b64') || listFolderEnc
+                var activeFolder = active.getAttribute('data-folder-b64') || listFolderEnc;
+                var activeUids = rowThreadUids(active);
+                if (!activeUids.length) activeUids = [activeUid];
+                activeUids.forEach(function (threadUid) {
+                    if (!threadUid || threadUid < 0 || seen[threadUid]) return;
+                    seen[threadUid] = true;
+                    selections.push({ uid: threadUid, folderB64: activeFolder });
                 });
             }
         }
@@ -7672,6 +7816,47 @@
             }
         }
 
+        // Conversation row acting on itself (not part of a larger selection):
+        // expand to all thread messages in this folder and run the bulk path so
+        // the whole conversation is affected (Gmail behavior).
+        var threadRow = rowForUid(uid);
+        var threadUids = threadRow ? rowThreadUids(threadRow) : [];
+        if (!actsOnSelection && threadUids.length > 1) {
+            var tFolderEnc = (threadRow && threadRow.getAttribute('data-folder-b64')) || sourceFolderEnc || currentMailFolderEnc();
+            var threadSel = threadUids.map(function (u) { return { uid: u, folderB64: tFolderEnc }; });
+            if (kind === 'trash') {
+                var thrDeleteOpts = deleteConfirmOptions(threadUids.length);
+                return showConfirmAction(Object.assign({}, thrDeleteOpts, {
+                    loadingLabel: deleteLoadingMessage(threadUids.length),
+                    action: function () {
+                        return runBulkCommandExecute('delete', threadSel, tFolderEnc, triggerBtn);
+                    }
+                })).then(function (ok) { return !!ok; });
+            }
+            if (kind === 'move' || kind === 'restore' || kind === 'mark-read'
+                || kind === 'mark-unread' || kind === 'flag' || kind === 'unflag') {
+                if (kind === 'move' && extra.target_folder) {
+                    var mvSel = document.getElementById('cmd-move-target');
+                    if (mvSel) {
+                        var hasO = Array.prototype.some.call(mvSel.options, function (o) { return o.value === extra.target_folder; });
+                        if (!hasO) {
+                            var o2 = document.createElement('option');
+                            o2.value = extra.target_folder;
+                            o2.textContent = extra.target_folder;
+                            mvSel.appendChild(o2);
+                        }
+                        mvSel.value = extra.target_folder;
+                    }
+                }
+                var bulkKind = kind === 'trash' ? 'delete' : kind;
+                runBulkCommandExecute(bulkKind, threadSel, tFolderEnc, triggerBtn);
+                return Promise.resolve(true);
+            }
+            if (kind === 'spam') {
+                return dispatchThreadSpam(sourceFolderEnc, threadUids, tFolderEnc, triggerBtn);
+            }
+        }
+
         var confirmCfg = null;
         if (kind === 'trash') {
             confirmCfg = deleteConfirmOptions(1);
@@ -7695,6 +7880,36 @@
                 .then(function (ok) { return !!ok; });
         }
         return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn).then(function () { return true; });
+    }
+
+    // Move a whole conversation to Spam (kebab on a thread row). message/spam
+    // accepts uids[]; optimistically drop the row and let the op resolve.
+    function dispatchThreadSpam(sourceFolderEnc, threadUids, folderEnc, triggerBtn) {
+        return showConfirmAction({
+            title: threadUids.length === 1 ? 'Move to Spam?' : 'Move ' + threadUids.length + ' messages to Spam?',
+            message: 'These messages will be moved to the Spam folder.',
+            confirmLabel: 'Move to Spam',
+            danger: false,
+            loadingLabel: 'Moving to Spam…',
+            action: function () {
+                var winner = threadUids[0];
+                beginListMutationQuiet(2500);
+                markUidsPendingRemoval(threadUids);
+                removeRowByUid(winner);
+                clearReadingPaneIfShowingUids(threadUids);
+                var payload = new URLSearchParams();
+                payload.set('_csrf', csrf);
+                payload.set('folder', folderEnc);
+                threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
+                return fireListMutation('message/spam', payload, {
+                    opToastHandle: beginOpToast({
+                        progress: 'Moving to Spam…',
+                        done: threadUids.length === 1 ? 'Message moved to Spam.' : 'Conversation moved to Spam.',
+                        fail: 'The messages could not be moved to Spam. They have been restored.'
+                    })
+                }).finally(function () { endListMutationQuiet(800); });
+            }
+        }).then(function (ok) { return !!ok; });
     }
 
     function dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn) {

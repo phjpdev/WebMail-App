@@ -9,6 +9,13 @@ $snippet = $rowDisplay['snippet'];
 $uid = (int) $msg['uid'];
 $rowFolder = \App\Services\FolderCache::resolvePath(employee_messages_imap_path((string) ($msg['list_folder'] ?? $folderPath)));
 $rowFolderB64 = encode_folder_path($rowFolder);
+// Gmail-style conversation metadata (absent/singular on per-message rows).
+$rowThreadUids = array_values(array_filter(array_map('intval', is_array($msg['thread_uids'] ?? null) ? $msg['thread_uids'] : [$uid]), static fn (int $u): bool => $u > 0));
+if ($rowThreadUids === []) {
+    $rowThreadUids = [$uid];
+}
+$rowThreadCount = max(1, (int) ($msg['thread_count'] ?? count($rowThreadUids)));
+$rowThreadKey = (string) ($msg['thread_key'] ?? mail_normalize_thread_subject((string) ($msg['subject'] ?? '')));
 ?>
 <div class="mail-row mail-row--outlook<?= empty($msg['seen']) ? ' mail-unread' : '' ?><?= !empty($msg['flagged']) ? ' mail-flagged' : '' ?><?= $rowDisplay['is_draft'] ? ' mail-row--draft' : '' ?><?= !empty($msg['optimistic']) ? ' mail-row--optimistic' : '' ?>"
     role="option"
@@ -22,6 +29,11 @@ $rowFolderB64 = encode_folder_path($rowFolder);
     <?php else: ?>
     data-href="<?= e(message_url($rowFolder, $uid)) ?>"
     data-folder-b64="<?= e($rowFolderB64) ?>"
+    <?php if ($rowThreadKey !== ''): ?>
+    data-thread-key="<?= e($rowThreadKey) ?>"
+    <?php endif; ?>
+    data-thread-uids="<?= e(implode(',', $rowThreadUids)) ?>"
+    data-thread-count="<?= $rowThreadCount ?>"
     data-reply-url="<?= e(url('compose/reply?folder=' . encode_folder_path($rowFolder) . '&uid=' . $uid)) ?>"
     data-reply-all-url="<?= e(url('compose/reply-all?folder=' . encode_folder_path($rowFolder) . '&uid=' . $uid)) ?>"
     data-forward-url="<?= e(url('compose/forward?folder=' . encode_folder_path($rowFolder) . '&uid=' . $uid)) ?>"
@@ -42,7 +54,7 @@ $rowFolderB64 = encode_folder_path($rowFolder);
             </div>
             <?php /* _hl_* fields are pre-escaped server-side with <mark> highlights
                 (search results only) — safe to output raw. */ ?>
-            <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= !empty($msg['_hl_subject']) ? $msg['_hl_subject'] : e($msg['subject'] ?? '(no subject)') ?></div>
+            <div class="mail-row-subject" title="<?= e($msg['subject'] ?? '(no subject)') ?>"><?= !empty($msg['_hl_subject']) ? $msg['_hl_subject'] : e($msg['subject'] ?? '(no subject)') ?><?php if ($rowThreadCount > 1): ?> <span class="mail-row-thread-count">(<?= $rowThreadCount ?>)</span><?php endif; ?></div>
             <div class="mail-row-snippet"<?= $snippet !== '' ? ' title="' . e($snippet) . '"' : ' aria-hidden="true"' ?>><?= !empty($msg['_hl_snippet']) ? $msg['_hl_snippet'] : ($snippet !== '' ? e($snippet) : '') ?></div>
         </div>
         <span class="mail-row-meta">

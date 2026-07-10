@@ -650,7 +650,8 @@ class MailCacheService
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date, i.seen, i.flagged, i.has_attachment, i.size,
                     COALESCE(NULLIF(i.to_addrs, \'\'), b.to_addrs) AS to_addrs,
                     COALESCE(NULLIF(i.cc_addrs, \'\'), b.cc_addrs) AS cc_addrs,
-                    b.message_id
+                    COALESCE(NULLIF(i.message_id, \'\'), b.message_id) AS message_id,
+                    i.in_reply_to, i.references_ids
              FROM mail_index i
              LEFT JOIN mail_bodies b
                 ON b.folder_path = i.folder_path AND b.imap_uid = i.imap_uid
@@ -679,6 +680,35 @@ class MailCacheService
             'total_pages' => $totalPages,
             'from_cache' => true,
         ]);
+    }
+
+    /**
+     * Conversation-aware cache read for FOLDER VIEWS. When the folder groups by
+     * thread (Gmail-style), SQL LIMIT/OFFSET pagination is wrong (a page of 25
+     * messages is not 25 conversations) — so fetch the FULL index window
+     * (≤ mail_cache_header_limit rows, one cheap query), tag it `window_full`,
+     * and let the list pipeline group first and slice to the requested page
+     * after. Non-grouping folders defer to plain listFromCache unchanged.
+     *
+     * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int, from_cache: bool, window_full?: bool}|null
+     */
+    public static function listConversationWindow(string $folderPath, int $page, int $perPage): ?array
+    {
+        if (!mail_should_group_list_by_thread($folderPath)) {
+            return self::listFromCache($folderPath, $page, $perPage);
+        }
+
+        $windowSize = max((int) (config('app')['mail_cache_header_limit'] ?? 200), $perPage);
+        $list = self::listFromCache($folderPath, 1, $windowSize);
+        if ($list === null) {
+            return null;
+        }
+
+        $list['page'] = max(1, $page);
+        $list['per_page'] = max(1, $perPage);
+        $list['window_full'] = true;
+
+        return $list;
     }
 
     public static function hasFolderData(string $folderPath): bool
@@ -2477,6 +2507,9 @@ class MailCacheService
             'has_attachment' => (bool) ($row['has_attachment'] ?? false),
             'size' => (int) ($row['size'] ?? 0),
             'message_id' => (string) ($row['message_id'] ?? ''),
+            // Reference headers feed the conversation grouper (thread chains).
+            'in_reply_to' => (string) ($row['in_reply_to'] ?? ''),
+            'references_ids' => (string) ($row['references_ids'] ?? ''),
         ];
     }
 

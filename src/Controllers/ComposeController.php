@@ -164,10 +164,10 @@ class ComposeController
             assert_folder_access($folderPath);
         }
 
-        $body = $this->appendSignature($body, $fromEmail);
-        if ($bodyHtml !== '') {
-            $bodyHtml = $this->appendSignatureHtml($bodyHtml, $fromEmail);
-        }
+        // Signatures are now PREFILLED into the editor (visible while composing,
+        // Gmail-style) — see loadMessageForm / defaultComposeData — so the body
+        // the user submits already contains it. No send-time append (that added
+        // it invisibly after the quote, and couldn't be seen or edited).
 
         $draft = compact('to', 'cc', 'bcc', 'subject', 'body', 'fromEmail', 'mode', 'folderPath', 'uid');
         $draft['body_html'] = $bodyHtml;
@@ -698,6 +698,10 @@ class ComposeController
         $quoted = mail_build_reply_quoted_body($message, $folderPath);
         $replyFrom = mail_resolve_reply_from($message, $folderPath);
         $replyTo = mail_resolve_reply_to($message, $folderPath);
+        // Signature sits between the (empty) new-text area and the quote so the
+        // user sees and can edit it — compose_split_reply_body keeps it in the
+        // editor's "compose" part while the quote collapses below.
+        $sigBlock = $this->signatureBlockForBody($replyFrom);
 
         if ($mode === 'reply') {
             $subject = $this->replySubject($message['subject'] ?? '');
@@ -706,7 +710,7 @@ class ComposeController
                 'cc' => '',
                 'bcc' => '',
                 'subject' => $subject,
-                'body' => "\n\n" . $quoted,
+                'body' => "\n\n" . $sigBlock . $quoted,
                 'from_email' => $replyFrom,
                 'folderPath' => $folderPath,
                 'uid' => $uid,
@@ -722,7 +726,7 @@ class ComposeController
                 'cc' => $cc,
                 'bcc' => '',
                 'subject' => $subject,
-                'body' => "\n\n" . $quoted,
+                'body' => "\n\n" . $sigBlock . $quoted,
                 'from_email' => $replyFrom,
                 'folderPath' => $folderPath,
                 'uid' => $uid,
@@ -752,7 +756,7 @@ class ComposeController
             'cc' => '',
             'bcc' => '',
             'subject' => $subject,
-            'body' => $forwardHeader . ($message['plain'] ?? strip_tags($message['html'] ?? '')),
+            'body' => "\n\n" . $sigBlock . $forwardHeader . ($message['plain'] ?? strip_tags($message['html'] ?? '')),
             'from_email' => $replyFrom,
             'folderPath' => $folderPath,
             'uid' => $uid,
@@ -947,14 +951,18 @@ class ComposeController
      */
     private function defaultComposeData(): array
     {
+        $fromEmail = (new AliasService())->userAlias(Auth::user()['id'] ?? null);
+        $sig = $this->signatureForFrom($fromEmail);
+
         return [
             'to' => '',
             'cc' => '',
             'bcc' => '',
             'subject' => '',
-            'body' => '',
+            // New message: signature below the cursor (Gmail-style), visible and editable.
+            'body' => $sig !== '' ? "\n\n" . $sig : '',
             'body_html' => '',
-            'from_email' => (new AliasService())->userAlias(Auth::user()['id'] ?? null),
+            'from_email' => $fromEmail,
         ];
     }
 
@@ -1058,6 +1066,17 @@ class ComposeController
         redirect('compose');
     }
 
+    /**
+     * Signature block to prefill into the compose editor (empty when no sig),
+     * with a trailing blank line so the quote/forward content starts below it.
+     */
+    private function signatureBlockForBody(string $fromEmail): string
+    {
+        $sig = $this->signatureForFrom($fromEmail);
+
+        return $sig !== '' ? $sig . "\n\n" : '';
+    }
+
     private function signatureForFrom(string $fromEmail): string
     {
         // The signature belongs to the identity the mail is sent AS (the send-as
@@ -1082,6 +1101,14 @@ class ComposeController
             return $body;
         }
 
+        // Reply/forward: place the signature right after the user's NEW text and
+        // BEFORE the quoted history (Gmail/Outlook), not at the very bottom under
+        // the quote where it's effectively hidden.
+        $split = compose_split_reply_body($body);
+        if (($split['quoted'] ?? '') !== '') {
+            return rtrim($split['compose']) . "\n\n" . $sig . "\n\n" . ltrim($split['quoted'], "\n");
+        }
+
         return rtrim($body) . "\n\n" . $sig;
     }
 
@@ -1092,7 +1119,13 @@ class ComposeController
             return $html;
         }
 
-        return rtrim($html) . '<br><br>' . nl2br(e($sig));
+        $sigHtml = '<br><br>' . nl2br(e($sig));
+        $split = mail_split_html_quote($html);
+        if (($split['quoted'] ?? '') !== '') {
+            return rtrim($split['visible']) . $sigHtml . $split['quoted'];
+        }
+
+        return rtrim($html) . $sigHtml;
     }
 
     /**

@@ -225,7 +225,7 @@ class MailController
         $servedFromCache = false;
 
         if ($imapConnected && $query === '' && $preferCache) {
-            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached !== null) {
                 $list = $cached;
                 $list['from_cache'] = true;
@@ -254,7 +254,7 @@ class MailController
                 if ($preferCache && $badgePending && $query === '' && !$this->shouldSkipPostSendFilter()) {
                     $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
                     MailCacheService::syncFolderHeaders($imap, $folderPath, $headerLimit);
-                    $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
+                    $refreshed = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
                     if ($refreshed !== null) {
                         $list = $refreshed;
                         $list['from_cache'] = true;
@@ -270,7 +270,7 @@ class MailController
                         if ($sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath)) {
                             MailCacheService::reconcileFolderBadge($imap, $folderPath);
                             if (!empty($list['from_cache'])) {
-                                $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
+                                $refreshed = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
                                 if ($refreshed !== null) {
                                     $list = $refreshed;
                                 }
@@ -289,7 +289,7 @@ class MailController
         // read-only instead of an empty folder — the user keeps seeing their
         // mail, with the connection error shown, and polling recovers later.
         if (!$imapConnected && $query === '' && empty($list['messages'])) {
-            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached !== null) {
                 $list = $cached;
                 $list['from_cache'] = true;
@@ -444,7 +444,7 @@ class MailController
         bool $forceRefresh = false,
     ): array {
         if ($query === '' && !$forceRefresh) {
-            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached !== null && !MailCacheService::isStale($folderPath)) {
                 $cached['from_cache'] = true;
 
@@ -642,7 +642,7 @@ class MailController
 
         // Lightweight poll: MySQL cache only — never IMAP (keeps polling fast).
         if ($light && $query === '') {
-            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached === null) {
                 $cached = [
                     'messages' => [],
@@ -683,7 +683,7 @@ class MailController
 
         // Warm cache: avoid opening IMAP when the indexed list is already current.
         if ($query === '' && !$needsHeaderSync) {
-            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached !== null) {
                 $this->echoFolderSyncJson($folderPath, $cached, light: true);
 
@@ -700,7 +700,7 @@ class MailController
 
         $imap = new ImapService();
         if (!$imap->connect()) {
-            $cached = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached !== null) {
                 $this->echoFolderSyncJson($folderPath, $cached, light: true);
 
@@ -717,7 +717,7 @@ class MailController
         if ($query === '' && $page === 1 && $needsHeaderSync) {
             MailCacheService::syncFolderHeaders($imap, $folderPath);
             $didImapSync = true;
-            $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $list = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
         }
 
         if (
@@ -736,7 +736,7 @@ class MailController
             $headerLimit = (int) (config('app')['mail_cache_post_send_limit'] ?? 30);
             MailCacheService::syncFolderHeaders($imap, $folderPath, $headerLimit);
             $didImapSync = true;
-            $list = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $list = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
         }
 
         if ($list === null && ($forceFilter || (!$light && !$forceRefresh))) {
@@ -750,7 +750,7 @@ class MailController
         }
 
         if ($list === null) {
-            $list = MailCacheService::listFromCache($folderPath, $page, $perPage)
+            $list = MailCacheService::listConversationWindow($folderPath, $page, $perPage)
                 ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
         }
 
@@ -759,7 +759,7 @@ class MailController
             if ($sessionBadge > 0 || MailCacheService::badgeAheadOfIndex($folderPath)) {
                 MailCacheService::reconcileFolderBadge($imap, $folderPath);
             }
-            $refreshed = MailCacheService::listFromCache($folderPath, $page, $perPage);
+            $refreshed = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($refreshed !== null) {
                 $list = $refreshed;
             }
@@ -778,7 +778,10 @@ class MailController
         $preview = mail_get_post_send_preview($folderPath);
 
         $list = mail_apply_folder_list_view_pipeline($folderPath, $list, $light);
-        $list['total'] = count($list['messages']);
+        // Never shrink the pipeline's total (with conversation pagination the
+        // page holds fewer rows than the folder's conversation count); only
+        // grow it so optimistic arrival rows remain counted.
+        $list['total'] = max((int) ($list['total'] ?? 0), count($list['messages']));
 
         if (trim($_GET['q'] ?? '') === '' && !$light) {
             if (folder_badge_uses_index_truth($folderPath)) {
@@ -826,6 +829,16 @@ class MailController
             if (!empty($msg['thread_key'])) {
                 $entry['thread_key'] = (string) $msg['thread_key'];
             }
+            if (empty($msg['optimistic'])) {
+                // Conversation metadata: all uids of this thread in this folder
+                // (newest first) + count. Single-message rows carry [uid]/1.
+                $threadUids = array_values(array_filter(array_map(
+                    'intval',
+                    is_array($msg['thread_uids'] ?? null) ? $msg['thread_uids'] : [$uid]
+                ), static fn (int $u): bool => $u > 0));
+                $entry['thread_uids'] = $threadUids !== [] ? $threadUids : [$uid];
+                $entry['thread_count'] = max(1, (int) ($msg['thread_count'] ?? count($entry['thread_uids'])));
+            }
             if (!empty($msg['optimistic'])) {
                 $entry['optimistic'] = true;
             } else {
@@ -850,7 +863,9 @@ class MailController
             'total' => $list['total'],
             'page' => $list['page'],
             'total_pages' => $list['total_pages'],
-            'list_grouped' => mail_should_group_list_by_thread($folderPath),
+            // q-aware: search responses are per-message, so the client must not
+            // run its thread-collapse pruning on them.
+            'list_grouped' => trim($_GET['q'] ?? '') === '' && mail_should_group_list_by_thread($folderPath),
             'messages' => $messages,
             'unread_counts' => $light
                 ? FolderCache::sidebarUnreadCountsFromSession()
@@ -866,7 +881,13 @@ class MailController
 
         $light = ($_GET['light'] ?? '') === '1';
         if ($light) {
-            echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCountsSessionOnly()]);
+            // Cheap DB-only reconcile (index COUNTs, no IMAP) so a read/unread or
+            // new mail in ANOTHER account (shared mailbox) propagates to this
+            // already-open session's sidebar every poll. Without it the light
+            // path returned stale session-only counts — the "sender" browser
+            // never saw the recipient folder's badge appear or clear.
+            $this->reconcileSidebarBadgesFromIndex(dbOnly: true);
+            echo json_encode(['unread_counts' => FolderCache::sidebarUnreadCountsFromSession()]);
 
             return;
         }
@@ -1978,14 +1999,24 @@ class MailController
         releaseSessionLock();
 
         $folderPath = mail_folder_path($_POST['folder'] ?? '');
-        $uid = (int) ($_POST['uid'] ?? 0);
+        // Conversation rows send uids[] (all thread messages); single rows send uid.
+        $uids = [];
+        if (is_array($_POST['uids'] ?? null)) {
+            $uids = array_values(array_filter(array_map('intval', $_POST['uids']), static fn (int $u): bool => $u > 0));
+        }
+        if ($uids === []) {
+            $uid = (int) ($_POST['uid'] ?? 0);
+            if ($uid > 0) {
+                $uids = [$uid];
+            }
+        }
 
-        if ($folderPath === '' || $uid <= 0) {
+        if ($folderPath === '' || $uids === []) {
             $this->actionError('Invalid request.', 'folder/' . encode_folder_path('INBOX'));
         }
         assert_folder_access($folderPath);
 
-        $this->performMove($folderPath, [$uid], spam_folder_path(), 'folder/' . encode_folder_path($folderPath), 'Message moved to Spam.');
+        $this->performMove($folderPath, $uids, spam_folder_path(), 'folder/' . encode_folder_path($folderPath), 'Message moved to Spam.');
     }
 
     public function bulkMarkRead(): void

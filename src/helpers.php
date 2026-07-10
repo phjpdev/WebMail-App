@@ -1559,6 +1559,74 @@ function mail_guess_employee_for_shared_thread(string $corrFolder, string $baseS
 /**
  * Another employee's linked inbox that shares a conversation (e.g. Jean ↔ User).
  */
+/**
+ * The other party's email on a message (the address that ISN'T the folder
+ * owner) — prefers the sender, else the first recipient. Used to resolve a
+ * conversation's correspondent by ADDRESS rather than by (collision-prone)
+ * subject.
+ */
+function mail_other_party_email(array $message, string $ownerEmail): string
+{
+    $ownerEmail = strtolower(trim($ownerEmail));
+    $candidates = [];
+    $from = normalize_email_token((string) ($message['from'] ?? ''));
+    if ($from !== '') {
+        $candidates[] = $from;
+    }
+    foreach (['to', 'cc'] as $field) {
+        $raw = (string) ($message[$field] ?? '');
+        foreach (preg_split('/[,;]+/', $raw) ?: [] as $tok) {
+            $addr = normalize_email_token(trim($tok));
+            if ($addr !== '') {
+                $candidates[] = $addr;
+            }
+        }
+    }
+    foreach ($candidates as $addr) {
+        if ($addr !== '' && strtolower($addr) !== $ownerEmail) {
+            return strtolower($addr);
+        }
+    }
+
+    return '';
+}
+
+/**
+ * Peer EMPLOYEE inbox for an internal (employee↔employee) thread, resolved from
+ * the opened message's other-party address — reliable even when the subject is
+ * generic ("test") and collides with a third employee's folder. Returns null
+ * when the other party isn't a known employee folder (external correspondent).
+ */
+function mail_find_peer_employee_inbox_for_message(int $employeeUserId, string $employeeInbox, ?array $message): ?string
+{
+    if ($employeeUserId <= 0 || $message === null) {
+        return null;
+    }
+    $employeeInbox = \App\Services\FolderCache::resolvePath($employeeInbox);
+    if ($employeeInbox === '') {
+        return null;
+    }
+    $ownerEmail = (string) (alias_email_for_folder($employeeInbox) ?? '');
+    $peerEmail = mail_other_party_email($message, $ownerEmail);
+    if ($peerEmail === '') {
+        return null;
+    }
+    $peerFolder = folder_for_alias_email($peerEmail);
+    if ($peerFolder === null || $peerFolder === '') {
+        return null;
+    }
+    $resolved = \App\Services\FolderCache::resolvePath($peerFolder);
+    if ($resolved === '' || strcasecmp($resolved, $employeeInbox) === 0) {
+        return null;
+    }
+    // Only an employee-linked folder is a valid peer for internal threading.
+    if (mail_linked_user_id_for_inbox($resolved) === null) {
+        return null;
+    }
+
+    return $resolved;
+}
+
 function mail_find_peer_employee_inbox_for_subject(int $employeeUserId, string $employeeInbox, string $baseSubject): ?string
 {
     if ($employeeUserId <= 0) {
@@ -3340,6 +3408,21 @@ function mail_resolve_correspondent_thread_context(string $folderPath, ?array $m
 
     $linkedId = mail_linked_user_id_for_inbox($folderPath);
     if ($linkedId !== null) {
+        // Address-based peer FIRST: the opened message's other party reliably
+        // identifies the internal correspondent, even when the subject ("test")
+        // collides with another employee's folder (the old subject-only finder
+        // could resolve to the wrong peer and drop half the thread).
+        $peerByAddr = mail_find_peer_employee_inbox_for_message($linkedId, $folderPath, $message);
+        if ($peerByAddr !== null && $peerByAddr !== '') {
+            return [
+                'corr_folder' => $peerByAddr,
+                'employee_inbox' => employee_messages_imap_path($folderPath),
+                'employee_user_id' => $linkedId,
+                'corr_email' => '',
+                'peer_thread' => true,
+            ];
+        }
+
         $corrFolder = mail_find_employee_correspondent_folder_for_subject($linkedId, $baseSubject);
         if ($corrFolder !== null && $corrFolder !== '') {
             $corrEmail = alias_email_for_folder($corrFolder);
@@ -4376,22 +4459,15 @@ function employee_merge_shared_mailbox_outbound_list(string $folderPath, array $
  */
 function mail_should_group_list_by_thread(string $folderPath): bool
 {
-    if (employee_is_correspondent_folder($folderPath)) {
-        return true;
+    // Gmail convention, applied identically for every user (the old gate was
+    // session/role dependent, which made the same folder group for one account
+    // and not another): conversations everywhere EXCEPT Drafts, Trash and Junk.
+    $resolved = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($resolved === '') {
+        return false;
     }
 
-    if (\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
-        return true;
-    }
-
-    $user = App\Auth::user();
-    if ($user !== null
-        && ($user['role'] ?? '') === 'admin'
-        && mail_linked_user_id_for_inbox($folderPath) !== null) {
-        return true;
-    }
-
-    return false;
+    return !is_draft_folder($resolved) && !is_trash_folder($resolved) && !is_spam_folder($resolved);
 }
 
 /**
@@ -4408,53 +4484,7 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
         return $list;
     }
 
-    $groups = [];
-    foreach ($list['messages'] as $msg) {
-        if (!is_array($msg)) {
-            continue;
-        }
-        $key = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
-        if ($key === '') {
-            $key = 'uid:' . (int) ($msg['uid'] ?? 0);
-        }
-
-        $msgTs = mail_message_timestamp($msg['date'] ?? '');
-        $existingTs = isset($groups[$key])
-            ? mail_message_timestamp($groups[$key]['date'] ?? '')
-            : -1;
-        $incomingUnread = empty($msg['seen']);
-        if (!isset($groups[$key])) {
-            $groups[$key] = $msg;
-
-            continue;
-        }
-
-        $existingUnread = empty($groups[$key]['seen']);
-        $replace = $msgTs > $existingTs
-            || ($msgTs === $existingTs && (int) ($msg['uid'] ?? 0) > (int) ($groups[$key]['uid'] ?? 0));
-        if ($replace) {
-            $groups[$key] = $msg;
-        }
-        if ($incomingUnread || $existingUnread) {
-            $groups[$key]['seen'] = false;
-        }
-    }
-
-    $merged = array_values($groups);
-    foreach ($merged as &$groupedMsg) {
-        if (!is_array($groupedMsg)) {
-            continue;
-        }
-        $threadKey = mail_normalize_thread_subject((string) ($groupedMsg['subject'] ?? ''));
-        if ($threadKey !== '') {
-            $groupedMsg['thread_key'] = $threadKey;
-        }
-    }
-    unset($groupedMsg);
-
-    usort($merged, static function (array $a, array $b): int {
-        return mail_message_timestamp($b['date'] ?? '') <=> mail_message_timestamp($a['date'] ?? '');
-    });
+    $merged = mail_group_messages_into_conversations($folderPath, $list['messages']);
 
     $list['messages'] = $merged;
     $list['total'] = count($merged);
@@ -4464,6 +4494,171 @@ function mail_group_list_by_thread(string $folderPath, array $list): array
     }
 
     return $list;
+}
+
+/**
+ * Collapse folder messages into Gmail-style conversations: one row per thread.
+ *
+ * Grouping key: normalized-subject bucket, refined by a Message-ID/References
+ * union-find inside each bucket — so two unrelated senders who both used the
+ * subject "Test" do NOT merge, while a genuine reply chain does. Rows without
+ * any reference headers (pre-threading index rows / cold IMAP overviews) form
+ * one shared legacy component per bucket, preserving old behaviour.
+ *
+ * The winner (latest message) represents the thread and carries aggregates:
+ *   thread_uids   — all component uids in this folder, newest first
+ *   thread_count  — component size
+ *   seen          — AND of members (any unread ⇒ row is unread)
+ *   flagged / has_attachment — OR of members
+ *   thread_key    — normalized subject (matches the reading pane's key)
+ *
+ * @param list<array<string, mixed>> $messages
+ * @return list<array<string, mixed>>
+ */
+function mail_group_messages_into_conversations(string $folderPath, array $messages): array
+{
+    // In a mixed-sender folder (the shared INBOX, Sent, Archive) two unrelated
+    // people can share a subject ("Test"), so split same-subject buckets by
+    // reference chain. A per-correspondent folder (INBOX.<name>.Inbox, a client
+    // folder) only ever holds one conversation partner, so same subject == same
+    // conversation even when the linking reply lives in another folder (Sent) —
+    // merge the whole subject bucket. This mirrors the reading pane's result
+    // without a cross-folder query. The check is session-independent
+    // (folder_icon_type is the same for admin and employees).
+    $iconType = folder_icon_type(\App\Services\FolderCache::resolvePath($folderPath));
+    $refineByChain = in_array($iconType, ['inbox', 'sent', 'archive'], true);
+
+    $components = [];
+    $buckets = [];
+    foreach ($messages as $msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+        $key = mail_normalize_thread_subject((string) ($msg['subject'] ?? ''));
+        if ($key === '') {
+            // No subject to bucket on: each message is its own conversation.
+            $components[] = [$msg];
+            continue;
+        }
+        $buckets[$key][] = $msg;
+    }
+
+    foreach ($buckets as $rows) {
+        $n = count($rows);
+        if ($n === 1) {
+            $components[] = $rows;
+            continue;
+        }
+
+        if (!$refineByChain) {
+            // Per-correspondent folder: the whole subject bucket is one thread.
+            $components[] = $rows;
+            continue;
+        }
+
+        // Union-find: rows join when their Message-ID/References sets intersect.
+        $parent = range(0, $n - 1);
+        $find = static function (int $i) use (&$parent): int {
+            while ($parent[$i] !== $i) {
+                $parent[$i] = $parent[$parent[$i]];
+                $i = $parent[$i];
+            }
+
+            return $i;
+        };
+        $union = static function (int $a, int $b) use (&$parent, $find): void {
+            $ra = $find($a);
+            $rb = $find($b);
+            if ($ra !== $rb) {
+                $parent[$rb] = $ra;
+            }
+        };
+
+        $idOwner = [];
+        $legacyAnchor = -1;
+        foreach ($rows as $i => $row) {
+            $ids = mail_thread_ids_from_row($row);
+            if ($ids === []) {
+                // Legacy pool: rows lacking headers share one component per bucket.
+                if ($legacyAnchor === -1) {
+                    $legacyAnchor = $i;
+                } else {
+                    $union($legacyAnchor, $i);
+                }
+                continue;
+            }
+            foreach (array_keys($ids) as $id) {
+                if (isset($idOwner[$id])) {
+                    $union($idOwner[$id], $i);
+                } else {
+                    $idOwner[$id] = $i;
+                }
+            }
+        }
+
+        $byRoot = [];
+        foreach ($rows as $i => $row) {
+            $byRoot[$find($i)][] = $row;
+        }
+        foreach ($byRoot as $componentRows) {
+            $components[] = $componentRows;
+        }
+    }
+
+    $out = [];
+    foreach ($components as $componentRows) {
+        // Newest first (date, then uid) — first element is the winner.
+        usort($componentRows, static function (array $a, array $b): int {
+            $cmp = mail_message_timestamp($b['date'] ?? '') <=> mail_message_timestamp($a['date'] ?? '');
+            if ($cmp !== 0) {
+                return $cmp;
+            }
+
+            return ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0));
+        });
+
+        $winner = $componentRows[0];
+        $uids = [];
+        $anyUnread = false;
+        $anyFlagged = false;
+        $anyAttachment = false;
+        foreach ($componentRows as $row) {
+            $uids[] = (int) ($row['uid'] ?? 0);
+            if (empty($row['seen'])) {
+                $anyUnread = true;
+            }
+            if (!empty($row['flagged'])) {
+                $anyFlagged = true;
+            }
+            if (!empty($row['has_attachment'])) {
+                $anyAttachment = true;
+            }
+        }
+
+        $winner['thread_uids'] = $uids;
+        $winner['thread_count'] = count($uids);
+        if ($anyUnread) {
+            $winner['seen'] = false;
+        }
+        if ($anyFlagged) {
+            $winner['flagged'] = true;
+        }
+        if ($anyAttachment) {
+            $winner['has_attachment'] = true;
+        }
+        $threadKey = mail_normalize_thread_subject((string) ($winner['subject'] ?? ''));
+        if ($threadKey !== '') {
+            $winner['thread_key'] = $threadKey;
+        }
+
+        $out[] = $winner;
+    }
+
+    usort($out, static function (array $a, array $b): int {
+        return mail_message_timestamp($b['date'] ?? '') <=> mail_message_timestamp($a['date'] ?? '');
+    });
+
+    return $out;
 }
 
 /**
@@ -8130,19 +8325,48 @@ function mail_supplement_correspondent_thread_entries(array $entries): array
  * @param array{messages?: list<array<string, mixed>>, total?: int, page?: int, per_page?: int, total_pages?: int} $list
  * @return array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int}
  */
-function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, bool $fast = false): array
+function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, bool $fast = false, bool $groupConversations = true): array
 {
-    // Plain per-folder model: a folder shows exactly its own cached IMAP rows.
-    // No cross-folder merge, no thread grouping, no correspondent/shared "finalize"
-    // seen overrides. Each row's `seen` is its own mail_index.seen, so the unread
-    // blue bars always equal the folder's seen=0 count and the sidebar badge.
+    // Per-folder model with Gmail-style conversations: a folder shows its own
+    // cached IMAP rows, collapsed to one row per thread (except Drafts/Trash/
+    // Junk and search results). Each row's `seen` is its own mail_index.seen;
+    // a conversation row is unread when ANY member is unread.
     $messages = is_array($list['messages'] ?? null) ? $list['messages'] : [];
     $messages = mail_dedupe_list_by_uid($messages);
-    $messages = \App\Services\MailCacheService::enrichListMessages($folderPath, $messages, true);
+
+    // Group BEFORE pagination so every conversation appears exactly once.
+    // Message-level consumers (bulk uid resolution) pass $groupConversations
+    // = false and keep exact per-message semantics.
+    $grouped = $groupConversations
+        && trim($_GET['q'] ?? '') === ''
+        && mail_should_group_list_by_thread($folderPath);
+    if ($grouped && $messages !== []) {
+        $messages = mail_group_messages_into_conversations($folderPath, $messages);
+    }
+
     $messages = mail_resort_list_by_message_date($messages);
 
+    if ($grouped && !empty($list['window_full'])) {
+        // The caller handed us the FULL folder window (listConversationWindow):
+        // paginate over conversations here, once, for every render path.
+        $perPage = max(1, (int) ($list['per_page'] ?? mail_per_page()));
+        $total = count($messages);
+        $totalPages = $total > 0 ? (int) ceil($total / $perPage) : 0;
+        $page = max(1, min((int) ($list['page'] ?? 1), max(1, $totalPages)));
+        $messages = array_slice($messages, ($page - 1) * $perPage, $perPage);
+        $list['total'] = $total;
+        $list['page'] = $page;
+        $list['total_pages'] = $totalPages;
+    } else {
+        $list['total'] = count($messages);
+    }
+    unset($list['window_full']);
+
+    // Enrich only the rows actually being shown (post-slice: one page, not the
+    // whole 200-row window).
+    $messages = \App\Services\MailCacheService::enrichListMessages($folderPath, $messages, true);
+
     $list['messages'] = $messages;
-    $list['total'] = count($messages);
 
     // Show messages just moved INTO this folder (delete → Trash, move → target)
     // immediately as optimistic rows, before the deferred IMAP move + resync
@@ -8178,7 +8402,9 @@ function mail_visible_folder_list(string $folderPath, string $searchQuery = '', 
 
     $list = mail_filter_removed_messages($folderPath, $list);
 
-    return mail_apply_folder_list_view_pipeline($folderPath, $list);
+    // Message-level view (bulk uid resolution / "select all in folder"): never
+    // collapse to conversations here.
+    return mail_apply_folder_list_view_pipeline($folderPath, $list, false, false);
 }
 
 /**
@@ -10899,6 +11125,12 @@ function mail_split_html_quote(string $html): array
         // bare/styled <blockquote> is user formatting (indent) and must NOT be
         // collapsed, or the typed content vanishes from the received view.
         '/(<blockquote[^>]*type=["\']?cite["\']?[^>]*>.*)$/is',
+        // Our rich editor wraps the plain-text reply quote in block elements, so
+        // the attribution line arrives as "<div>On … wrote:</div>". Split at that
+        // block's opening tag (also covers <p> and the "----- Forwarded -----"
+        // header). Matches BEFORE the <br>/newline variants below.
+        '/(<(?:div|p)[^>]*>\s*(?:&gt;\s*)?On [^<]+? wrote:.*)$/is',
+        '/(<(?:div|p)[^>]*>\s*-{3,}\s*Forwarded message\s*-{3,}.*)$/is',
         '/(<br\s*\/?>\s*On .+? wrote:\s*<br\s*\/?>.*)$/is',
         '/(\s*On .+? wrote:\s*<br\s*\/?>.*)$/is',
         '/(\n\s*On .+? wrote:\s*\n.*)$/is',

@@ -818,6 +818,18 @@ a:hover {
     margin-left: 0.1rem;
 }
 
+/* Gmail-style conversation count after the subject: "Subject (3)". */
+.mail-row-thread-count {
+    color: var(--color-text-secondary);
+    font-weight: 400;
+    font-size: 0.75rem;
+}
+
+.mail-unread .mail-row-thread-count {
+    font-weight: 600;
+    color: var(--color-text);
+}
+
 /* Searching state: the magnifier in the header search box becomes a spinner
    while the search request is in flight. */
 .header-search-form.is-searching .search-field-icon svg {
