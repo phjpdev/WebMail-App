@@ -194,6 +194,27 @@ if ($displayParentKey !== [] && $grouped['other'] !== []) {
             }
         }
 
+        // Also nest a group's real IMAP subfolders (e.g. INBOX.Employee.New-Employees
+        // under Employees) even when they carry no display_parent of their own — so
+        // the sidebar tree matches the admin table, which nests purely by IMAP path.
+        // A folder whose nearest present IMAP ancestor is already part of a group
+        // joins that group; that can in turn pull in the folder's own children.
+        $pullChanged = true;
+        while ($pullChanged) {
+            $pullChanged = false;
+            foreach ($folderByKey as $key => $folder) {
+                if (isset($effectiveParent[$key])) {
+                    continue;
+                }
+                $ancestorKey = $findImapAncestorKey((string) ($folder['path'] ?? ''));
+                if ($ancestorKey !== null && $ancestorKey !== $key && isset($involved[$ancestorKey])) {
+                    $effectiveParent[$key] = $ancestorKey;
+                    $involved[$key] = true;
+                    $pullChanged = true;
+                }
+            }
+        }
+
         $childrenByParent = [];
         foreach ($effectiveParent as $childKey => $parentKey) {
             $childrenByParent[$parentKey][] = $childKey;
