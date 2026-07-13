@@ -2020,6 +2020,32 @@
         if (!editor) return;
         var html = editor.innerHTML;
         var text = (editor.innerText || editor.textContent || '').replace(/\u00a0/g, ' ').trim();
+        // The signature lives in its own .compose-body-sig block whose gap above
+        // it is CSS-only \u2014 display spacing that vanishes when the body is
+        // serialized, so the sent mail and the saved draft show the signature
+        // jammed against the message. Bake a REAL blank line in so the separation
+        // survives everywhere (incl. the recipient's client). HTML: insert a
+        // spacer before the signature in a clone, leaving all other content
+        // untouched. Text: widen the single newline before the trailing signature.
+        var sigEl = editor.querySelector('.compose-body-sig');
+        if (sigEl) {
+            var clone = editor.cloneNode(true);
+            var cloneSig = clone.querySelector('.compose-body-sig');
+            var hasGap = cloneSig && cloneSig.previousElementSibling
+                && cloneSig.previousElementSibling.classList
+                && cloneSig.previousElementSibling.classList.contains('compose-sig-gap');
+            if (cloneSig && !hasGap) {
+                var gap = document.createElement('div');
+                gap.className = 'compose-sig-gap';
+                gap.appendChild(document.createElement('br'));
+                cloneSig.parentNode.insertBefore(gap, cloneSig);
+            }
+            html = clone.innerHTML;
+            var sigText = (sigEl.innerText || sigEl.textContent || '').replace(/\u00a0/g, ' ').trim();
+            if (sigText && text.length >= sigText.length && text.slice(-sigText.length) === sigText) {
+                text = text.slice(0, text.length - sigText.length).replace(/\s+$/, '') + '\n\n' + sigText;
+            }
+        }
         var quotedEl = form.querySelector('.compose-quoted-source');
         var quotedText = quotedEl ? quotedEl.value.replace(/\r\n/g, '\n') : '';
         var combined = text;

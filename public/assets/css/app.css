@@ -3715,6 +3715,20 @@ mark.search-hit {
 .rich-editor:not(.rich-editor--sig-bottom) .compose-body-sig {
     padding-top: 1rem;
 }
+/* Signature spacing inside a received/sent message shown in the reading pane.
+   Messages we composed carry the signature in a .compose-body-sig block; give
+   it breathing room from the content so it isn't jammed against it. */
+.mail-body-html .compose-body-sig {
+    margin-top: 1rem;
+}
+/* Newer messages/drafts bake a REAL blank line (.compose-sig-gap) before the
+   signature at send/save time, so the separation survives into the sent mail
+   and the recipient's client. Where that spacer is present, drop the
+   display-only padding/margin so the gap isn't doubled. */
+.compose-sig-gap + .compose-body-sig {
+    margin-top: 0;
+    padding-top: 0;
+}
 
 /* Compose formatting ribbon: pinned at the top of the compose panel and
    revealed only once the message body gains focus (Outlook-style). Hidden
