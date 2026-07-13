@@ -14,9 +14,17 @@ class AuthController
             redirect('');
         }
 
+        $notice = null;
+        if (($_GET['reason'] ?? '') === 'idle') {
+            $hours = max(1, (int) round(((int) config('app')['session_lifetime']) / 3600));
+            $notice = 'You were signed out after ' . $hours . ' hour' . ($hours === 1 ? '' : 's')
+                . ' of inactivity. Please sign in again.';
+        }
+
         view('login', [
             'title' => 'Login',
             'error' => flash('error'),
+            'success' => $notice,
         ]);
     }
 
@@ -58,10 +66,15 @@ class AuthController
     public function logout(): void
     {
         verify_csrf_or_fail();
+        $idle = ($_POST['reason'] ?? '') === 'idle';
         Auth::logout();
         // Clear bfcache/storage so pressing Back can't reveal cached authenticated
         // pages after logout (we deliberately allow bfcache for speed otherwise).
         header('Clear-Site-Data: "cache", "cookies", "storage"');
+        if ($idle) {
+            // The login page explains the auto sign-out from the reason flag.
+            redirect('login?reason=idle');
+        }
         flash('success', 'You have been logged out.');
         redirect('login');
     }

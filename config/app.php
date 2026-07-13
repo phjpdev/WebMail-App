@@ -9,7 +9,9 @@ return [
     'timezone' => env('APP_TIMEZONE', 'America/New_York'),
     'url' => app_base_url(),
     'debug' => filter_var(env('APP_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN),
-    'session_lifetime' => (int) env('SESSION_LIFETIME', 28800),
+    // Idle window before a session is considered stale. Also drives the client
+    // auto sign-out (data-idle-timeout) so the browser and server agree. 3 hours.
+    'session_lifetime' => (int) env('SESSION_LIFETIME', 10800),
     'log_path' => dirname(__DIR__) . '/storage/logs/app.log',
     'filter_batch_limit' => (int) env('FILTER_BATCH_LIMIT', 500),
     'filter_source_folder' => env('FILTER_SOURCE_FOLDER', 'INBOX'),

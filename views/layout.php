@@ -35,7 +35,8 @@
       data-sound-enabled="<?= !empty($prefs['sound_enabled']) ? '1' : '0' ?>"
       data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
       data-csrf="<?= e(csrf_token()) ?>"
-      data-base-url="<?= e(url('')) ?>">
+      data-base-url="<?= e(url('')) ?>"
+      data-idle-timeout="<?= (int) config('app')['session_lifetime'] ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
 
     <header class="site-header">
@@ -150,6 +151,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=244" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=245" defer></script>
 </body>
 </html>

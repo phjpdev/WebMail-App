@@ -8923,8 +8923,86 @@
         }
     }
 
+    // Auto sign-out after a stretch of no real user interaction. The server
+    // session is held open by background polling for as long as a tab is open, so
+    // "idle" here means no mouse / keyboard / touch / scroll activity — tracked on
+    // the client. Activity is shared across tabs via localStorage, so working in
+    // any one tab keeps them all signed in; when the window elapses every tab
+    // signs out. The window comes from data-idle-timeout (seconds), mirroring the
+    // server session_lifetime.
+    function initIdleLogout() {
+        var logoutForm = document.querySelector('.header-nav-form');
+        if (!logoutForm) return; // only on authenticated pages
+
+        var seconds = parseInt(document.body.getAttribute('data-idle-timeout'), 10);
+        if (!seconds || seconds < 60) seconds = 3 * 60 * 60; // 3h fallback
+        var IDLE_MS = seconds * 1000;
+        var ACT_KEY = 'dj_last_activity';
+        var OUT_KEY = 'dj_idle_logout';
+        var WRITE_THROTTLE_MS = 30000;
+        var lastWrite = 0;
+        var signingOut = false;
+
+        function readLast() {
+            var v;
+            try { v = parseInt(localStorage.getItem(ACT_KEY) || '', 10); } catch (e) { v = NaN; }
+            return isNaN(v) ? Date.now() : v;
+        }
+
+        function markActive() {
+            if (signingOut) return;
+            var t = Date.now();
+            if (t - lastWrite < WRITE_THROTTLE_MS) return;
+            lastWrite = t;
+            try { localStorage.setItem(ACT_KEY, String(t)); } catch (e) { /* private mode */ }
+        }
+
+        function signOut() {
+            if (signingOut) return;
+            signingOut = true;
+            try { localStorage.setItem(OUT_KEY, String(Date.now())); } catch (e) { /* ignore */ }
+            // Reuse the header logout form so the POST carries the CSRF token; the
+            // reason flag lets the login page explain why they were signed out.
+            var reason = document.createElement('input');
+            reason.type = 'hidden';
+            reason.name = 'reason';
+            reason.value = 'idle';
+            logoutForm.appendChild(reason);
+            logoutForm.submit();
+        }
+
+        function check() {
+            if (!signingOut && Date.now() - readLast() >= IDLE_MS) signOut();
+        }
+
+        ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'wheel', 'click', 'focus'].forEach(function (ev) {
+            window.addEventListener(ev, markActive, { passive: true, capture: true });
+        });
+
+        // Follow a sign-out triggered in another tab.
+        window.addEventListener('storage', function (e) {
+            if (e.key === OUT_KEY && e.newValue && !signingOut) {
+                signingOut = true;
+                window.location.href = (document.body.getAttribute('data-base-url') || '') + 'login?reason=idle';
+            }
+        });
+
+        // Returning to the foreground (or waking from sleep) re-checks at once
+        // instead of waiting for the next interval tick.
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) check();
+        });
+
+        // A page load is itself user activity; seed the shared clock, then poll
+        // for the idle threshold once a minute.
+        lastWrite = Date.now();
+        try { localStorage.setItem(ACT_KEY, String(lastWrite)); } catch (e) { /* ignore */ }
+        window.setInterval(check, 60000);
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         initToasts();
+        initIdleLogout();
         initMailSync();
         initMessageSync();
         initMailCommandBar();
