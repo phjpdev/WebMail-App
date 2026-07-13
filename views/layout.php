@@ -36,7 +36,8 @@
       data-notify-enabled="<?= !empty($prefs['notify_enabled']) ? '1' : '0' ?>"
       data-csrf="<?= e(csrf_token()) ?>"
       data-base-url="<?= e(url('')) ?>"
-      data-idle-timeout="<?= (int) config('app')['session_lifetime'] ?>">
+      data-idle-timeout="<?= (int) config('app')['session_lifetime'] ?>"
+      data-session-id="<?= e(substr(hash('sha256', 'idle:' . session_id()), 0, 16)) ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
 
     <header class="site-header">
@@ -151,6 +152,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=245" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=246" defer></script>
 </body>
 </html>

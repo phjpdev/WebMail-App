@@ -8938,23 +8938,29 @@
         if (!seconds || seconds < 60) seconds = 3 * 60 * 60; // 3h fallback
         var IDLE_MS = seconds * 1000;
         var ACT_KEY = 'dj_last_activity';
+        var SID_KEY = 'dj_session_id';
         var OUT_KEY = 'dj_idle_logout';
+        var sessionId = document.body.getAttribute('data-session-id') || '';
         var WRITE_THROTTLE_MS = 30000;
         var lastWrite = 0;
         var signingOut = false;
 
-        function readLast() {
+        function getNum(key) {
             var v;
-            try { v = parseInt(localStorage.getItem(ACT_KEY) || '', 10); } catch (e) { v = NaN; }
-            return isNaN(v) ? Date.now() : v;
+            try { v = parseInt(localStorage.getItem(key) || '', 10); } catch (e) { v = NaN; }
+            return isNaN(v) ? 0 : v;
         }
 
-        function markActive() {
-            if (signingOut) return;
-            var t = Date.now();
-            if (t - lastWrite < WRITE_THROTTLE_MS) return;
-            lastWrite = t;
-            try { localStorage.setItem(ACT_KEY, String(t)); } catch (e) { /* private mode */ }
+        function markNow() {
+            lastWrite = Date.now();
+            try { localStorage.setItem(ACT_KEY, String(lastWrite)); } catch (e) { /* private mode */ }
+        }
+
+        // True once the idle window has elapsed since the last recorded activity.
+        // 0 (no record yet) never counts as expired.
+        function expired() {
+            var last = getNum(ACT_KEY);
+            return last > 0 && (Date.now() - last) >= IDLE_MS;
         }
 
         function signOut() {
@@ -8962,7 +8968,9 @@
             signingOut = true;
             try { localStorage.setItem(OUT_KEY, String(Date.now())); } catch (e) { /* ignore */ }
             // Reuse the header logout form so the POST carries the CSRF token; the
-            // reason flag lets the login page explain why they were signed out.
+            // reason flag lets the login page explain why they were signed out. A
+            // top-level form submit (not a background fetch) also lets the browser
+            // clear any CDN bot-challenge, so this lands cleanly on the login page.
             var reason = document.createElement('input');
             reason.type = 'hidden';
             reason.name = 'reason';
@@ -8971,12 +8979,22 @@
             logoutForm.submit();
         }
 
+        // A real interaction must FIRST decide whether the window already lapsed
+        // (e.g. the machine slept or the tab was frozen so the interval never
+        // fired) — in that case sign out instead of resetting the clock. This is
+        // what makes "idle 3h, then click anything → login page" work.
+        function onActivity() {
+            if (signingOut) return;
+            if (expired()) { signOut(); return; }
+            if (Date.now() - lastWrite >= WRITE_THROTTLE_MS) markNow();
+        }
+
         function check() {
-            if (!signingOut && Date.now() - readLast() >= IDLE_MS) signOut();
+            if (!signingOut && expired()) signOut();
         }
 
         ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'wheel', 'click', 'focus'].forEach(function (ev) {
-            window.addEventListener(ev, markActive, { passive: true, capture: true });
+            window.addEventListener(ev, onActivity, { passive: true, capture: true });
         });
 
         // Follow a sign-out triggered in another tab.
@@ -8987,17 +9005,30 @@
             }
         });
 
-        // Returning to the foreground (or waking from sleep) re-checks at once
-        // instead of waiting for the next interval tick.
-        document.addEventListener('visibilitychange', function () {
-            if (!document.hidden) check();
-        });
+        // Foreground / wake-from-sleep / bfcache restore all re-check immediately.
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) check(); });
+        window.addEventListener('pageshow', check);
+        window.addEventListener('focus', check);
 
-        // A page load is itself user activity; seed the shared clock, then poll
-        // for the idle threshold once a minute.
-        lastWrite = Date.now();
-        try { localStorage.setItem(ACT_KEY, String(lastWrite)); } catch (e) { /* ignore */ }
-        window.setInterval(check, 60000);
+        // Reconcile the persisted clock with this page load:
+        //  - New session id (a fresh login) → start the clock now; never inherit a
+        //    stale clock from a previous session (which would bounce straight back
+        //    to login).
+        //  - Same session, window already lapsed → the tab sat idle past the limit
+        //    (interval frozen while asleep) → sign out on this very load.
+        //  - Same session, still within the window → this load counts as activity.
+        var storedSid = '';
+        try { storedSid = localStorage.getItem(SID_KEY) || ''; } catch (e) { /* ignore */ }
+        if (sessionId && storedSid !== sessionId) {
+            try { localStorage.setItem(SID_KEY, sessionId); } catch (e) { /* ignore */ }
+            markNow();
+        } else if (expired()) {
+            signOut();
+            return;
+        } else {
+            markNow();
+        }
+        window.setInterval(check, 30000);
     }
 
     document.addEventListener('DOMContentLoaded', function () {
