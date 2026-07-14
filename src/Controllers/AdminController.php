@@ -34,7 +34,11 @@ class AdminController
 
         $userCount = (int) Database::fetchOne('SELECT COUNT(*) AS c FROM users WHERE active = 1')['c'];
         $ruleCount = (int) Database::fetchOne('SELECT COUNT(*) AS c FROM filter_rules WHERE active = 1')['c'];
-        $folderCount = (int) Database::fetchOne('SELECT COUNT(*) AS c FROM folders WHERE active = 1')['c'];
+        $activeFolders = array_values(array_filter(
+            $this->folders->listAll(),
+            static fn (array $f): bool => (int) ($f['active'] ?? 0) === 1
+        ));
+        $folderCount = admin_display_folder_count($activeFolders);
 
         $this->render('admin/dashboard', [
             'title' => 'Admin',

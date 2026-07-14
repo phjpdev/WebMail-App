@@ -662,6 +662,18 @@ class ComposeController
     {
         $lower = strtolower($error);
 
+        // A blocked attachment type also comes back as a 550, so check it before
+        // the generic spam mapping — otherwise the user is told to edit the text
+        // when the real problem is the file they attached.
+        if (
+            str_contains($lower, 'disallowed extension')
+            || str_contains($lower, 'disallowed attachment')
+            || (str_contains($lower, 'attach') && str_contains($lower, 'extension'))
+            || (str_contains($lower, 'attach') && str_contains($lower, 'not allowed'))
+        ) {
+            return 'The mail server blocked an attachment because its file type is not allowed (executables like .exe are commonly blocked). Remove that attachment — or compress it into a .zip — then send again.';
+        }
+
         if (str_contains($lower, 'spam') || str_contains($lower, '550')) {
             return 'The mail server rejected this message as spam. Try editing the subject and message text (remove spammy wording or quoted spam), then send again.';
         }

@@ -7006,6 +7006,30 @@ function partition_admin_folders_for_display(array $folders): array
 }
 
 /**
+ * Count the folders an admin actually manages — the same set the admin table and
+ * sidebar present (system folders + one node per employee/client folder),
+ * excluding per-employee system subfolders. Keeps the dashboard "Folders" tally
+ * consistent with those views instead of counting every raw registry row.
+ *
+ * @param list<array<string, mixed>> $folders
+ */
+function admin_display_folder_count(array $folders): int
+{
+    $view = partition_admin_folders_for_display($folders);
+    $countNodes = static function (array $nodes) use (&$countNodes): int {
+        $total = 0;
+        foreach ($nodes as $node) {
+            $total++;
+            $total += $countNodes($node['children'] ?? []);
+        }
+
+        return $total;
+    };
+
+    return count($view['primary']) + $countNodes($view['custom_tree']);
+}
+
+/**
  * Overlay the manual "Show under" grouping onto the admin folder tree: any folder
  * with a display_parent_id is moved to become a child of that container folder, so
  * the admin table nests exactly like the sidebar — to any depth, so chains like
