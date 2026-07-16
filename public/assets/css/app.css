@@ -2924,7 +2924,14 @@ mark.search-hit {
 }
 
 .login-form .btn {
-    margin-top: 0.5rem;
+    margin-top: 0.75rem;
+    min-height: 3rem;
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border-radius: 9px;
+    letter-spacing: 0.01em;
 }
 
 .login-form .btn-block + .btn-block {
