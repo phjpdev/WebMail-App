@@ -6989,6 +6989,23 @@ function partition_admin_folders_for_display(array $folders): array
         $custom[] = $folder;
     }
 
+    // An employee mailbox can be registered as two rows — the bare root
+    // INBOX.<name> and its INBOX.<name>.Inbox child. A folder sync re-adds
+    // whichever is missing (so deleting one never sticks), which is why "Support"
+    // showed up twice. Collapse them into a single entry — keyed by the mailbox
+    // root, keeping the shortest path — so the admin list and the Folders count
+    // match the sidebar's one-row-per-mailbox view.
+    $customByMailbox = [];
+    foreach ($custom as $folder) {
+        $path = trim((string) ($folder['imap_path'] ?? ''));
+        $key = strtolower(employee_mailbox_root_prefix($path));
+        $existing = $customByMailbox[$key]['imap_path'] ?? null;
+        if ($existing === null || strlen($path) < strlen((string) $existing)) {
+            $customByMailbox[$key] = $folder;
+        }
+    }
+    $custom = array_values($customByMailbox);
+
     $primary = [];
     foreach (sidebar_primary_folder_order() as $bucket) {
         if ($primaryMap[$bucket] !== null) {
