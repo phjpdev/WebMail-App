@@ -22,6 +22,12 @@ class SystemBootstrapService
      */
     public function ensureRegistryDefaults(): bool
     {
+        // Auto-provisioning of the Support mailbox is disabled by default (client
+        // asked for it removed permanently). Re-enable with PROVISION_SUPPORT_MAILBOX=true.
+        if (!(config('app')['provision_support_mailbox'] ?? false)) {
+            return false;
+        }
+
         $mailboxEmail = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
         if ($mailboxEmail === '' || !str_contains($mailboxEmail, '@')) {
             return false;
@@ -136,6 +142,11 @@ class SystemBootstrapService
 
     private function ensureSupportMailbox(): bool
     {
+        // Disabled by default per client request — see ensureRegistryDefaults().
+        if (!(config('app')['provision_support_mailbox'] ?? false)) {
+            return false;
+        }
+
         $mailboxEmail = strtolower(trim((string) (config('mail')['mailbox_email'] ?? '')));
         if ($mailboxEmail === '' || !str_contains($mailboxEmail, '@')) {
             return false;

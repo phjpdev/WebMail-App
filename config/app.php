@@ -13,6 +13,10 @@ return [
     // auto sign-out (data-idle-timeout) so the browser and server agree. 3 hours.
     'session_lifetime' => (int) env('SESSION_LIFETIME', 10800),
     'log_path' => dirname(__DIR__) . '/storage/logs/app.log',
+    // Auto-create the "Support" folder (named after MAILBOX_EMAIL's local part) so
+    // mail addressed to the main mailbox is filed separately. Disabled by default —
+    // set PROVISION_SUPPORT_MAILBOX=true to bring it back.
+    'provision_support_mailbox' => filter_var(env('PROVISION_SUPPORT_MAILBOX', 'false'), FILTER_VALIDATE_BOOLEAN),
     'filter_batch_limit' => (int) env('FILTER_BATCH_LIMIT', 500),
     'filter_source_folder' => env('FILTER_SOURCE_FOLDER', 'INBOX'),
     // Minimum seconds between automatic filter passes (shared across all users).
