@@ -27,7 +27,7 @@ ob_start();
         </div>
         <div class="form-group form-check">
             <label class="form-check-label">
-                <input type="checkbox" class="form-check-input" name="must_change_password" value="1"<?= !$isEdit || !empty($editUser['must_change_password']) ? ' checked' : '' ?>>
+                <input type="checkbox" class="form-check-input" name="must_change_password" value="1"<?= !empty($editUser['must_change_password']) ? ' checked' : '' ?>>
                 <span>Require password change on next login</span>
             </label>
         </div>
