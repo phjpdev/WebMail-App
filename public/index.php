@@ -139,7 +139,6 @@ $router->get('/admin/audit', fn () => $adminController->auditIndex());
 $router->get('/admin/users', fn () => $adminController->usersIndex());
 $router->get('/admin/users/create', fn () => $adminController->usersCreate());
 $router->post('/admin/users/store', fn () => $adminController->usersStore());
-$router->post('/admin/users/backfill', fn () => $adminController->usersBackfill());
 $router->get('/admin/users/{id}/edit', fn ($p) => $adminController->usersEdit($p));
 $router->post('/admin/users/{id}/update', fn ($p) => $adminController->usersUpdate($p));
 $router->post('/admin/users/{id}/disable', fn ($p) => $adminController->usersDisable($p));
@@ -165,7 +164,6 @@ $router->get('/admin/rules/{id}/edit', fn ($p) => $adminController->rulesEdit($p
 $router->post('/admin/rules/{id}/update', fn ($p) => $adminController->rulesUpdate($p));
 $router->post('/admin/rules/{id}/toggle', fn ($p) => $adminController->rulesToggle($p));
 $router->post('/admin/rules/{id}/delete', fn ($p) => $adminController->rulesDelete($p));
-$router->post('/admin/reprocess', fn () => $adminController->reprocess());
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';

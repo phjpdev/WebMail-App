@@ -5,13 +5,6 @@
         <h2>Users</h2>
     </div>
     <div class="page-header-actions">
-        <form method="post" action="<?= e(url('admin/users/backfill')) ?>" class="admin-action-form"
-              data-confirm-title="Backfill onboarding?"
-              data-confirm-message="Provision missing folders, aliases and routing rules for all employees, then re-route existing inbox mail."
-              data-confirm-label="Run backfill">
-            <?= csrf_field() ?>
-            <button type="submit" class="btn btn-outline">Backfill onboarding</button>
-        </form>
         <a class="btn btn-primary" href="<?= e(url('admin/users/create')) ?>">Add user</a>
     </div>
 </section>

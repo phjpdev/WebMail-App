@@ -179,33 +179,6 @@ class AdminController
         redirect('admin/users');
     }
 
-    public function usersBackfill(): void
-    {
-        requireAdmin();
-        verify_csrf_or_fail();
-
-        $result = $this->users->backfillEmployees();
-
-        // Re-run routing so existing INBOX mail lands in the new folders. Clear
-        // the processed log too, otherwise previously-unmatched mail would be
-        // skipped and never routed to the freshly created folders.
-        FilterService::reprocess();
-        $filter = FilterService::runBackground(true);
-
-        $moved = $filter['moved'] ?? 0;
-        flash(
-            'success',
-            sprintf(
-                'Backfill complete: %d employee(s) provisioned, %d already set up. %d existing message(s) routed.',
-                $result['provisioned'],
-                $result['skipped'],
-                $moved
-            )
-        );
-
-        redirect('admin/users');
-    }
-
     /**
      * @param array<string, string> $params
      */
@@ -763,19 +736,6 @@ class AdminController
         $this->audit('rule_delete', 'Deleted rule #' . $id);
         flash('success', 'Rule deleted.');
         redirect('admin/rules');
-    }
-
-    public function reprocess(): void
-    {
-        requireAdmin();
-        verify_csrf_or_fail();
-
-        FilterService::reprocess();
-        $result = FilterService::runBackground(true);
-        $moved = $result['moved'] ?? 0;
-        $this->audit('reprocess_inbox', sprintf('Reprocessed inbox: %d moved', $moved));
-        flash('success', sprintf('Inbox reprocessed. %d message(s) routed.', $moved));
-        redirect('admin');
     }
 
     /**

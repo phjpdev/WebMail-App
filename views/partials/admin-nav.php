@@ -4,7 +4,5 @@
     <a class="admin-nav-link<?= ($adminSection ?? '') === 'users' ? ' active' : '' ?>" href="<?= e(url('admin/users')) ?>">Users</a>
     <a class="admin-nav-link<?= ($adminSection ?? '') === 'aliases' ? ' active' : '' ?>" href="<?= e(url('admin/aliases')) ?>">Aliases</a>
     <a class="admin-nav-link<?= ($adminSection ?? '') === 'folders' ? ' active' : '' ?>" href="<?= e(url('admin/folders')) ?>">Folders</a>
-    <a class="admin-nav-link<?= ($adminSection ?? '') === 'rules' ? ' active' : '' ?>" href="<?= e(url('admin/rules')) ?>">Filter rules</a>
-    <a class="admin-nav-link<?= ($adminSection ?? '') === 'spam-rules' ? ' active' : '' ?>" href="<?= e(url('admin/rules?type=spam')) ?>">Spam rules</a>
     <a class="admin-nav-link<?= ($adminSection ?? '') === 'audit' ? ' active' : '' ?>" href="<?= e(url('admin/audit')) ?>">Audit log</a>
 </nav>

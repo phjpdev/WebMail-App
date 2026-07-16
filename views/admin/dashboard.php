@@ -24,7 +24,7 @@
 
 <section class="card">
     <h3>Mail sync</h3>
-    <p class="text-muted">Re-run the filter pass on Inbox (moves mail by rules).</p>
+    <p class="text-muted">Check the Inbox now and sort new mail into folders by your rules.</p>
     <?php if (!empty($filterStats)): ?>
         <p class="text-muted">Last run: <?= (int) $filterStats['processed'] ?> processed, <?= (int) $filterStats['moved'] ?> moved (<?= (int) $filterStats['duration_ms'] ?>ms)</p>
     <?php endif; ?>
@@ -33,15 +33,7 @@
             <?= csrf_field() ?>
             <button type="submit" class="btn btn-primary">Sync now</button>
         </form>
-        <form method="post" action="<?= e(url('admin/reprocess')) ?>"
-              data-confirm-title="Reprocess inbox?"
-              data-confirm-message="Re-run every filter rule against all existing inbox mail. This may take a moment on large mailboxes."
-              data-confirm-label="Reprocess">
-            <?= csrf_field() ?>
-            <button type="submit" class="btn btn-outline">Reprocess inbox</button>
-        </form>
     </div>
-    <p class="text-muted form-hint">Reprocess clears the filtered history and re-applies every rule to existing inbox mail.</p>
 </section>
 
 <?php
