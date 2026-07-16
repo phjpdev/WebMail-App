@@ -62,8 +62,7 @@
                 </div>
                 <button type="button" class="mail-cmd-btn mail-cmd-btn--move" data-cmd="move" disabled title="Move to folder" aria-label="Move to folder">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9l-.81-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10.5v4.5"/><path d="m9.75 12.75 2.25 2.25 2.25-2.25"/></svg>
-                    <span class="mail-cmd-move-label">Move to…</span>
-                    <svg class="mail-cmd-move-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                    <span class="mail-cmd-label">Move</span>
                 </button>
             </div>
 

@@ -398,6 +398,10 @@ a:hover {
 }
 
 .header-nav-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
     padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-sm);
     font-size: 0.8125rem;
@@ -405,6 +409,12 @@ a:hover {
     color: var(--color-text-secondary);
     text-decoration: none;
     transition: background 0.12s, color 0.12s;
+}
+
+.header-nav-icon {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
 }
 
 .header-user .role-badge {
@@ -415,6 +425,30 @@ a:hover {
     background: var(--color-bg);
     color: var(--color-text);
     text-decoration: none;
+}
+
+.header-nav-link--logout:hover {
+    background: var(--color-danger-light, rgba(209, 52, 56, 0.1));
+    color: var(--color-danger);
+}
+
+/* Icon-only account buttons on narrow screens; label returns at ≥640px. */
+.header-nav-text {
+    display: none;
+}
+
+@media (min-width: 640px) {
+    .header-nav-text {
+        display: inline;
+    }
+}
+
+@media (max-width: 639px) {
+    .header-nav-link {
+        width: 2.25rem;
+        height: 2.25rem;
+        padding: 0;
+    }
 }
 
 .role-badge {
@@ -8409,7 +8443,8 @@ body:has(.mail-workspace) {
 
 /* --- Move-to control → custom folder picker (icons + folder tree) --- */
 /* Native <select> can't show icons or nesting; hide it (kept only as the
-   picker's data source) and present a clean labelled trigger button. */
+   picker's data source). The trigger is a plain icon button, identical to the
+   other toolbar commands (Delete, Read, Flag). */
 .mail-cmd-move-select-wrap,
 .mail-action-move-select-wrap {
     display: none !important;
@@ -8419,27 +8454,14 @@ body:has(.mail-workspace) {
     background: transparent;
     overflow: visible;
 }
+/* Reset the button back to a plain toolbar icon button (an older rule squared it
+   off and dropped its border because it used to be fused to the select). */
 .mail-cmd-btn--move {
-    width: auto;
-    gap: 0.32rem;
-    padding: 0 0.55rem;
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-sm, 5px);
-    background: var(--color-surface);
-    color: var(--color-text);
-    font-size: 0.78rem;
-    white-space: nowrap;
-}
-.mail-cmd-btn--move:not(:disabled):hover {
-    background: var(--color-surface-alt, rgba(0, 0, 0, 0.045));
-    border-color: var(--color-border, var(--color-border-subtle));
-}
-.mail-cmd-move-label { line-height: 1; }
-.mail-cmd-move-caret { opacity: 0.55; flex: 0 0 auto; }
-@media (max-width: 767px) {
-    .mail-cmd-move-label,
-    .mail-cmd-move-caret { display: none; }
-    .mail-cmd-btn--move { width: 2.5rem; padding: 0; border: none; }
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm, 4px);
+    min-width: 2rem;
+    height: 2rem;
+    padding: 0 0.45rem;
 }
 
 /* Professional folder picker (Move to… + right-click submenu) */
