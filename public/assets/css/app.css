@@ -475,6 +475,50 @@ a:hover {
     grid-template-columns: var(--sidebar-width) 1fr;
     gap: 0;
     min-height: calc(100vh - var(--header-height));
+    position: relative;
+}
+
+/* Draggable divider between the sidebar and the main content. */
+.sidebar-resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--sidebar-width);
+    width: 11px;
+    transform: translateX(-5px);
+    z-index: 40;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+}
+
+.sidebar-resizer::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    background: var(--color-border);
+    transition: background 0.12s ease, width 0.12s ease;
+}
+
+.sidebar-resizer:hover::before,
+.sidebar-resizer.is-dragging::before {
+    width: 4px;
+    background: var(--color-primary);
+}
+
+body.is-resizing-sidebar {
+    cursor: col-resize;
+    user-select: none;
+}
+
+@media (max-width: 899px) {
+    .sidebar-resizer {
+        display: none;
+    }
 }
 
 .sidebar-backdrop {

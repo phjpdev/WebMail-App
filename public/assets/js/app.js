@@ -9054,6 +9054,65 @@
         window.setInterval(check, 30000);
     }
 
+    // Drag the divider between the sidebar and main content to resize the sidebar;
+    // the width persists (localStorage) and a double-click resets to default.
+    function initSidebarResizer() {
+        var resizer = document.getElementById('sidebar-resizer');
+        var shell = document.querySelector('.app-shell');
+        if (!resizer || !shell) return;
+        var MIN = 180;
+        var MAX = 520;
+        var root = document.documentElement;
+
+        try {
+            var saved = parseInt(localStorage.getItem('dj_sidebar_width'), 10);
+            if (saved && saved >= MIN && saved <= MAX) {
+                root.style.setProperty('--sidebar-width', saved + 'px');
+            }
+        } catch (e) { /* storage blocked */ }
+
+        var dragging = false;
+        function onMove(e) {
+            if (!dragging) return;
+            var x = e.touches ? e.touches[0].clientX : e.clientX;
+            var w = Math.round(x - shell.getBoundingClientRect().left);
+            if (w < MIN) w = MIN;
+            if (w > MAX) w = MAX;
+            root.style.setProperty('--sidebar-width', w + 'px');
+        }
+        function onUp() {
+            if (!dragging) return;
+            dragging = false;
+            resizer.classList.remove('is-dragging');
+            document.body.classList.remove('is-resizing-sidebar');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.removeEventListener('touchmove', onMove);
+            document.removeEventListener('touchend', onUp);
+            try {
+                var px = parseInt(getComputedStyle(root).getPropertyValue('--sidebar-width'), 10);
+                if (px) localStorage.setItem('dj_sidebar_width', String(px));
+            } catch (e) { /* storage blocked */ }
+        }
+        function start(e) {
+            if (window.matchMedia('(max-width: 899px)').matches) return;
+            e.preventDefault();
+            dragging = true;
+            resizer.classList.add('is-dragging');
+            document.body.classList.add('is-resizing-sidebar');
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+            document.addEventListener('touchmove', onMove, { passive: false });
+            document.addEventListener('touchend', onUp);
+        }
+        resizer.addEventListener('mousedown', start);
+        resizer.addEventListener('touchstart', start, { passive: false });
+        resizer.addEventListener('dblclick', function () {
+            root.style.removeProperty('--sidebar-width');
+            try { localStorage.removeItem('dj_sidebar_width'); } catch (e) { /* storage blocked */ }
+        });
+    }
+
     // Add a show/hide (eye) toggle to every password field, site-wide.
     function initPasswordToggles() {
         var EYE = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -9081,6 +9140,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', function () {
+        initSidebarResizer();
         initPasswordToggles();
         initToasts();
         initIdleLogout();

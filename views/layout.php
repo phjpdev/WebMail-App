@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <title><?= e($title ?? 'D&J Webmail') ?> — <?= e(config('app')['name']) ?></title>
     <link rel="icon" href="<?= e(url('assets/img/logo.png')) ?>" type="image/png">
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=176">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=177">
     <script>
         (function () {
             // The saved account preference is authoritative; keep localStorage in
@@ -107,6 +107,7 @@
             <aside id="sidebar" class="sidebar">
                 <?php require base_path('views/partials/folder-sidebar.php'); ?>
             </aside>
+            <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" title="Drag to resize — double-click to reset"></div>
         <?php endif; ?>
 
         <main class="main-content">
@@ -158,6 +159,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=250" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=251" defer></script>
 </body>
 </html>
