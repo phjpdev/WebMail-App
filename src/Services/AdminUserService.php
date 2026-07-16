@@ -391,43 +391,68 @@ class AdminUserService
         $folderId = (int) $folder['id'];
         $oldImapPath = (string) $folder['imap_path'];
         $oldDisplayName = (string) $folder['display_name'];
+        // The employee row is the messages inbox (INBOX.<name>.Inbox); the actual
+        // mailbox we rename is its ROOT (INBOX.<name>), which carries every child.
+        $oldRoot = employee_mailbox_root_prefix($oldImapPath);
 
-        if ($oldImapPath === $newImapPath && $oldDisplayName === $folderName) {
+        if (strcasecmp($oldRoot, $newImapPath) === 0 && $oldDisplayName === $folderName) {
             return;
         }
 
+        // Same mailbox path, only the display label changed.
+        if (strcasecmp($oldRoot, $newImapPath) === 0) {
+            Database::query('UPDATE folders SET display_name = ? WHERE id = ?', [$folderName, $folderId]);
+            (new FolderCache())->clear();
+
+            return;
+        }
+
+        // Collision with a DIFFERENT mailbox (not this user's own subtree).
         $conflict = Database::fetchOne(
-            'SELECT id FROM folders WHERE imap_path = ? AND id != ? LIMIT 1',
-            [$newImapPath, $folderId]
+            'SELECT id FROM folders WHERE (imap_path = ? OR imap_path LIKE ?) AND (linked_user_id IS NULL OR linked_user_id != ?) LIMIT 1',
+            [$newImapPath, $newImapPath . '.%', $userId]
         );
         if ($conflict !== null) {
             throw new \RuntimeException('A folder with that name already exists. Choose a different folder name.');
         }
 
-        Database::transaction(function () use ($folderId, $oldImapPath, $newImapPath, $folderName): void {
-            if ($oldImapPath !== $newImapPath) {
-                $imap = new ImapService();
-                if (!$imap->connect()) {
-                    throw new \RuntimeException('Could not connect to the mail server to rename the folder.');
-                }
-                if ($imap->folderExistsOnServer($oldImapPath)) {
-                    if (!$imap->renameFolder($oldImapPath, $newImapPath)) {
-                        throw new \RuntimeException(
-                            'Could not rename the folder on the mail server: ' . $imap->getLastError()
-                        );
-                    }
-                } elseif (!$imap->folderExistsOnServer($newImapPath) && !$imap->createFolder($newImapPath)) {
+        Database::transaction(function () use ($folderId, $oldRoot, $newImapPath, $folderName): void {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                throw new \RuntimeException('Could not connect to the mail server to rename the folder.');
+            }
+            ImapService::invalidateFolderListCache();
+
+            // Rename the whole mailbox ROOT — imap_renamemailbox carries every
+            // child (Inbox, Sent, Drafts, Junk, Trash, Archive AND any subfolders
+            // the admin created) plus their messages to the new path.
+            if ($imap->folderExistsOnServer($oldRoot)) {
+                if (!$imap->renameFolder($oldRoot, $newImapPath)) {
                     throw new \RuntimeException(
-                        'Could not create the folder on the mail server: ' . $imap->getLastError()
+                        'Could not rename the folder on the mail server: ' . $imap->getLastError()
                     );
                 }
-                MailCacheService::renameFolderPath($oldImapPath, $newImapPath);
+            } elseif (!$imap->folderExistsOnServer($newImapPath) && !$imap->createFolder($newImapPath)) {
+                throw new \RuntimeException(
+                    'Could not create the folder on the mail server: ' . $imap->getLastError()
+                );
             }
 
-            Database::query(
-                'UPDATE folders SET imap_path = ?, display_name = ? WHERE id = ?',
-                [$newImapPath, $folderName, $folderId]
-            );
+            // Re-point EVERY registry row under the old root (the employee inbox,
+            // its system subfolders, and any user subfolders) to the new root, so
+            // nothing is left orphaned pointing at the old path.
+            $rows = Database::query(
+                'SELECT id, imap_path FROM folders WHERE imap_path = ? OR imap_path LIKE ?',
+                [$oldRoot, $oldRoot . '.%']
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $old = (string) $row['imap_path'];
+                $new = $newImapPath . substr($old, strlen($oldRoot));
+                Database::query('UPDATE folders SET imap_path = ? WHERE id = ?', [$new, (int) $row['id']]);
+                MailCacheService::renameFolderPath($old, $new);
+            }
+
+            Database::query('UPDATE folders SET display_name = ? WHERE id = ?', [$folderName, $folderId]);
         });
 
         (new FolderCache())->clear();
