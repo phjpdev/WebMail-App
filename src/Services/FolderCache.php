@@ -1051,7 +1051,14 @@ class FolderCache
             if (is_nested_employee_system_subfolder($path)) {
                 continue;
             }
-            if ($this->isUnderOrphanedEmployeePrefix($path, $orphanPrefixes)) {
+            // Only hide UNREGISTERED leftovers under an orphaned employee prefix.
+            // A folder that is itself a registered, active mailbox — e.g. a custom
+            // subfolder the admin created under an employee (INBOX.Employee-Email.Test-1)
+            // — must always show, even if its employee container has no user/alias.
+            if (
+                !$this->matchesRegisteredMailbox($path, $registry)
+                && $this->isUnderOrphanedEmployeePrefix($path, $orphanPrefixes)
+            ) {
                 continue;
             }
             if ($this->isUnregisteredInboxOrphan($path, $registry)) {
@@ -1119,6 +1126,7 @@ class FolderCache
                     'path' => $displayPath,
                     'name' => $registryEmployees[$upperRoot]['display_name'],
                     'delimiter' => (string) ($folder['delimiter'] ?? '.'),
+                    'created_at' => (string) ($registryEmployees[$upperRoot]['created_at'] ?? ''),
                 ];
 
                 $messagesPath = employee_messages_imap_path($displayPath);
@@ -1149,6 +1157,7 @@ class FolderCache
                 'path' => $displayPath,
                 'name' => $info['display_name'],
                 'delimiter' => '.',
+                'created_at' => (string) ($info['created_at'] ?? ''),
             ];
 
             $messagesPath = employee_messages_imap_path($displayPath);
@@ -1177,7 +1186,7 @@ class FolderCache
 
         try {
             $employees = Database::query(
-                "SELECT u.id, u.name, u.username, f.imap_path, f.display_name
+                "SELECT u.id, u.name, u.username, f.imap_path, f.display_name, f.created_at
                  FROM users u
                  LEFT JOIN folders f ON f.linked_user_id = u.id AND f.active = 1 AND f.folder_type = 'employee'
                  WHERE u.role = 'employee' AND u.active = 1"
@@ -1209,11 +1218,12 @@ class FolderCache
                 $roots[strtoupper($root)] = [
                     'path' => $root,
                     'display_name' => $displayName,
+                    'created_at' => (string) ($row['created_at'] ?? ''),
                 ];
             }
 
             $aliasRows = Database::query(
-                "SELECT f.imap_path, f.display_name
+                "SELECT f.imap_path, f.display_name, f.created_at
                  FROM folders f
                  WHERE f.active = 1 AND f.folder_type = 'employee'
                    AND (f.linked_user_id IS NULL OR NOT EXISTS (
@@ -1236,6 +1246,7 @@ class FolderCache
                 $roots[$upper] = [
                     'path' => $root,
                     'display_name' => (string) ($row['display_name'] ?? preg_replace('/^INBOX\./i', '', $root)),
+                    'created_at' => (string) ($row['created_at'] ?? ''),
                 ];
             }
         } catch (\Throwable) {
@@ -1311,13 +1322,28 @@ class FolderCache
      *
      * @param array<string, array{path: string, display_name: string}> $registry
      */
-    private function isUnregisteredInboxOrphan(string $path, array $registry): bool
+    /**
+     * Whether $path is (or lives under) a folder that is registered and active —
+     * i.e. an intentional mailbox, not a stray IMAP leftover.
+     *
+     * @param array<int|string, array<string, mixed>> $registry
+     */
+    private function matchesRegisteredMailbox(string $path, array $registry): bool
     {
         foreach ($registry as $key => $entry) {
             $regPath = (string) ($entry['path'] ?? $key);
             if ($this->pathMatchesRegistryMailbox($path, $regPath)) {
-                return false;
+                return true;
             }
+        }
+
+        return false;
+    }
+
+    private function isUnregisteredInboxOrphan(string $path, array $registry): bool
+    {
+        if ($this->matchesRegisteredMailbox($path, $registry)) {
+            return false;
         }
 
         if (system_folder_bucket_for_path($path) !== null) {
@@ -1494,13 +1520,14 @@ class FolderCache
         $registry = [];
         try {
             $rows = Database::query(
-                'SELECT imap_path, display_name FROM folders WHERE active = 1'
+                'SELECT imap_path, display_name, created_at FROM folders WHERE active = 1'
             )->fetchAll();
             foreach ($rows as $row) {
                 $path = (string) $row['imap_path'];
                 $registry[strtoupper($path)] = [
                     'path' => $path,
                     'display_name' => (string) $row['display_name'],
+                    'created_at' => (string) ($row['created_at'] ?? ''),
                 ];
             }
         } catch (\Throwable $e) {
@@ -1647,10 +1674,14 @@ class FolderCache
             }
             $seen[$key] = true;
 
-            // Registry only supplies a nicer label; the exact IMAP path is kept
-            // for open/list/move operations.
-            if (isset($registry[$key]) && (string) ($registry[$key]['display_name'] ?? '') !== '') {
-                $folder['name'] = (string) $registry[$key]['display_name'];
+            // Registry supplies a nicer label and the creation time (so the
+            // sidebar can order folders by when they were made, like the admin
+            // table); the exact IMAP path is kept for open/list/move operations.
+            if (isset($registry[$key])) {
+                if ((string) ($registry[$key]['display_name'] ?? '') !== '') {
+                    $folder['name'] = (string) $registry[$key]['display_name'];
+                }
+                $folder['created_at'] = (string) ($registry[$key]['created_at'] ?? '');
             }
 
             $folders[] = $folder;

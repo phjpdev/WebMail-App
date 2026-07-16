@@ -142,11 +142,15 @@ class AdminController
                 flash('error', 'A folder name is required for employee accounts.');
                 redirect('admin/users/create');
             }
-            if (!preg_match('/^[a-zA-Z0-9_-]+$/', $folderName)) {
-                flash('error', 'Folder name may only contain letters, numbers, hyphens, and underscores.');
+            // Accept spaces just like the Add-folder form — they become hyphens
+            // in the mailbox path (e.g. "John Tran" -> INBOX.John-Tran). Only fail
+            // if nothing usable remains after normalising.
+            $folderSegment = folder_imap_segment($folderName);
+            if ($folderSegment === '') {
+                flash('error', 'Folder name must contain at least one letter or number.');
                 redirect('admin/users/create');
             }
-            $imapPath = 'INBOX.' . $folderName;
+            $imapPath = 'INBOX.' . $folderSegment;
             if (Database::fetchOne('SELECT id FROM folders WHERE imap_path = ? LIMIT 1', [$imapPath]) !== null) {
                 flash('error', 'A folder with that name already exists. Choose a different folder name.');
                 redirect('admin/users/create');
@@ -269,11 +273,13 @@ class AdminController
                 flash('error', 'A folder name is required for employee accounts.');
                 redirect('admin/users/' . $id . '/edit');
             }
-            if (!preg_match('/^[a-zA-Z0-9_-]+$/', $folderName)) {
-                flash('error', 'Folder name may only contain letters, numbers, hyphens, and underscores.');
+            // Accept spaces (converted to hyphens) exactly like the Add-folder form.
+            $folderSegment = folder_imap_segment($folderName);
+            if ($folderSegment === '') {
+                flash('error', 'Folder name must contain at least one letter or number.');
                 redirect('admin/users/' . $id . '/edit');
             }
-            $imapPath = 'INBOX.' . $folderName;
+            $imapPath = 'INBOX.' . $folderSegment;
             $folderConflict = Database::fetchOne(
                 'SELECT id FROM folders WHERE imap_path = ? AND (linked_user_id IS NULL OR linked_user_id != ?) LIMIT 1',
                 [$imapPath, $id]

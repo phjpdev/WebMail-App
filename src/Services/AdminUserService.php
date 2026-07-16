@@ -130,7 +130,7 @@ class AdminUserService
         $needsFolderCacheClear = false;
 
         $folderName = ($folderName !== null && trim($folderName) !== '') ? trim($folderName) : $username;
-        $safeFolder = preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+        $safeFolder = folder_imap_segment($folderName);
         if ($safeFolder === '') {
             throw new \RuntimeException('Invalid folder name.');
         }
@@ -359,7 +359,7 @@ class AdminUserService
             throw new \RuntimeException('Folder name is required for employee accounts.');
         }
 
-        $safeFolder = preg_replace('/[^a-zA-Z0-9_-]/', '', $folderName);
+        $safeFolder = folder_imap_segment($folderName);
         if ($safeFolder === '') {
             throw new \RuntimeException('Invalid folder name.');
         }

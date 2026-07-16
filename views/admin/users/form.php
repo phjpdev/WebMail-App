@@ -57,9 +57,9 @@ ob_start();
         <div class="form-group" id="employee-folder-field">
             <label for="folder_name">Folder name <span class="text-required">*</span></label>
             <input type="text" id="folder_name" name="folder_name" required
-                   pattern="[A-Za-z0-9_-]+" title="Letters, numbers, hyphens, and underscores only"
+                   pattern="[A-Za-z0-9 _-]+" title="Letters, numbers, spaces, hyphens, and underscores (spaces become hyphens)"
                    placeholder="e.g. ankesh or support">
-            <small class="form-hint">Creates an IMAP folder (INBOX.<em>name</em>) and links it to this user. Required for employees.</small>
+            <small class="form-hint">Creates an IMAP folder (INBOX.<em>name</em>) and links it to this user. Spaces become hyphens (e.g. &ldquo;John Tran&rdquo; &rarr; INBOX.John-Tran). Required for employees.</small>
         </div>
         <div class="form-group" id="employee-group-field">
             <label for="display_parent_id">Show under (sidebar group)</label>
@@ -82,10 +82,10 @@ ob_start();
         <div class="form-group">
             <label for="folder_name">Folder name <span class="text-required">*</span></label>
             <input type="text" id="folder_name" name="folder_name" required
-                   pattern="[A-Za-z0-9_-]+" title="Letters, numbers, hyphens, and underscores only"
+                   pattern="[A-Za-z0-9 _-]+" title="Letters, numbers, spaces, hyphens, and underscores (spaces become hyphens)"
                    value="<?= e($editUser['folder_name'] ?? '') ?>"
                    placeholder="e.g. ankesh or support">
-            <small class="form-hint">Employee IMAP folder (INBOX.<em>name</em>). Changing it renames the folder on the mail server and updates the sidebar.</small>
+            <small class="form-hint">Employee IMAP folder (INBOX.<em>name</em>). Spaces become hyphens. Changing it renames the folder on the mail server and updates the sidebar.</small>
         </div>
         <div class="form-group form-check">
             <label class="form-check-label">

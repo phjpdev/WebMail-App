@@ -801,6 +801,12 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
         ];
     }
 
+    // Alphabetical by name, like every other folder list.
+    usort($out, static fn (array $a, array $b): int => strcasecmp(
+        (string) ($a['name'] ?? ''),
+        (string) ($b['name'] ?? '')
+    ));
+
     return $out;
 }
 
@@ -6674,8 +6680,8 @@ function build_folder_path_tree(array $items, string $pathKey = 'imap_path', str
         $key = strtolower((string) ($folder[$pathKey] ?? ''));
         $kids = $childrenOf[$key] ?? [];
         usort($kids, static fn (array $a, array $b): int => strcasecmp(
-            (string) ($a[$pathKey] ?? ''),
-            (string) ($b[$pathKey] ?? '')
+            (string) ($a['display_name'] ?? ($a['name'] ?? ($a[$pathKey] ?? ''))),
+            (string) ($b['display_name'] ?? ($b['name'] ?? ($b[$pathKey] ?? '')))
         ));
 
         return [
@@ -6685,8 +6691,8 @@ function build_folder_path_tree(array $items, string $pathKey = 'imap_path', str
     };
 
     usort($roots, static fn (array $a, array $b): int => strcasecmp(
-        (string) ($a[$pathKey] ?? ''),
-        (string) ($b[$pathKey] ?? '')
+        (string) ($a['display_name'] ?? ($a['name'] ?? ($a[$pathKey] ?? ''))),
+        (string) ($b['display_name'] ?? ($b['name'] ?? ($b[$pathKey] ?? '')))
     ));
 
     return array_map($buildNode, $roots);
@@ -6743,10 +6749,11 @@ function admin_folder_is_deletable(array $folder): bool
 function admin_folder_allows_subfolders(array $folder): bool
 {
     $type = (string) ($folder['folder_type'] ?? '');
-    // Employee folders are a person's mailbox (a leaf), not a container — adding a
-    // subfolder under them (INBOX.Erik.Inbox.X) doesn't fit the model. Only real
-    // group/client folders (Employees, New-Employees, …) can hold subfolders.
-    if (in_array($type, ['inbox', 'sent', 'other', 'spam', 'trash', 'system', 'employee'], true)) {
+    // Employee mailboxes and client/group folders CAN hold subfolders (e.g. a
+    // per-employee "Receipts" folder nested under the employee). Excluded are the
+    // shared system folders and the per-employee system mailboxes (Sent, Drafts,
+    // Junk, Trash, Archive) — those are leaves, not containers.
+    if (in_array($type, ['inbox', 'sent', 'other', 'spam', 'trash', 'system'], true)) {
         return false;
     }
 
@@ -6791,12 +6798,18 @@ function sidebar_folder_tree_parent_path(string $path, array $byPath, array $emp
 
     while ($parentPath !== null) {
         $parentKey = strtolower($parentPath);
+        // A folder that is itself shown in the sidebar is always a valid parent —
+        // including an employee mailbox — so a custom subfolder created under an
+        // employee (e.g. INBOX.support.Docs) nests under it.
+        if (isset($byPath[$parentKey])) {
+            return $parentPath;
+        }
+        // An employee ROOT that is NOT itself a shown folder is a phantom container
+        // (the shown folder is its .Inbox child); skip past it so the employee's
+        // own INBOX.<name>.X system entries don't hang off a non-existent node.
         if (isset($employeeRoots[$parentKey])) {
             $parentPath = folder_parent_imap_path($parentPath, $delimiter);
             continue;
-        }
-        if (isset($byPath[$parentKey])) {
-            return $parentPath;
         }
         $parentPath = folder_parent_imap_path($parentPath, $delimiter);
     }
@@ -6879,23 +6892,15 @@ function build_sidebar_other_folder_tree(array $items, string $pathKey = 'path',
         $roots[] = $item;
     }
 
-    $sortItems = static function (array $a, array $b) use ($pathKey, $employeeRoots, $sortByCreatedAt): int {
-        if ($sortByCreatedAt) {
-            $aCreated = strtotime((string) ($a['created_at'] ?? '')) ?: 0;
-            $bCreated = strtotime((string) ($b['created_at'] ?? '')) ?: 0;
-            if ($aCreated !== $bCreated) {
-                return $aCreated <=> $bCreated;
-            }
-
-            return strcasecmp((string) ($a[$pathKey] ?? ''), (string) ($b[$pathKey] ?? ''));
-        }
-
-        $aPath = strtolower((string) ($a[$pathKey] ?? ''));
-        $bPath = strtolower((string) ($b[$pathKey] ?? ''));
-        $aEmployee = isset($employeeRoots[$aPath]);
-        $bEmployee = isset($employeeRoots[$bPath]);
-        if ($aEmployee !== $bEmployee) {
-            return $aEmployee ? -1 : 1;
+    // Every folder list (sidebar and admin table) sorts alphabetically by display
+    // name, so a folder sits in the same place everywhere (A, B, C…). Siblings
+    // under the same parent sort the same way; ties fall back to the path.
+    $sortItems = static function (array $a, array $b) use ($pathKey): int {
+        $aName = (string) ($a['display_name'] ?? ($a['name'] ?? ($a[$pathKey] ?? '')));
+        $bName = (string) ($b['display_name'] ?? ($b['name'] ?? ($b[$pathKey] ?? '')));
+        $cmp = strcasecmp($aName, $bName);
+        if ($cmp !== 0) {
+            return $cmp;
         }
 
         return strcasecmp((string) ($a[$pathKey] ?? ''), (string) ($b[$pathKey] ?? ''));

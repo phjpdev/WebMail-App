@@ -40,13 +40,13 @@ class AdminFolderService
     }
 
     /**
-     * Folders that can act as a sidebar group container ("Show under"). Only
-     * admin-created group folders (client/company type) are offered — never the
-     * shared system folders (Inbox, Sent, Drafts, Archive, Junk, Trash, Spam) and
-     * never user mailboxes (employee folders like Jean/Erik/Support), so a user
-     * folder can be placed into a group but can't itself become a group. The
-     * folder being edited and its own grouped descendants are excluded to avoid a
-     * loop.
+     * Folders that can act as a sidebar group container ("Show under"): the
+     * admin-created client/company group folders AND employee mailboxes (which can
+     * hold subfolders), so any user folder can be nested under another for sidebar
+     * organisation. Excluded are the shared system folders (Inbox, Sent, Drafts,
+     * Archive, Junk, Trash, Spam), the folder being edited, and its own grouped
+     * descendants (loop guard). Each employee mailbox is offered once — its two
+     * INBOX.x / INBOX.x.Inbox rows are collapsed.
      *
      * @return list<array{id: int, label: string, imap_path: string}>
      */
@@ -57,22 +57,30 @@ class AdminFolderService
             $blocked[$excludeId] = true;
         }
 
-        $options = [];
+        $byMailbox = [];
         foreach ($this->listAll() as $folder) {
             $id = (int) ($folder['id'] ?? 0);
             if ($id <= 0 || isset($blocked[$id]) || (int) ($folder['active'] ?? 1) === 0) {
                 continue;
             }
-            if (!in_array((string) ($folder['folder_type'] ?? ''), ['client', 'company'], true)) {
+            if (!in_array((string) ($folder['folder_type'] ?? ''), ['client', 'company', 'employee'], true)) {
                 continue;
             }
-            $options[] = [
-                'id' => $id,
-                'label' => (string) ($folder['display_name'] ?? ''),
-                'imap_path' => (string) ($folder['imap_path'] ?? ''),
-            ];
+            $path = (string) ($folder['imap_path'] ?? '');
+            // Collapse an employee mailbox's two rows (INBOX.x and INBOX.x.Inbox)
+            // into one choice, keeping the shortest (canonical) path.
+            $key = strtolower(employee_mailbox_root_prefix($path));
+            $existing = $byMailbox[$key]['imap_path'] ?? null;
+            if ($existing === null || strlen($path) < strlen((string) $existing)) {
+                $byMailbox[$key] = [
+                    'id' => $id,
+                    'label' => (string) ($folder['display_name'] ?? ''),
+                    'imap_path' => $path,
+                ];
+            }
         }
 
+        $options = array_values($byMailbox);
         usort($options, static fn (array $a, array $b): int => strcasecmp($a['label'], $b['label']));
 
         return $options;
