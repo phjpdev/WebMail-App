@@ -391,7 +391,10 @@ class AdminFolderService
     }
 
     /**
-     * Remove a folder subtree from IMAP, cache, and the DB registry.
+     * Delete a single folder while PRESERVING its subfolders — each direct
+     * subfolder (with its own subtree and messages) is moved up one level to the
+     * deleted folder's parent, then the target folder itself is removed. Only the
+     * target folder's own messages are discarded.
      * Filter rules targeting removed folders are dropped via ON DELETE CASCADE.
      */
     public function delete(int $id): void
@@ -407,14 +410,117 @@ class AdminFolderService
             );
         }
 
-        $linkedUserId = null;
-        if (($folder['folder_type'] ?? '') === 'employee') {
-            $uid = (int) ($folder['linked_user_id'] ?? 0);
-            $linkedUserId = $uid > 0 ? $uid : null;
+        $path = rtrim((string) $folder['imap_path'], '.');
+        $parentPath = $this->parentFolderPath($path); // '' means top level (under INBOX root)
+
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            throw new \RuntimeException('Could not connect to the mail server to delete the folder.');
+        }
+        ImapService::invalidateFolderListCache();
+
+        // Move every DIRECT child up one level (renaming a mailbox carries its
+        // whole subtree + messages on the server), fixing the registry paths too.
+        foreach ($this->directChildPaths($path, $imap) as $childPath) {
+            $leaf = substr($childPath, strlen($path) + 1);
+            $desired = ($parentPath === '' ? 'INBOX' : $parentPath) . '.' . $leaf;
+            $newChildPath = $this->uniqueFolderPath($desired, $imap);
+            if (!$imap->renameFolder($childPath, $newChildPath)) {
+                throw new \RuntimeException(
+                    'Could not move subfolder "' . $childPath . '" up a level: ' . $imap->getLastError()
+                );
+            }
+            $this->reparentRegistryPaths($childPath, $newChildPath);
+            ImapService::invalidateFolderListCache();
         }
 
-        $this->purgeMailboxSubtree((string) $folder['imap_path'], $linkedUserId);
+        // Anything grouped under this folder in the sidebar moves up to its group.
+        Database::query(
+            'UPDATE folders SET display_parent_id = ? WHERE display_parent_id = ?',
+            [($folder['display_parent_id'] ?? null) ?: null, $id]
+        );
+
+        // Now delete just the target folder (it no longer has subfolders).
+        if (!$imap->deleteFolder($path)) {
+            throw new \RuntimeException(
+                'Could not delete the folder on the mail server: ' . $imap->getLastError()
+            );
+        }
+        MailCacheService::purgeFolder($path);
+        Database::query('UPDATE aliases SET default_folder_id = NULL WHERE default_folder_id = ?', [$id]);
+        Database::query('DELETE FROM folders WHERE id = ?', [$id]);
+
         (new FolderCache())->clear();
+    }
+
+    /** Parent IMAP path, or '' for a top-level folder (INBOX.Foo -> '', INBOX.A.B -> INBOX.A). */
+    private function parentFolderPath(string $path): string
+    {
+        $pos = strrpos($path, '.');
+        if ($pos === false) {
+            return '';
+        }
+        $parent = substr($path, 0, $pos);
+
+        return strcasecmp($parent, 'INBOX') === 0 ? '' : $parent;
+    }
+
+    /**
+     * Direct child folder paths (one level under $path), from the live server list
+     * unioned with the registry so nothing is missed.
+     *
+     * @return list<string>
+     */
+    private function directChildPaths(string $path, ImapService $imap): array
+    {
+        $prefix = $path . '.';
+        $found = [];
+
+        foreach ($imap->listFolders() as $folder) {
+            $p = (string) ($folder['path'] ?? '');
+            if (strncmp($p, $prefix, strlen($prefix)) === 0 && strpos(substr($p, strlen($prefix)), '.') === false) {
+                $found[$p] = true;
+            }
+        }
+        foreach (Database::query('SELECT imap_path FROM folders WHERE imap_path LIKE ?', [$prefix . '%'])->fetchAll() as $row) {
+            $p = trim((string) ($row['imap_path'] ?? ''));
+            if ($p !== '' && strncmp($p, $prefix, strlen($prefix)) === 0 && strpos(substr($p, strlen($prefix)), '.') === false) {
+                $found[$p] = true;
+            }
+        }
+
+        return array_keys($found);
+    }
+
+    /** Append -2, -3… if the desired path already exists on the server. */
+    private function uniqueFolderPath(string $desired, ImapService $imap): string
+    {
+        if (!$imap->folderExistsOnServer($desired)) {
+            return $desired;
+        }
+        for ($i = 2; $i < 100; $i++) {
+            $candidate = $desired . '-' . $i;
+            if (!$imap->folderExistsOnServer($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $desired . '-' . uniqid();
+    }
+
+    /** Rewrite registry imap_path for a moved subtree ($oldPrefix and everything under it). */
+    private function reparentRegistryPaths(string $oldPrefix, string $newPrefix): void
+    {
+        $rows = Database::query(
+            'SELECT id, imap_path FROM folders WHERE imap_path = ? OR imap_path LIKE ?',
+            [$oldPrefix, $oldPrefix . '.%']
+        )->fetchAll();
+
+        foreach ($rows as $row) {
+            $old = (string) $row['imap_path'];
+            $new = $newPrefix . substr($old, strlen($oldPrefix));
+            Database::query('UPDATE folders SET imap_path = ? WHERE id = ?', [$new, (int) $row['id']]);
+        }
     }
 
     /**
@@ -585,6 +691,10 @@ class AdminFolderService
         if (!$imap->connect()) {
             throw new \RuntimeException('Could not connect to the mail server to delete the folder.');
         }
+
+        // Drop any stale cached folder list so the subtree is collected and gated
+        // against the LIVE server state, not a snapshot from earlier this request.
+        ImapService::invalidateFolderListCache();
 
         $pathsToRemove = $this->collectSubtreePaths($root, $imap);
         $deleteOrder = array_keys($pathsToRemove);

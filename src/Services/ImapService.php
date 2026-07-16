@@ -1770,30 +1770,65 @@ class ImapService
             return false;
         }
 
-        if (!$this->folderExistsOnServer($path)) {
-            return true;
-        }
+        $server = $this->getMailboxString();
+        $mailbox = $server . $this->encodeFolderPath($path);
 
-        if ($this->getMessageCount($path) > 0 && !$this->emptyFolder($path)) {
-            app_log('IMAP folder empty failed for ' . $path . ': ' . $this->getLastError());
-        }
-
-        $mailbox = $this->getMailboxString() . $this->encodeFolderPath($path);
-
-        if (@imap_deletemailbox($this->connection, $mailbox)) {
+        // Use a LIVE server check, never the cached folder lookup — a stale cache
+        // made this return true without deleting anything (silent no-op).
+        if (!$this->serverHasFolderLive($path)) {
             self::invalidateFolderListCache();
 
             return true;
         }
 
-        $errors = imap_errors() ?: [];
-        $this->lastError = 'Failed to delete folder: ' . implode('; ', $errors);
-        if (self::isMissingMailboxError($this->lastError)) {
+        // Two things made imap_deletemailbox silently fail before:
+        //   1. a non-empty mailbox (some servers refuse) — so empty + expunge, and
+        //   2. the mailbox being *selected* (most servers refuse to delete the
+        //      currently-open mailbox) — getMessageCount/emptyFolder select it, so
+        //      we must re-select a DIFFERENT mailbox (INBOX) before deleting.
+        // We then VERIFY by a live re-list and retry once, never trusting the
+        // imap_deletemailbox return value alone.
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            if (@imap_reopen($this->connection, $mailbox)) {
+                @imap_delete($this->connection, '1:*');
+                @imap_expunge($this->connection);
+            }
+            @imap_reopen($this->connection, $server . 'INBOX');
+            imap_errors();
+
+            @imap_deletemailbox($this->connection, $mailbox);
+            imap_errors();
             self::invalidateFolderListCache();
 
-            return true;
+            if (!$this->serverHasFolderLive($path)) {
+                return true;
+            }
         }
+
+        $this->lastError = 'Failed to delete folder "' . $path . '": ' . implode('; ', imap_errors() ?: []);
         app_log($this->lastError);
+
+        return false;
+    }
+
+    /**
+     * Live (uncached) check of whether a mailbox exists on the server. imap_list
+     * with the exact path as pattern returns just that mailbox when present.
+     */
+    private function serverHasFolderLive(string $path): bool
+    {
+        if (!$this->ensureConnected()) {
+            return false;
+        }
+
+        $server = $this->getMailboxString();
+        $found = @imap_list($this->connection, $server, $this->encodeFolderPath($path)) ?: [];
+        imap_errors();
+        foreach ($found as $mailbox) {
+            if (strcasecmp(str_replace($server, '', (string) $mailbox), $path) === 0) {
+                return true;
+            }
+        }
 
         return false;
     }

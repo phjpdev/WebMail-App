@@ -47,7 +47,7 @@ $hasChildren = $hasChildren ?? false;
         <?php if ($canDelete): ?>
             <form method="post" action="<?= e(url('admin/folders/' . $folderId . '/delete')) ?>" class="admin-action-form"
                   data-confirm-title="Delete folder?"
-                  data-confirm-message="<?= e('Delete folder "' . $displayName . '" and all of its subfolders? Messages will be removed from the mail server. This cannot be undone.') ?>"
+                  data-confirm-message="<?= e('Delete folder "' . $displayName . '"? Any subfolders are moved up one level (kept), and messages in this folder are removed. This cannot be undone.') ?>"
                   data-confirm-danger="1"
                   data-confirm-label="Delete"
                   data-confirm-loading="Deleting folder…">
