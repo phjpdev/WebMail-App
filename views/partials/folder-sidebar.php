@@ -350,7 +350,9 @@ if ($grouped['other'] !== []) {
                 <?php $renderSidebarFolderBranch($node, 0); ?>
             <?php endforeach; ?>
             <?php foreach ($displayForest as $node): ?>
-                <?php $renderDisplayGroup($node, 0); ?>
+                <?php // Render grouped folders as navigable branches: the chevron
+                      // expands/collapses, clicking the folder name opens its messages. ?>
+                <?php $renderSidebarFolderBranch($node, 0); ?>
             <?php endforeach; ?>
         </div>
     </div>
