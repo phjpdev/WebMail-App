@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'Login') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=177">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=178">
 </head>
 <body class="login-body">
     <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
