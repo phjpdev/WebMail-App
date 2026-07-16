@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'Change password') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=32">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=176">
 </head>
 <body class="login-body">
     <header class="login-header">
@@ -49,6 +49,6 @@
             </form>
         </div>
     </div>
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=46" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=250" defer></script>
 </body>
 </html>

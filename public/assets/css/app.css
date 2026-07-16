@@ -8498,3 +8498,42 @@ body:has(.mail-workspace) {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* Password show/hide (eye) toggle — added to every password field by app.js. */
+.password-field {
+    position: relative;
+    display: block;
+}
+.password-field > input {
+    width: 100%;
+    padding-right: 2.75rem;
+}
+.password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0.4rem;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.password-toggle:hover,
+.password-toggle:focus-visible {
+    color: var(--color-text);
+    background: var(--color-surface-alt, rgba(0, 0, 0, 0.06));
+    outline: none;
+}
+.password-toggle svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}

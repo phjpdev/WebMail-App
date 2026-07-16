@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= e($title ?? 'Login') ?> — <?= e(config('app')['name']) ?></title>
-    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=32">
+    <link rel="stylesheet" href="<?= e(url('assets/css/app.css')) ?>?v=176">
 </head>
 <body class="login-body">
     <div id="loading-overlay" class="loading-overlay" hidden aria-live="polite" aria-busy="false">
@@ -47,7 +47,7 @@
             </form>
         </div>
     </div>
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=46" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=250" defer></script>
     <script>
         document.querySelector('.login-form')?.addEventListener('submit', function () {
             var o = document.getElementById('loading-overlay');
