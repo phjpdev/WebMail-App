@@ -60,8 +60,6 @@ $hasFolders = $primaryFolders !== [] || $folderTree !== [];
 
         <span class="admin-folder-tree-col-name">Folder</span>
 
-        <span class="admin-folder-tree-col-type">Type</span>
-
         <span class="admin-folder-tree-col-user">Linked user</span>
 
         <span class="admin-folder-tree-col-status">Status</span>

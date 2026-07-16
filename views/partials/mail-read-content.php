@@ -83,7 +83,7 @@ $messageAttachments = $message['attachments'] ?? [];
             <select id="read-move-target-<?= $uid ?>" name="target_folder" class="mail-action-move-select" aria-label="Move to folder" tabindex="-1">
                 <option value="">Move to…</option>
                 <?php foreach ($moveTargets as $target): ?>
-                    <option value="<?= e($target['path']) ?>"><?= e($target['name']) ?></option>
+                    <option value="<?= e($target['path']) ?>" data-depth="<?= (int) ($target['depth'] ?? 0) ?>"><?= str_repeat('&nbsp;&nbsp;&nbsp;', (int) ($target['depth'] ?? 0)) ?><?= e($target['name']) ?></option>
                 <?php endforeach; ?>
             </select>
         </div>

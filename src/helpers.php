@@ -764,9 +764,9 @@ function mail_resolve_move_target_path(string $targetPath): string
 function mail_move_target_folders(array $folders, string $currentFolder): array
 {
     $currentFolder = \App\Services\FolderCache::resolvePath($currentFolder);
-    $out = [];
+    $out = [];          // custom (non-system) folders
+    $system = [];       // system targets keyed by bucket
     $seenPaths = [];
-    $junkAdded = false;
 
     foreach ($folders as $folder) {
         $path = (string) ($folder['path'] ?? '');
@@ -774,18 +774,33 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
             continue;
         }
         $resolved = \App\Services\FolderCache::resolvePath($path);
-        if (strcasecmp($resolved, $currentFolder) === 0 || is_draft_folder($path)) {
+        if (strcasecmp($resolved, $currentFolder) === 0) {
             continue;
         }
 
-        if (sidebar_folder_bucket($path) === 'spam') {
-            if ($junkAdded) {
+        $bucket = sidebar_folder_bucket($path);
+        // Only Inbox, Archive, Junk and Trash are offered as system targets — never
+        // Sent or Drafts.
+        if (in_array($bucket, ['sent', 'drafts'], true)) {
+            continue;
+        }
+
+        if (in_array($bucket, ['inbox', 'archive', 'spam', 'trash'], true)) {
+            if (isset($system[$bucket])) {
                 continue;
             }
-            $junkAdded = true;
-            $canonical = spam_folder_path();
-            $out[] = ['path' => $canonical, 'name' => 'Junk'];
-            $seenPaths[strtolower($canonical)] = true;
+            $canonical = $bucket === 'spam' ? spam_folder_path() : $path;
+            $key = strtolower(\App\Services\FolderCache::resolvePath($canonical));
+            if (isset($seenPaths[$key])) {
+                continue;
+            }
+            $seenPaths[$key] = true;
+            $system[$bucket] = [
+                'path' => $bucket === 'spam' ? $canonical : mail_resolve_move_target_path($path),
+                'name' => $bucket === 'spam' ? 'Junk' : sidebar_tidy_folder_label((string) ($folder['name'] ?? $path)),
+                'icon' => $bucket === 'spam' ? 'spam' : $bucket,
+                'depth' => 0,
+            ];
             continue;
         }
 
@@ -794,20 +809,70 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
             continue;
         }
         $seenPaths[$key] = true;
-        $movePath = mail_resolve_move_target_path($path);
         $out[] = [
-            'path' => $movePath,
+            'path' => mail_resolve_move_target_path($path),
             'name' => sidebar_tidy_folder_label((string) ($folder['name'] ?? $path)),
+            'orig' => $resolved,
+            'icon' => 'folder',
         ];
     }
 
-    // Alphabetical by name, like every other folder list.
-    usort($out, static fn (array $a, array $b): int => strcasecmp(
-        (string) ($a['name'] ?? ''),
-        (string) ($b['name'] ?? '')
-    ));
+    // System folders pinned at the top, in a fixed order (Inbox, Archive, Junk,
+    // Trash), then the custom folders as a tree — subfolders indented under their
+    // parent, roots and siblings alphabetical by name.
+    $result = [];
+    foreach (['inbox', 'archive', 'spam', 'trash'] as $bucket) {
+        if (isset($system[$bucket])) {
+            $result[] = $system[$bucket];
+        }
+    }
 
-    return $out;
+    $indexByOrig = [];
+    foreach ($out as $i => $item) {
+        $indexByOrig[strtolower((string) $item['orig'])] = $i;
+    }
+    $childrenOf = [];
+    $roots = [];
+    foreach ($out as $i => $item) {
+        $parent = null;
+        $p = (string) $item['orig'];
+        while (($pos = strrpos($p, '.')) !== false) {
+            $p = substr($p, 0, $pos);
+            if (strcasecmp($p, 'INBOX') === 0) {
+                break;
+            }
+            if (isset($indexByOrig[strtolower($p)])) {
+                $parent = $indexByOrig[strtolower($p)];
+                break;
+            }
+        }
+        if ($parent === null) {
+            $roots[] = $i;
+        } else {
+            $childrenOf[$parent][] = $i;
+        }
+    }
+    $byName = static fn (int $a, int $b): int => strcasecmp((string) ($out[$a]['name'] ?? ''), (string) ($out[$b]['name'] ?? ''));
+    usort($roots, $byName);
+
+    $walk = function (int $i, int $depth) use (&$walk, &$result, $out, $childrenOf, $byName): void {
+        $result[] = [
+            'path' => $out[$i]['path'],
+            'name' => $out[$i]['name'],
+            'icon' => $out[$i]['icon'] ?? 'folder',
+            'depth' => $depth,
+        ];
+        $kids = $childrenOf[$i] ?? [];
+        usort($kids, $byName);
+        foreach ($kids as $k) {
+            $walk($k, $depth + 1);
+        }
+    };
+    foreach ($roots as $r) {
+        $walk($r, 0);
+    }
+
+    return $result;
 }
 
 function folder_url(string $folderPath, string $suffix = ''): string
@@ -6976,7 +7041,6 @@ function admin_folder_primary_bucket(array $folder): ?string
  */
 function partition_admin_folders_for_display(array $folders): array
 {
-    $primaryMap = array_fill_keys(sidebar_primary_folder_order(), null);
     $custom = [];
 
     foreach ($folders as $folder) {
@@ -6985,9 +7049,10 @@ function partition_admin_folders_for_display(array $folders): array
             continue;
         }
 
-        $bucket = admin_folder_primary_bucket($folder);
-        if ($bucket !== null && $primaryMap[$bucket] === null) {
-            $primaryMap[$bucket] = $folder;
+        // Only admin-managed folders are listed — employee mailboxes and
+        // client/group folders. The shared system defaults (Inbox, Sent, Drafts,
+        // Archive, Junk, Trash, Spam) are not shown in the admin table.
+        if (!in_array((string) ($folder['folder_type'] ?? ''), ['employee', 'client', 'company'], true)) {
             continue;
         }
 
@@ -7011,15 +7076,8 @@ function partition_admin_folders_for_display(array $folders): array
     }
     $custom = array_values($customByMailbox);
 
-    $primary = [];
-    foreach (sidebar_primary_folder_order() as $bucket) {
-        if ($primaryMap[$bucket] !== null) {
-            $primary[] = $primaryMap[$bucket];
-        }
-    }
-
     return [
-        'primary' => $primary,
+        'primary' => [],
         'custom_tree' => admin_apply_display_grouping(
             build_admin_folder_tree($custom, 'imap_path'),
             $folders

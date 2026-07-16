@@ -66,7 +66,7 @@ ob_start();
             <select id="display_parent_id" name="display_parent_id">
                 <option value="0">— Top level (no group)</option>
                 <?php foreach (($groupParents ?? []) as $parent): ?>
-                    <option value="<?= (int) $parent['id'] ?>">&#128193; <?= e($parent['label']) ?></option>
+                    <option value="<?= (int) $parent['id'] ?>"><?= str_repeat('&nbsp;&nbsp;&nbsp;&nbsp;', (int) ($parent['depth'] ?? 0)) ?>&#128193; <?= e($parent['label']) ?></option>
                 <?php endforeach; ?>
             </select>
             <small class="form-hint">Optional — nests this employee's folder under the chosen group (e.g. Employees) in the sidebar right away, so you don't have to edit it afterward.</small>

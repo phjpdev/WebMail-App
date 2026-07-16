@@ -32,11 +32,16 @@ class AdminFolderService
     }
 
     /**
-     * @return list<array{id: int, label: string, imap_path: string}>
+     * Parent-folder choices for creating a subfolder — the same admin-managed
+     * folder tree the "Show under" dropdown and the admin folders table use
+     * (subfolders nested under their parent), instead of dumping every system and
+     * per-employee subfolder.
+     *
+     * @return list<array{id: int, label: string, imap_path: string, depth: int}>
      */
     public function listParentChoices(): array
     {
-        return admin_folder_parent_options($this->listAll());
+        return $this->listGroupParentChoices();
     }
 
     /**
@@ -48,7 +53,7 @@ class AdminFolderService
      * descendants (loop guard). Each employee mailbox is offered once — its two
      * INBOX.x / INBOX.x.Inbox rows are collapsed.
      *
-     * @return list<array{id: int, label: string, imap_path: string}>
+     * @return list<array{id: int, label: string, imap_path: string, depth: int}>
      */
     public function listGroupParentChoices(int $excludeId = 0): array
     {
@@ -74,14 +79,29 @@ class AdminFolderService
             if ($existing === null || strlen($path) < strlen((string) $existing)) {
                 $byMailbox[$key] = [
                     'id' => $id,
-                    'label' => (string) ($folder['display_name'] ?? ''),
+                    'display_name' => (string) ($folder['display_name'] ?? ''),
                     'imap_path' => $path,
                 ];
             }
         }
 
-        $options = array_values($byMailbox);
-        usort($options, static fn (array $a, array $b): int => strcasecmp($a['label'], $b['label']));
+        // Nest into a tree by mailbox path and flatten with a depth, so the
+        // dropdown mirrors the admin folders table — subfolders indented under
+        // their parent instead of a flat alphabetical list.
+        $options = [];
+        $flatten = static function (array $nodes, int $depth) use (&$flatten, &$options): void {
+            foreach ($nodes as $node) {
+                $folder = $node['folder'];
+                $options[] = [
+                    'id' => (int) ($folder['id'] ?? 0),
+                    'label' => (string) ($folder['display_name'] ?? ''),
+                    'imap_path' => (string) ($folder['imap_path'] ?? ''),
+                    'depth' => $depth,
+                ];
+                $flatten($node['children'] ?? [], $depth + 1);
+            }
+        };
+        $flatten(build_folder_path_tree(array_values($byMailbox), 'imap_path'), 0);
 
         return $options;
     }

@@ -3996,7 +3996,9 @@
     }
 
     function useMoveFolderPicker() {
-        return window.matchMedia('(max-width: 1023px)').matches;
+        // Always use the custom folder picker (icons + folder tree + professional
+        // styling) instead of a native <select>, which can't show icons or nesting.
+        return true;
     }
 
     function folderIconTypeFromPath(path) {
@@ -4103,7 +4105,7 @@
                 path: opt.value,
                 name: opt.textContent.trim(),
                 icon: folderIconTypeFromPath(opt.value),
-                depth: folderDepthFromPath(opt.value)
+                depth: parseInt(opt.getAttribute('data-depth') || '0', 10) || 0
             });
         });
         return out.length ? out : collectMoveFoldersFromSidebar();
@@ -4122,7 +4124,7 @@
                 path: opt.value,
                 name: opt.textContent.trim(),
                 icon: folderIconTypeFromPath(opt.value),
-                depth: folderDepthFromPath(opt.value)
+                depth: parseInt(opt.getAttribute('data-depth') || '0', 10) || 0
             });
         });
         return out.length ? out : collectToolbarMoveFolders();
@@ -4210,6 +4212,10 @@
         opts = opts || {};
         var modal = document.getElementById('folder-picker-modal');
         var folders = opts.folders || [];
+        // `close` is declared inside the Promise executor below; renderList lives in
+        // this outer scope and can't see it (a bare `close(f)` would hit window.close
+        // and silently no-op). Bridge the two through this shared reference.
+        var closePicker = null;
         if (!modal) {
             return Promise.resolve(null);
         }
@@ -4236,8 +4242,14 @@
                 btn.innerHTML = folderIconHtml(f.icon || folderIconTypeFromPath(f.path)) +
                     '<span class="folder-picker-item-label"></span>';
                 btn.querySelector('.folder-picker-item-label').textContent = f.name;
+                // Indent subfolders under their parent (skip while searching, which
+                // flattens the list). 0.75rem base padding + 1.25rem per level.
+                var pickDepth = (!q && parseInt(f.depth, 10)) || 0;
+                if (pickDepth > 0) {
+                    btn.style.paddingInlineStart = (0.75 + pickDepth * 1.25) + 'rem';
+                }
                 btn.addEventListener('click', function () {
-                    close(f);
+                    if (closePicker) closePicker(f);
                 });
                 listEl.appendChild(btn);
             });
@@ -4259,6 +4271,7 @@
                     window.requestAnimationFrame(syncFolderPickerLayout);
                 };
             }
+            closePicker = close;
             renderList('');
 
             function close(result) {
@@ -8486,6 +8499,12 @@
                 b.className = 'context-menu-item context-submenu-item';
                 b.innerHTML = folderIconHtml(f.icon || 'folder') + '<span class="ctx-label"></span>';
                 b.querySelector('.ctx-label').textContent = f.name;
+                // Indent subfolders under their parent to mirror the folder tree
+                // (0.7rem base padding + 1rem per nesting level).
+                var subDepth = parseInt(f.depth, 10) || 0;
+                if (subDepth > 0) {
+                    b.style.paddingInlineStart = (0.7 + subDepth * 1) + 'rem';
+                }
                 b.addEventListener('click', function (e) {
                     e.preventDefault();
                     hide();
@@ -8595,7 +8614,11 @@
         }
 
         function collectMoveFolders() {
-            return collectMoveFoldersFromSidebar();
+            // Use the same structured source as the toolbar/reading-pane pickers so
+            // the submenu shows Inbox, Archive, Junk, Trash pinned at top (no Sent),
+            // then custom folders alphabetically with nesting + icons. Falls back to
+            // the sidebar scan when no toolbar select is present.
+            return collectToolbarMoveFolders();
         }
 
         function openFor(row, x, y) {

@@ -36,9 +36,6 @@ $hasChildren = $hasChildren ?? false;
             <code class="admin-folder-tree-path"><?= e($imapPath) ?></code>
         </span>
     </div>
-    <div class="admin-folder-tree-col-type">
-        <span class="badge badge-<?= e($folderType) ?>"><?= e($folderType) ?></span>
-    </div>
     <div class="admin-folder-tree-col-user"><?= e($linkedUser !== '' ? $linkedUser : '—') ?></div>
     <div class="admin-folder-tree-col-status">
         <span class="badge badge-<?= $isActive ? 'active' : 'inactive' ?>"><?= $isActive ? 'Active' : 'Inactive' ?></span>

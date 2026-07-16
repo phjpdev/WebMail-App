@@ -2,8 +2,6 @@
 <?php
 $isEdit = !empty($folder);
 $action = $isEdit ? url('admin/folders/' . $folder['id'] . '/update') : url('admin/folders/store');
-$type = $folder['folder_type'] ?? 'client';
-$types = ['client' => 'Client', 'company' => 'Company', 'employee' => 'Employee', 'system' => 'System'];
 $parentFolders = $parentFolders ?? [];
 $groupParents = $groupParents ?? [];
 $selectedParent = (int) ($_GET['parent'] ?? ($_POST['parent_folder_id'] ?? 0));
@@ -23,7 +21,7 @@ $selectedGroupParent = (int) ($folder['display_parent_id'] ?? 0);
                 <option value="0">Inbox (top level)</option>
                 <?php foreach ($parentFolders as $parent): ?>
                     <option value="<?= (int) $parent['id'] ?>"<?= $selectedParent === (int) $parent['id'] ? ' selected' : '' ?>>
-                        <?= e($parent['label']) ?>
+                        <?= str_repeat('&nbsp;&nbsp;&nbsp;&nbsp;', (int) ($parent['depth'] ?? 0)) ?>&#128193; <?= e($parent['label']) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -37,15 +35,6 @@ $selectedGroupParent = (int) ($folder['display_parent_id'] ?? 0);
                    value="<?= e($folder['display_name'] ?? '') ?>">
             <small class="form-hint">Enter the name only — no need to type INBOX or use dots. Spaces become hyphens in the mailbox path.</small>
         </div>
-        <div class="form-group">
-            <label for="folder_type">Folder type</label>
-            <select id="folder_type" name="folder_type">
-                <?php foreach ($types as $value => $label): ?>
-                    <option value="<?= e($value) ?>"<?= $type === $value ? ' selected' : '' ?>><?= e($label) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-
         <?php if ($isEdit): ?>
             <div class="form-group">
                 <label>Mailbox path</label>
@@ -57,7 +46,7 @@ $selectedGroupParent = (int) ($folder['display_parent_id'] ?? 0);
                     <option value="0">— Top level (no group)</option>
                     <?php foreach ($groupParents as $parent): ?>
                         <option value="<?= (int) $parent['id'] ?>"<?= $selectedGroupParent === (int) $parent['id'] ? ' selected' : '' ?>>
-                            &#128193; <?= e($parent['label']) ?>
+                            <?= str_repeat('&nbsp;&nbsp;&nbsp;&nbsp;', (int) ($parent['depth'] ?? 0)) ?>&#128193; <?= e($parent['label']) ?>
                         </option>
                     <?php endforeach; ?>
                 </select>

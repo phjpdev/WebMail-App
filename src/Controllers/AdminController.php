@@ -540,7 +540,8 @@ class AdminController
         requireAdmin();
         verify_csrf_or_fail();
         $id = (int) ($params['id'] ?? 0);
-        if ($this->folders->find($id) === null) {
+        $folder = $this->folders->find($id);
+        if ($folder === null) {
             flash('error', 'Folder not found.');
             redirect('admin/folders');
         }
@@ -551,7 +552,9 @@ class AdminController
         }
         $this->folders->update($id, [
             'display_name' => $displayName,
-            'folder_type' => $this->normalizeFolderType($_POST['folder_type'] ?? 'client'),
+            // Folder type is no longer an admin-editable field — keep whatever the
+            // folder already has (employee mailboxes stay 'employee', etc.).
+            'folder_type' => (string) ($folder['folder_type'] ?? 'client'),
             'active' => isset($_POST['active']) ? 1 : 0,
             'display_parent_id' => (int) ($_POST['display_parent_id'] ?? 0),
         ]);
