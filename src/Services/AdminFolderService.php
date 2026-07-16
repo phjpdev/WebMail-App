@@ -62,38 +62,25 @@ class AdminFolderService
             $blocked[$excludeId] = true;
         }
 
-        $byMailbox = [];
-        foreach ($this->listAll() as $folder) {
-            $id = (int) ($folder['id'] ?? 0);
-            if ($id <= 0 || isset($blocked[$id]) || (int) ($folder['active'] ?? 1) === 0) {
-                continue;
-            }
-            if (!in_array((string) ($folder['folder_type'] ?? ''), ['client', 'company', 'employee'], true)) {
-                continue;
-            }
-            $path = (string) ($folder['imap_path'] ?? '');
-            // Collapse an employee mailbox's two rows (INBOX.x and INBOX.x.Inbox)
-            // into one choice, keeping the shortest (canonical) path.
-            $key = strtolower(employee_mailbox_root_prefix($path));
-            $existing = $byMailbox[$key]['imap_path'] ?? null;
-            if ($existing === null || strlen($path) < strlen((string) $existing)) {
-                $byMailbox[$key] = [
-                    'id' => $id,
-                    'display_name' => (string) ($folder['display_name'] ?? ''),
-                    'imap_path' => $path,
-                ];
-            }
-        }
+        // Use the SAME tree the admin folders table and sidebar render — it
+        // collapses each employee mailbox to one row AND applies the sidebar
+        // "Show under" grouping (display_parent_id), so a folder nested under
+        // another (e.g. an employee under "Employees") is indented correctly here
+        // too, instead of a flat imap-path-only tree.
+        $tree = partition_admin_folders_for_display($this->listAll())['custom_tree'] ?? [];
 
-        // Nest into a tree by mailbox path and flatten with a depth, so the
-        // dropdown mirrors the admin folders table — subfolders indented under
-        // their parent instead of a flat alphabetical list.
         $options = [];
-        $flatten = static function (array $nodes, int $depth) use (&$flatten, &$options): void {
+        $flatten = static function (array $nodes, int $depth) use (&$flatten, &$options, $blocked): void {
             foreach ($nodes as $node) {
-                $folder = $node['folder'];
+                $folder = $node['folder'] ?? [];
+                $id = (int) ($folder['id'] ?? 0);
+                // Skip the folder being edited and its whole grouped subtree
+                // (loop guard) — including their nested children.
+                if ($id <= 0 || isset($blocked[$id])) {
+                    continue;
+                }
                 $options[] = [
-                    'id' => (int) ($folder['id'] ?? 0),
+                    'id' => $id,
                     'label' => (string) ($folder['display_name'] ?? ''),
                     'imap_path' => (string) ($folder['imap_path'] ?? ''),
                     'depth' => $depth,
@@ -101,7 +88,7 @@ class AdminFolderService
                 $flatten($node['children'] ?? [], $depth + 1);
             }
         };
-        $flatten(build_folder_path_tree(array_values($byMailbox), 'imap_path'), 0);
+        $flatten($tree, 0);
 
         return $options;
     }
