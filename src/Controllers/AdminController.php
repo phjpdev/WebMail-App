@@ -579,6 +579,13 @@ class AdminController
             redirect('admin/folders');
         }
 
+        if (admin_folder_is_user_owned($folder)) {
+            $owner = Database::fetchOne('SELECT name FROM users WHERE id = ? LIMIT 1', [(int) $folder['linked_user_id']]);
+            $ownerName = trim((string) ($owner['name'] ?? ''));
+            flash('error', 'This folder belongs to ' . ($ownerName !== '' ? $ownerName . '\'s' : 'a user') . ' account and can\'t be deleted here. To remove it, delete the user under Admin → Users.');
+            redirect('admin/folders');
+        }
+
         if (!$this->folders->isDeletable($folder)) {
             flash('error', 'This folder cannot be deleted. Inbox, Sent, Drafts, Trash, Spam, and other system folders are protected.');
             redirect('admin/folders');

@@ -363,6 +363,16 @@ class AdminFolderService
             return false;
         }
 
+        // A folder tied to a user account (employee mailbox) is owned by that
+        // account, not the folder list. Deleting it here doesn't stick — while
+        // the user exists the mailbox re-provisions on the next IMAP sync and the
+        // folder reappears (the "it came back" the client hit). The only correct
+        // removal is deleting the user (which cascades). Lock it down so it can't
+        // be deleted, or accidentally deleted, from here.
+        if ((int) ($folder['linked_user_id'] ?? 0) > 0) {
+            return false;
+        }
+
         $type = (string) ($folder['folder_type'] ?? '');
         if (in_array($type, ['inbox', 'sent', 'other', 'spam', 'trash', 'system'], true)) {
             return false;

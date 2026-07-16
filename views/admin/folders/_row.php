@@ -54,6 +54,12 @@ $hasChildren = $hasChildren ?? false;
                 <?= csrf_field() ?>
                 <button type="submit" class="btn-link-danger">Delete</button>
             </form>
+        <?php elseif (admin_folder_is_user_owned($folder)): ?>
+            <?php $ownerName = trim($linkedUser) !== '' && $linkedUser !== '—' ? $linkedUser : 'a user'; ?>
+            <span class="admin-folder-lock" title="<?= e('This folder belongs to ' . $ownerName . '\'s account and is managed automatically. To remove it, delete the user under Admin → Users.') ?>">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                <span>Locked</span>
+            </span>
         <?php else: ?>
             <span class="admin-folder-action-empty" aria-hidden="true">—</span>
         <?php endif; ?>

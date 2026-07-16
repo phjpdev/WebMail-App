@@ -6816,6 +6816,17 @@ function admin_folder_is_deletable(array $folder): bool
 }
 
 /**
+ * A folder that belongs to a user account (employee mailbox). Such folders are
+ * locked in the admin list — they can only be removed by deleting the user.
+ *
+ * @param array<string, mixed> $folder
+ */
+function admin_folder_is_user_owned(array $folder): bool
+{
+    return (int) ($folder['linked_user_id'] ?? 0) > 0;
+}
+
+/**
  * @param array<string, mixed> $folder
  */
 function admin_folder_allows_subfolders(array $folder): bool

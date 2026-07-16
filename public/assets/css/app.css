@@ -3181,6 +3181,24 @@ mark.search-hit {
     color: var(--color-text-muted);
 }
 
+/* User-owned (employee mailbox) folders are locked in the folder list — they can
+   only be removed by deleting the user. */
+.admin-folder-lock {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    cursor: help;
+    white-space: nowrap;
+}
+
+.admin-folder-lock svg {
+    flex: 0 0 auto;
+    opacity: 0.7;
+}
+
 .admin-folder-tree-divider {
     height: 1px;
     margin: 0.35rem 1rem;
