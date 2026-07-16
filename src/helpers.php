@@ -362,6 +362,13 @@ function finish_background(callable $after): void
 {
     if (function_exists('fastcgi_finish_request')) {
         fastcgi_finish_request();
+    } elseif (function_exists('litespeed_finish_request')) {
+        // Hostinger runs LiteSpeed (LSAPI), which has no fastcgi_finish_request but
+        // exposes this equivalent. Without it, a plain flush() cannot close an
+        // HTTP/2 response early (we deliberately skip `Connection: close` there),
+        // so the browser would block on the whole deferred IMAP move/verify — the
+        // "Moving message…" toast then hangs for the full background duration.
+        litespeed_finish_request();
     } else {
         while (ob_get_level() > 0) {
             ob_end_flush();
