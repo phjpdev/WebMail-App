@@ -9054,6 +9054,44 @@
         window.setInterval(check, 30000);
     }
 
+    // Collapsible sidebar section divider: the toggle at the end of the rule
+    // collapses/expands EVERY folder branch in the section (not hide it), and the
+    // state persists across reloads.
+    function initSidebarSectionToggles() {
+        function setBranchCollapsed(branch, collapsed) {
+            branch.classList.toggle('is-open', !collapsed);
+            var children = branch.querySelector(':scope > .sidebar-folder-branch-children');
+            if (children) children.hidden = collapsed;
+            var t = branch.querySelector(':scope > .sidebar-tree-row .sidebar-tree-toggle');
+            if (t) t.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+
+        document.querySelectorAll('.sidebar-section-divider').forEach(function (divider) {
+            var btn = divider.querySelector('.sidebar-section-toggle');
+            var content = document.getElementById(btn ? btn.getAttribute('aria-controls') : '');
+            if (!btn || !content) return;
+            var key = 'dj_sidebar_section_' + (divider.getAttribute('data-sidebar-section') || 'x');
+
+            function apply(collapsed) {
+                divider.classList.toggle('is-collapsed', collapsed);
+                btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+                content.querySelectorAll('.sidebar-folder-branch').forEach(function (b) {
+                    setBranchCollapsed(b, collapsed);
+                });
+            }
+
+            try {
+                if (localStorage.getItem(key) === 'collapsed') apply(true);
+            } catch (e) { /* storage blocked */ }
+
+            btn.addEventListener('click', function () {
+                var collapsed = !divider.classList.contains('is-collapsed');
+                apply(collapsed);
+                try { localStorage.setItem(key, collapsed ? 'collapsed' : 'open'); } catch (e) { /* storage blocked */ }
+            });
+        });
+    }
+
     // Drag the divider between the sidebar and main content to resize the sidebar;
     // the width persists (localStorage) and a double-click resets to default.
     function initSidebarResizer() {
@@ -9152,6 +9190,7 @@
         initRulesDragDrop();
         initThemeFromSettings();
         initSidebarGroups();
+        initSidebarSectionToggles();
         initAdminFolderTree();
         initFileUpload();
         initPerPageSelect();

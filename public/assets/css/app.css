@@ -3276,6 +3276,60 @@ mark.search-hit {
     padding: 0.15rem 0.25rem;
 }
 
+/* Collapsible section divider — a hairline rule with a toggle at its end. */
+.sidebar-section-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.55rem 0.45rem;
+    margin: 0.3rem 0 0.1rem;
+    user-select: none;
+}
+
+.sidebar-section-divider-line {
+    flex: 1 1 auto;
+    height: 1px;
+    background: var(--color-border);
+}
+
+.sidebar-section-toggle {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+    color: var(--color-text-muted, #64748b);
+    cursor: pointer;
+    transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.sidebar-section-toggle:hover,
+.sidebar-section-toggle:focus-visible {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+    border-color: var(--color-primary);
+    outline: none;
+}
+
+.sidebar-section-chevron {
+    display: block;
+    transition: transform 0.18s ease;
+}
+
+/* Collapsed: chevron flips up and the section is hidden. */
+.sidebar-section-divider.is-collapsed .sidebar-section-chevron {
+    transform: rotate(180deg);
+}
+
+.sidebar-section-content[hidden] {
+    display: none;
+}
+
 .sidebar-tree-row {
     display: flex;
     align-items: center;

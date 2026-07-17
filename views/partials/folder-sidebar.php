@@ -346,15 +346,29 @@ if ($grouped['other'] !== []) {
                     <?php $renderTreeRow($folder, $bucket, 0, null, false, false, null); ?>
                 <?php endforeach; ?>
             <?php endforeach; ?>
-            <?php foreach ($otherFolderTree as $node): ?>
-                <?php $renderSidebarFolderBranch($node, 0); ?>
-            <?php endforeach; ?>
-            <?php foreach ($displayForest as $node): ?>
-                <?php // Render grouped folders as navigable branches: the chevron
-                      // expands/collapses, clicking the folder name opens its messages. ?>
-                <?php $renderSidebarFolderBranch($node, 0); ?>
-            <?php endforeach; ?>
         </div>
+        <?php if ($otherFolderTree !== [] || $displayForest !== []): ?>
+            <div class="sidebar-section-divider" data-sidebar-section="folders">
+                <span class="sidebar-section-divider-line" aria-hidden="true"></span>
+                <button type="button" class="sidebar-section-toggle"
+                        aria-expanded="true"
+                        aria-controls="sidebar-folder-groups"
+                        aria-label="Collapse or expand all folders"
+                        title="Collapse / expand all">
+                    <svg class="sidebar-section-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+            </div>
+            <div class="sidebar-folder-tree sidebar-section-content" id="sidebar-folder-groups">
+                <?php foreach ($otherFolderTree as $node): ?>
+                    <?php $renderSidebarFolderBranch($node, 0); ?>
+                <?php endforeach; ?>
+                <?php foreach ($displayForest as $node): ?>
+                    <?php // Render grouped folders as navigable branches: the chevron
+                          // expands/collapses, clicking the folder name opens its messages. ?>
+                    <?php $renderSidebarFolderBranch($node, 0); ?>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </div>
 
     <?php if (($sessionUser['role'] ?? '') === 'admin'): ?>
