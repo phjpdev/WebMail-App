@@ -3281,13 +3281,16 @@ mark.search-hit {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.55rem 0.45rem;
-    margin: 0.3rem 0 0.1rem;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.15rem 0.55rem;
+    margin: 0.1rem 0;
     user-select: none;
 }
 
 .sidebar-section-divider-line {
-    flex: 1 1 auto;
+    flex: 1 1 0%;
+    min-width: 0;
     height: 1px;
     background: var(--color-border);
 }
