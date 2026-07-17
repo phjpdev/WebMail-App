@@ -11169,8 +11169,20 @@ function mail_thread_segment_is_user_sent(array $segment, string $folderPath): b
         return true;
     }
 
-    // In employee/inbox folders a matching From: on the open message is usually inbound.
-    return false;
+    // From matches the viewer but the message is addressed to someone ELSE (the
+    // viewer is not among the recipients) → the viewer sent it. This is the reply
+    // an employee sent, shown inside a conversation opened from their own inbox
+    // (e.g. Jean Billy's reply to Jean Patrick appears as the current message in
+    // Billy's folder — it's "You → Jean Patrick", not an inbound message).
+    $recipients = strtolower((string) ($segment['to'] ?? '') . ' , ' . (string) ($segment['cc'] ?? ''));
+    foreach (mail_user_emails() as $ownEmail) {
+        if ($ownEmail !== '' && str_contains($recipients, $ownEmail)) {
+            // Addressed to the viewer → treat as inbound.
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function mail_avatar_initials_from_header(?string $from): string
