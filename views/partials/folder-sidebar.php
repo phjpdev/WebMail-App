@@ -331,6 +331,29 @@ if ($grouped['other'] !== []) {
     $otherFolderTree = build_sidebar_other_folder_tree($otherFolders, 'path', $delimiter);
 }
 
+// Total unread across the BOTTOM folders only (the custom folders below the
+// section divider — Erik, Emp and its members — not Inbox/Sent/Drafts/etc.).
+$bottomUnread = 0;
+$bottomSeen = [];
+$sumBottomUnread = function (array $nodes) use (&$sumBottomUnread, &$bottomUnread, &$bottomSeen, $unreadCounts): void {
+    foreach ($nodes as $node) {
+        $p = (string) ($node['folder']['path'] ?? '');
+        if ($p !== '') {
+            $nav = sidebar_folder_nav_path($p);
+            $k = strtolower($nav);
+            if ($nav !== '' && !isset($bottomSeen[$k])) {
+                $bottomSeen[$k] = true;
+                if (folder_shows_unread_badge($nav)) {
+                    $bottomUnread += (int) ($unreadCounts[$nav] ?? $unreadCounts[$p] ?? 0);
+                }
+            }
+        }
+        $sumBottomUnread($node['children'] ?? []);
+    }
+};
+$sumBottomUnread($otherFolderTree);
+$sumBottomUnread($displayForest);
+
 ?>
 
 <nav class="sidebar-nav">
@@ -350,6 +373,7 @@ if ($grouped['other'] !== []) {
         <?php if ($otherFolderTree !== [] || $displayForest !== []): ?>
             <div class="sidebar-section-divider" data-sidebar-section="folders">
                 <span class="sidebar-section-divider-line" aria-hidden="true"></span>
+                <span class="sidebar-section-badge" id="sidebar-section-badge" aria-label="Total unread in folders"<?= $bottomUnread > 0 ? '' : ' hidden' ?>><?= $bottomUnread > 99 ? '99+' : (int) $bottomUnread ?></span>
                 <button type="button" class="sidebar-section-toggle"
                         aria-expanded="true"
                         aria-controls="sidebar-folder-groups"

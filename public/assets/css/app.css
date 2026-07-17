@@ -3295,6 +3295,24 @@ mark.search-hit {
     background: var(--color-border);
 }
 
+.sidebar-section-badge {
+    flex: 0 0 auto;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding: 0 0.35rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1.125rem;
+    text-align: center;
+    color: var(--color-primary);
+    background: var(--color-primary-light);
+    border-radius: 999px;
+}
+
+.sidebar-section-badge[hidden] {
+    display: none;
+}
+
 .sidebar-section-toggle {
     flex: 0 0 auto;
     display: inline-flex;

@@ -4734,6 +4734,8 @@
             }
         });
 
+        updateSidebarSectionBadge();
+
         // Heal the folder HEADER count from the same authoritative counts. The
         // sidebar badge self-corrects on every poll via this function; the header
         // count label used to move only by optimistic deltas, so any drift there
@@ -9054,6 +9056,25 @@
         window.setInterval(check, 30000);
     }
 
+    // Sum the unread badges of the bottom (custom) folders and show the total on
+    // the section divider — recomputed whenever folder badges change.
+    function updateSidebarSectionBadge() {
+        var content = document.getElementById('sidebar-folder-groups');
+        var badge = document.getElementById('sidebar-section-badge');
+        if (!content || !badge) return;
+        var total = 0;
+        content.querySelectorAll('.sidebar-link[data-folder-path] .folder-badge').forEach(function (b) {
+            var n = parseInt((b.textContent || '').replace(/[^0-9]/g, ''), 10);
+            if (n) total += n;
+        });
+        if (total > 0) {
+            badge.textContent = total > 99 ? '99+' : String(total);
+            badge.hidden = false;
+        } else {
+            badge.hidden = true;
+        }
+    }
+
     // Collapsible sidebar section divider: the toggle at the end of the rule
     // collapses/expands EVERY folder branch in the section (not hide it), and the
     // state persists across reloads.
@@ -9090,6 +9111,8 @@
                 try { localStorage.setItem(key, collapsed ? 'collapsed' : 'open'); } catch (e) { /* storage blocked */ }
             });
         });
+
+        updateSidebarSectionBadge();
     }
 
     // Drag the divider between the sidebar and main content to resize the sidebar;
