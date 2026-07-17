@@ -137,12 +137,23 @@ class AdminUserService
         $imapPath = 'INBOX.' . $safeFolder;
 
         $existingFolder = Database::fetchOne(
-            'SELECT id FROM folders WHERE linked_user_id = ? OR imap_path = ? LIMIT 1',
-            [$userId, $imapPath]
+            "SELECT id, imap_path FROM folders WHERE linked_user_id = ? AND folder_type = 'employee' ORDER BY id LIMIT 1",
+            [$userId]
+        ) ?? Database::fetchOne(
+            'SELECT id, imap_path FROM folders WHERE imap_path = ? LIMIT 1',
+            [$imapPath]
         );
 
         if ($existingFolder !== null) {
             $folderId = (int) $existingFolder['id'];
+            // Keep the employee's EXISTING mailbox path. Re-deriving it from the
+            // username/folder name (backfill passes folderName=null → username)
+            // would re-path the mailbox to a different root and orphan the current
+            // tree and any subfolders the admin created under it.
+            $existingRoot = employee_mailbox_root_prefix((string) ($existingFolder['imap_path'] ?? ''));
+            if ($existingRoot !== '') {
+                $imapPath = $existingRoot;
+            }
         } else {
             $folderId = $folderService->insertFolder([
                 'imap_path' => $imapPath,

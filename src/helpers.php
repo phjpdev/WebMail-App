@@ -834,25 +834,67 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
         }
     }
 
+    // Index custom folders by full IMAP path AND by mailbox-root key (the key the
+    // sidebar "Show under" grouping uses).
     $indexByOrig = [];
+    $indexByRootKey = [];
     foreach ($out as $i => $item) {
-        $indexByOrig[strtolower((string) $item['orig'])] = $i;
+        $orig = (string) $item['orig'];
+        $indexByOrig[strtolower($orig)] = $i;
+        $indexByRootKey[strtolower(employee_mailbox_root_prefix($orig))] = $i;
     }
+
+    // Sidebar "Show under" grouping (display_parent_id): nests a folder under its
+    // chosen group even when their IMAP paths are unrelated (e.g. TrustVerify under
+    // Business, Jean Patrick Reyes under Employees) — so the picker matches the
+    // sidebar. Keyed by mailbox root, same as the sidebar.
+    $displayParentKey = [];
+    try {
+        foreach (\App\Database::query(
+            "SELECT c.imap_path AS child_path, p.imap_path AS parent_path
+             FROM folders c JOIN folders p ON p.id = c.display_parent_id
+             WHERE c.active = 1 AND p.active = 1 AND c.display_parent_id IS NOT NULL"
+        )->fetchAll() as $row) {
+            $ck = strtolower(employee_mailbox_root_prefix((string) ($row['child_path'] ?? '')));
+            $pk = strtolower(employee_mailbox_root_prefix((string) ($row['parent_path'] ?? '')));
+            if ($ck !== '' && $pk !== '' && $ck !== $pk) {
+                $displayParentKey[$ck] = $pk;
+            }
+        }
+    } catch (\Throwable) {
+        // grouping is optional; fall back to plain IMAP nesting
+    }
+
     $childrenOf = [];
     $roots = [];
     foreach ($out as $i => $item) {
+        $orig = (string) $item['orig'];
         $parent = null;
-        $p = (string) $item['orig'];
-        while (($pos = strrpos($p, '.')) !== false) {
-            $p = substr($p, 0, $pos);
-            if (strcasecmp($p, 'INBOX') === 0) {
-                break;
-            }
-            if (isset($indexByOrig[strtolower($p)])) {
-                $parent = $indexByOrig[strtolower($p)];
-                break;
+
+        // 1) display_parent_id grouping wins when the chosen group is present.
+        $childKey = strtolower(employee_mailbox_root_prefix($orig));
+        if (isset($displayParentKey[$childKey], $indexByRootKey[$displayParentKey[$childKey]])) {
+            $cand = $indexByRootKey[$displayParentKey[$childKey]];
+            if ($cand !== $i) {
+                $parent = $cand;
             }
         }
+
+        // 2) otherwise the nearest ancestor by IMAP path.
+        if ($parent === null) {
+            $p = $orig;
+            while (($pos = strrpos($p, '.')) !== false) {
+                $p = substr($p, 0, $pos);
+                if (strcasecmp($p, 'INBOX') === 0) {
+                    break;
+                }
+                if (isset($indexByOrig[strtolower($p)])) {
+                    $parent = $indexByOrig[strtolower($p)];
+                    break;
+                }
+            }
+        }
+
         if ($parent === null) {
             $roots[] = $i;
         } else {
@@ -862,7 +904,11 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
     $byName = static fn (int $a, int $b): int => strcasecmp((string) ($out[$a]['name'] ?? ''), (string) ($out[$b]['name'] ?? ''));
     usort($roots, $byName);
 
-    $walk = function (int $i, int $depth) use (&$walk, &$result, $out, $childrenOf, $byName): void {
+    $walk = function (int $i, int $depth, array $seen = []) use (&$walk, &$result, $out, $childrenOf, $byName): void {
+        if (isset($seen[$i])) {
+            return; // guard against a display_parent cycle
+        }
+        $seen[$i] = true;
         $result[] = [
             'path' => $out[$i]['path'],
             'name' => $out[$i]['name'],
@@ -872,7 +918,7 @@ function mail_move_target_folders(array $folders, string $currentFolder): array
         $kids = $childrenOf[$i] ?? [];
         usort($kids, $byName);
         foreach ($kids as $k) {
-            $walk($k, $depth + 1);
+            $walk($k, $depth + 1, $seen);
         }
     };
     foreach ($roots as $r) {
