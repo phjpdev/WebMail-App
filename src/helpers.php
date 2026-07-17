@@ -10769,8 +10769,14 @@ function mail_build_conversation_thread(
     ?string $folderPath = null,
     ?int $uid = null,
 ): array {
+    // A forward (Fwd:/Fw:) is a NEW, standalone message — its history is already
+    // embedded in its own body. Don't reconstruct the original conversation for it
+    // (that would pull in earlier same-subject messages the recipient was never on).
+    $isForward = (bool) preg_match('/^\s*fwd?:/i', (string) ($message['subject'] ?? ''));
+
     if (
-        $folderPath !== null
+        !$isForward
+        && $folderPath !== null
         && $folderPath !== ''
         && $uid !== null
         && $uid > 0
@@ -10800,7 +10806,10 @@ function mail_build_conversation_thread(
         $plain = mail_plain_from_html($sanitizedHtml);
     }
 
-    $segments = mail_split_conversation_plain($plain);
+    // A forward stays a SINGLE card — its embedded/quoted history (the forwarded
+    // message and anything it quoted) shows inline/collapsible, never split into
+    // separate thread cards that look like messages the recipient was part of.
+    $segments = $isForward ? [] : mail_split_conversation_plain($plain);
     if ($segments === []) {
         $segments[] = [
             'from' => '',
@@ -10857,7 +10866,7 @@ function mail_build_conversation_thread(
     }
     unset($segment);
 
-    if ($folderPath !== null && $folderPath !== '' && $uid !== null && $uid > 0) {
+    if (!$isForward && $folderPath !== null && $folderPath !== '' && $uid !== null && $uid > 0) {
         $extraReplies = mail_pending_thread_replies($folderPath, $uid);
         if ($isThreadedReply && $hasQuotedHistory) {
             mail_clear_thread_reply_cache($folderPath, $uid);
