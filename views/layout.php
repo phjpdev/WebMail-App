@@ -37,6 +37,7 @@
       data-csrf="<?= e(csrf_token()) ?>"
       data-base-url="<?= e(url('')) ?>"
       data-idle-timeout="<?= (int) config('app')['session_lifetime'] ?>"
+      data-live-sync-interval="<?= (int) config('app')['live_sync_interval'] ?>"
       data-session-id="<?= e(substr(hash('sha256', 'idle:' . session_id()), 0, 16)) ?>">
     <?php $sessionUser = $sessionUser ?? $authUser ?? null; ?>
 
@@ -159,6 +160,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=254" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=255" defer></script>
 </body>
 </html>

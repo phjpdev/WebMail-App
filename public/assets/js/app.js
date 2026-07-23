@@ -8854,8 +8854,10 @@
         // so we just apply them (which bumps the badge and fires the new-mail
         // sound/desktop notification on any increase). A light cache-only poll then
         // lets a new row show in the currently-open folder. This replaced the old
-        // 3-request/30s version that overloaded the shared host.
-        var intervalMs = 120000;
+        // 3-request/30s version that overloaded the shared host. The interval is
+        // configurable per-server via LIVE_SYNC_INTERVAL (.env) — default 60s.
+        var cfgSecs = parseInt(document.body.getAttribute('data-live-sync-interval'), 10);
+        var intervalMs = (cfgSecs && cfgSecs >= 15 ? cfgSecs : 60) * 1000;
         window.setInterval(function () {
             if (isPostSendQuiet()) return;
             fetch(apiUrl('mail/live-sync'), {

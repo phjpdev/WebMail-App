@@ -20,10 +20,15 @@ return [
     'filter_batch_limit' => (int) env('FILTER_BATCH_LIMIT', 500),
     'filter_source_folder' => env('FILTER_SOURCE_FOLDER', 'INBOX'),
     // Minimum seconds between automatic filter passes (shared across all users).
-    'filter_min_interval' => (int) env('FILTER_MIN_INTERVAL', 60),
+    // Lower = mail routed into folders faster. 30s suits a dedicated server; raise
+    // it (e.g. 60) on a constrained shared host.
+    'filter_min_interval' => (int) env('FILTER_MIN_INTERVAL', 30),
     // Max seconds of filtering during a normal web page request.
     'filter_max_runtime' => (int) env('FILTER_MAX_RUNTIME', 20),
     'mail_poll_interval' => (int) env('MAIL_POLL_INTERVAL', 30),
+    // Seconds between the gentle background new-mail check (live-sync). 60s suits a
+    // dedicated server; a constrained shared host may want 120. Floored at 15s.
+    'live_sync_interval' => max(15, (int) env('LIVE_SYNC_INTERVAL', 60)),
     'mail_per_page' => (int) env('MAIL_PER_PAGE', 15),
     // Local MySQL cache (no cron — synced on login, folder open, poll).
     'mail_cache_header_limit' => (int) env('MAIL_CACHE_HEADER_LIMIT', 200),
