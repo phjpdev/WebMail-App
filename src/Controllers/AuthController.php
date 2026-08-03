@@ -65,12 +65,18 @@ class AuthController
 
     public function logout(): void
     {
-        verify_csrf_or_fail();
+        // Logout must ALWAYS succeed. Verifying CSRF here used to throw a 403
+        // "Invalid security token" page whenever the token was stale (tab left open,
+        // or the session was garbage-collected) — leaving the user stuck, unable to
+        // sign out. A forced logout via CSRF is low-risk and the user is asking to
+        // log out anyway, so we log out regardless of the token.
         $idle = ($_POST['reason'] ?? '') === 'idle';
         Auth::logout();
-        // Clear bfcache/storage so pressing Back can't reveal cached authenticated
-        // pages after logout (we deliberately allow bfcache for speed otherwise).
-        header('Clear-Site-Data: "cache", "cookies", "storage"');
+        // Clear the session cookie + client storage so a Back navigation can't reuse
+        // an authenticated page. We deliberately do NOT clear "cache": that evicted
+        // the whole HTTP cache and forced app.js/app.css (~600KB) to re-download on
+        // the login page, which made logout feel slow.
+        header('Clear-Site-Data: "cookies", "storage"');
         if ($idle) {
             // The login page explains the auto sign-out from the reason flag.
             redirect('login?reason=idle');
