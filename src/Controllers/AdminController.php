@@ -288,8 +288,9 @@ class AdminController
         requireAdmin();
         verify_csrf_or_fail();
         $id = (int) ($params['id'] ?? 0);
-        if (!$this->users->disable($id)) {
-            flash('error', 'Admin accounts cannot be disabled.');
+        $actingId = (int) (Auth::user()['id'] ?? 0);
+        if (!$this->users->disable($id, $actingId)) {
+            flash('error', 'This user cannot be disabled (your own account, or the last active admin).');
             redirect('admin/users');
         }
         $this->audit('user_disable', 'Disabled user #' . $id);
@@ -308,7 +309,7 @@ class AdminController
         $actingId = (int) (Auth::user()['id'] ?? 0);
 
         if (!$this->users->delete($id, $actingId)) {
-            flash('error', 'This user cannot be deleted (admin account or your own account).');
+            flash('error', 'This user cannot be deleted (your own account, or the last active admin).');
             redirect('admin/users');
         }
 

@@ -18,7 +18,21 @@
                 <tr><th>Name</th><th>Username</th><th>Email</th><th>Folder</th><th>Role</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
+                <?php
+                $actingId = (int) (\App\Auth::user()['id'] ?? 0);
+                $activeAdmins = 0;
+                foreach ($users as $uu) {
+                    if (($uu['role'] ?? '') === 'admin' && (int) ($uu['active'] ?? 0)) {
+                        $activeAdmins++;
+                    }
+                }
+                ?>
                 <?php foreach ($users as $u): ?>
+                <?php
+                $isSelf = (int) $u['id'] === $actingId;
+                $isLastActiveAdmin = ($u['role'] === 'admin') && (int) ($u['active'] ?? 0) && $activeAdmins <= 1;
+                $canRemove = !$isSelf && !$isLastActiveAdmin;
+                ?>
                 <tr>
                     <td><?= e($u['name']) ?></td>
                     <td><?= e($u['username']) ?></td>
@@ -28,7 +42,7 @@
                     <td><span class="badge badge-<?= (int) $u['active'] ? 'active' : 'inactive' ?>"><?= (int) $u['active'] ? 'Active' : 'Disabled' ?></span></td>
                     <td class="admin-actions">
                         <a class="admin-action-link" href="<?= e(url('admin/users/' . $u['id'] . '/edit')) ?>">Edit</a>
-                        <?php if ((int) $u['active'] && $u['role'] !== 'admin'): ?>
+                        <?php if ((int) $u['active'] && $canRemove): ?>
                             <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/disable')) ?>" class="admin-action-form"
                                   data-confirm-title="Disable user?"
                                   data-confirm-message="This user will no longer be able to sign in."
@@ -38,7 +52,7 @@
                                 <button type="submit" class="admin-action-link admin-action-link-danger">Disable</button>
                             </form>
                         <?php endif; ?>
-                        <?php if ($u['role'] !== 'admin'): ?>
+                        <?php if ($canRemove): ?>
                             <form method="post" action="<?= e(url('admin/users/' . $u['id'] . '/delete')) ?>" class="admin-action-form"
                                   data-confirm-title="Delete user?"
                                   data-confirm-message="Permanently delete this user, their personal IMAP folder, alias, and routing rules. This cannot be undone."

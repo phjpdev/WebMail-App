@@ -518,14 +518,20 @@ class AdminUserService
         });
     }
 
-    public function disable(int $id): bool
+    public function disable(int $id, int $actingUserId = 0): bool
     {
         $user = $this->find($id);
-        if ($user === null || $user['role'] === 'admin') {
+        if ($user === null) {
+            return false;
+        }
+        if ($actingUserId > 0 && $id === $actingUserId) {
+            return false;
+        }
+        if (($user['role'] ?? '') === 'admin' && !$this->hasOtherActiveAdmin($id)) {
             return false;
         }
 
-        Database::query('UPDATE users SET active = 0 WHERE id = ? AND role != \'admin\'', [$id]);
+        Database::query('UPDATE users SET active = 0 WHERE id = ?', [$id]);
         Database::query(
             'UPDATE filter_rules r
              INNER JOIN aliases a ON r.condition_value = a.email
@@ -569,13 +575,29 @@ class AdminUserService
      * Permanently remove an employee account and clean up their alias, rules, and folders.
      * Admins and the currently logged-in user cannot be deleted.
      */
+    /** True when another ACTIVE admin exists besides $excludeId (lockout guard). */
+    private function hasOtherActiveAdmin(int $excludeId): bool
+    {
+        $row = Database::fetchOne(
+            "SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND active = 1 AND id != ?",
+            [$excludeId]
+        );
+
+        return (int) ($row['c'] ?? 0) > 0;
+    }
+
     public function delete(int $id, int $actingUserId = 0): bool
     {
         $user = $this->find($id);
-        if ($user === null || $user['role'] === 'admin') {
+        if ($user === null) {
             return false;
         }
+        // Never delete your own account.
         if ($actingUserId > 0 && $id === $actingUserId) {
+            return false;
+        }
+        // Admins CAN be deleted, but never the last active admin (lockout guard).
+        if (($user['role'] ?? '') === 'admin' && !$this->hasOtherActiveAdmin($id)) {
             return false;
         }
 
@@ -600,7 +622,7 @@ class AdminUserService
             MailCacheService::purgeMessagesForUser($id, $emails, $mailboxRoots);
             $folderService->purgeUserMailboxTree($id);
 
-            Database::query('DELETE FROM users WHERE id = ? AND role != \'admin\'', [$id]);
+            Database::query('DELETE FROM users WHERE id = ?', [$id]);
         });
 
         (new FolderCache())->clear();
