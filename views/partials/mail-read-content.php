@@ -26,7 +26,7 @@ $messageAttachments = $message['attachments'] ?? [];
 ?>
 
 <div class="mail-actions no-print" role="toolbar" aria-label="Message actions">
-    <a class="mail-action-btn mail-action-btn--primary compose-panel-link" id="reply-btn" href="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>" data-compose-title="Reply" title="Reply" aria-label="Reply">
+    <a class="mail-action-btn compose-panel-link" id="reply-btn" href="<?= e(url('compose/reply?folder=' . encode_folder_path($folderPath) . '&uid=' . $uid)) ?>" data-compose-title="Reply" title="Reply" aria-label="Reply">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 10h10a4 4 0 0 1 4 4v1"/><path d="M3 10l5-5M3 10l5 5"/></svg>
         <span class="mail-action-label">Reply</span>
     </a>
