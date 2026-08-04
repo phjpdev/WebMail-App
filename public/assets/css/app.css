@@ -2415,6 +2415,30 @@ mark.search-hit {
     color: var(--color-text-secondary);
 }
 
+/* Dark theme: keep the dark background, but force email/reply body text to a
+   light color. Reply bodies (and many emails) carry inline black text authored
+   for a white background, which is unreadable on dark — override it. Inline
+   backgrounds are cleared to transparent so an email that sets a white/light
+   background can't hide the now-light text. Links keep a readable blue. The
+   quoted/history box keeps its own muted styling (handled last). */
+[data-theme="dark"] .mail-body-html,
+[data-theme="dark"] .mail-body-html *,
+[data-theme="dark"] .mail-body-plain,
+[data-theme="dark"] .mail-body-plain * {
+    color: #e8eaed !important;
+    background-color: transparent !important;
+}
+
+[data-theme="dark"] .mail-body-html a,
+[data-theme="dark"] .mail-body-html a * {
+    color: #8ab4f8 !important;
+}
+
+[data-theme="dark"] .mail-body-html--quoted,
+[data-theme="dark"] .mail-body-html--quoted * {
+    color: #9aa0a6 !important;
+}
+
 /* Forms */
 .table-wrap {
     overflow-x: auto;
