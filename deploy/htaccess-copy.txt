@@ -1,0 +1,34 @@
+############################################################################
+#  This is the app's ".htaccess" file, saved with a normal name so it does
+#  not get skipped when copying (real ".htaccess" is a HIDDEN dotfile that
+#  Windows Explorer / FTP tools often drop silently).
+#
+#  HOW TO USE:
+#    1. Save/rename this file to exactly:   .htaccess   (a leading dot, no .txt)
+#    2. Put it in the app's ROOT folder — the SAME folder as index.php
+#       e.g.  C:\wamp64\www\dj_email\.htaccess
+#    3. Make sure Apache reads it: mod_rewrite ON + AllowOverride All, restart.
+#
+#  (Everything below this line is the actual file content — copy it exactly.)
+############################################################################
+# Deny access to dotfiles and environment/config files (.env, .git, etc.)
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+<FilesMatch "(?i)(^\.env|\.env\..*|\.git.*|composer\.(json|lock)|.*\.(ini|log|sql))$">
+    Require all denied
+</FilesMatch>
+
+# Block direct access to the application source, config and storage directories.
+RedirectMatch 404 (?i)/(src|config|storage|vendor|views)(/|$)
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Serve static files from public/
+    RewriteRule ^assets/(.*)$ public/assets/$1 [L]
+
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [L]
+</IfModule>
