@@ -1061,12 +1061,50 @@ function sidebar_folder_matches_active(?string $activeFolder, string $linkPath):
  */
 function sidebar_folder_nav_path(string $folderPath): string
 {
-    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
-    if ($folderPath === '') {
-        return '';
+    // Memoized: called 3-5× per sidebar node; at ~1000 folders the repeated
+    // resolvePath/messages-path chain was a measurable share of the render.
+    static $memo = [];
+    if (isset($memo[$folderPath])) {
+        return $memo[$folderPath];
     }
 
-    return \App\Services\FolderCache::resolvePath(employee_messages_imap_path($folderPath));
+    $resolved = \App\Services\FolderCache::resolvePath($folderPath);
+    if ($resolved === '') {
+        return $memo[$folderPath] = '';
+    }
+
+    return $memo[$folderPath] = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($resolved));
+}
+
+/**
+ * Lowercase key set of the active folder's identities, for O(1) sidebar
+ * active-matching against NAV paths (sidebar_folder_nav_path output).
+ * Equivalent to sidebar_folder_matches_active($active, $nav) for nav-path
+ * inputs: nav paths are already messages-resolved, so the "link's messages
+ * path equals active" rule degenerates to plain equality and the set only
+ * needs the active path itself plus its messages variant.
+ *
+ * @return array<string, true>
+ */
+function sidebar_active_match_keys(?string $activeFolder): array
+{
+    $keys = [];
+    if ($activeFolder === null || $activeFolder === '' || str_starts_with($activeFolder, '__')) {
+        return $keys;
+    }
+
+    $active = \App\Services\FolderCache::resolvePath($activeFolder);
+    if ($active === '') {
+        return $keys;
+    }
+
+    $keys[strtolower($active)] = true;
+    $activeMessages = \App\Services\FolderCache::resolvePath(employee_messages_imap_path($active));
+    if ($activeMessages !== '') {
+        $keys[strtolower($activeMessages)] = true;
+    }
+
+    return $keys;
 }
 
 /**
@@ -5738,6 +5776,15 @@ function folder_for_alias_email(string $email): ?string
         return null;
     }
 
+    // Per-request memo (incl. nulls) — called per folder in the badge loops.
+    // Alias CRUD lives in admin requests that redirect (PRG), so a request-local
+    // memo can never serve stale data to the mutating flow.
+    static $memo = [];
+    $key = strtolower($email);
+    if (array_key_exists($key, $memo)) {
+        return $memo[$key];
+    }
+
     try {
         $row = App\Database::fetchOne(
             'SELECT f.imap_path
@@ -5748,9 +5795,9 @@ function folder_for_alias_email(string $email): ?string
             [$email]
         );
 
-        return !empty($row['imap_path']) ? (string) $row['imap_path'] : null;
+        return $memo[$key] = (!empty($row['imap_path']) ? (string) $row['imap_path'] : null);
     } catch (\Throwable $e) {
-        return null;
+        return $memo[$key] = null;
     }
 }
 
@@ -5761,6 +5808,14 @@ function alias_email_for_folder(string $folderPath): ?string
 {
     if ($folderPath === '') {
         return null;
+    }
+
+    // Per-request memo (incl. nulls) — called per folder in the badge loops.
+    // Alias CRUD is PRG-redirected admin flow, so request-local memo is safe.
+    static $memo = [];
+    $memoKey = strtolower(\App\Services\FolderCache::resolvePath($folderPath));
+    if (array_key_exists($memoKey, $memo)) {
+        return $memo[$memoKey];
     }
 
     $candidates = [\App\Services\FolderCache::resolvePath($folderPath)];
@@ -5782,14 +5837,14 @@ function alias_email_for_folder(string $folderPath): ?string
             );
 
             if (!empty($row['email'])) {
-                return (string) $row['email'];
+                return $memo[$memoKey] = (string) $row['email'];
             }
         }
     } catch (\Throwable $e) {
-        return null;
+        return $memo[$memoKey] = null;
     }
 
-    return null;
+    return $memo[$memoKey] = null;
 }
 
 /**
@@ -7487,39 +7542,10 @@ function sidebar_mailbox_root_key(string $path): string
  */
 function folder_badge_uses_index_truth(string $folderPath): bool
 {
-    $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
-    if ($folderPath === '') {
-        return false;
-    }
-
-    if (employee_correspondent_privacy_emails($folderPath) !== null) {
-        return true;
-    }
-
-    if (\App\Services\MailCacheService::isSharedEmployeeMailbox($folderPath)) {
-        return true;
-    }
-
-    if (\App\Services\MailCacheService::usesPerUserRead($folderPath)) {
-        return true;
-    }
-
-    // Plain per-folder model: any badge-showing folder that is already indexed uses
-    // its mail_index count (seen=0) as the badge truth — so Inbox, Junk, Archive, …
-    // update like the shared/employee folders instead of being stuck on a stale
-    // session 0 (their badge was never reconciled, so the light poll wiped it). Before
-    // a folder is indexed we still fall back to the IMAP/session count, so a freshly
-    // logged-in, not-yet-synced folder is not shown as 0.
-    if (
-        folder_shows_unread_badge($folderPath)
-        && \App\Services\MailCacheService::hasFolderData(
-            \App\Services\MailCacheService::indexFolderPath($folderPath)
-        )
-    ) {
-        return true;
-    }
-
-    return false;
+    // Delegates to a per-request memoized implementation — this is called
+    // several times per folder in the sidebar/badge loops, and at ~1000
+    // registered folders the un-memoized chain was ~1s of CPU per request.
+    return \App\Services\MailCacheService::badgeUsesIndexTruth($folderPath);
 }
 
 /**

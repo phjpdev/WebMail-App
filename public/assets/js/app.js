@@ -146,6 +146,11 @@
     var RECENTLY_READ_MS = 300000;
     var PANE_CACHE_MAX = 24;
     var PANE_NAV_DEBOUNCE_MS = 0;
+    // Folder-fragment SWR cache: revisiting a folder paints the last server
+    // HTML instantly, then an immediate forced poll reconciles rows/badges.
+    var folderFragmentCache = {};
+    var FOLDER_FRAG_CACHE_MAX = 12;
+    var FOLDER_FRAG_TTL_MS = 10 * 60 * 1000;
 
     function useReadingPane() {
         return PANE_MEDIA.matches && !!document.getElementById('reading-pane');
@@ -159,6 +164,60 @@
         var until = Date.now() + PENDING_REMOVAL_MS;
         (uids || []).forEach(function (uid) {
             if (uid) pendingRemovalUntil[String(uid)] = until;
+        });
+        // Rows are being removed — every cached folder snapshot may now contain
+        // them. Drop the whole fragment cache (single choke point for
+        // delete/move/spam/restore, single and bulk).
+        clearFolderFragmentCache();
+    }
+
+    function clearFolderFragmentCache() {
+        folderFragmentCache = {};
+    }
+
+    function rememberFolderFragment(folderB64, data) {
+        if (!folderB64 || !data || !data.ok || !data.html) return;
+        // Never cache transitional or degraded variants: the awaiting-sync
+        // "Loading…" state, the IMAP-failure card (no .mail-list-card → would
+        // silently kill polling on restore), or anything during post-send flux.
+        if (data.list_loading) return;
+        if (data.html.indexOf('mail-list-card') === -1) return;
+        if (pendingPostSendPreviewData || isPostSendQuiet()) return;
+
+        folderFragmentCache[folderB64] = {
+            html: data.html,
+            folder_path: data.folder_path,
+            folder_b64: data.folder_b64,
+            title: data.title,
+            url: data.url,
+            ok: true,
+            at: Date.now()
+        };
+
+        var keys = Object.keys(folderFragmentCache);
+        if (keys.length > FOLDER_FRAG_CACHE_MAX) {
+            keys.sort(function (a, b) { return folderFragmentCache[a].at - folderFragmentCache[b].at; });
+            for (var i = 0; i < keys.length - FOLDER_FRAG_CACHE_MAX; i++) {
+                delete folderFragmentCache[keys[i]];
+            }
+        }
+    }
+
+    function getFolderFragmentCached(folderB64) {
+        var entry = folderFragmentCache[folderB64];
+        if (!entry) return null;
+        if (Date.now() - entry.at > FOLDER_FRAG_TTL_MS) {
+            delete folderFragmentCache[folderB64];
+            return null;
+        }
+        return entry;
+    }
+
+    // Cached HTML may predate a delete/move — never resurrect those rows,
+    // not even for one frame.
+    function sweepPendingRemovalRows() {
+        document.querySelectorAll('#mail-list-body [data-uid], #mail-list-mobile [data-uid]').forEach(function (row) {
+            if (isUidPendingRemoval(row.getAttribute('data-uid'))) row.remove();
         });
     }
 
@@ -1300,6 +1359,75 @@
         }
     }
 
+    // Shared tail of a folder switch: swap the list column HTML in and rewire
+    // everything. Used by both the live fetch and the instant cached paint
+    // (fromCache=true adds revalidation + safety sweeps).
+    function applyFolderFragment(data, seq, folderB64, pushHistory, fromCache) {
+        if (seq !== folderLoadSeq) return;
+
+        var workspace = document.getElementById('mail-workspace');
+        var pane = document.getElementById('reading-pane');
+        if (!workspace || !pane) return;
+
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = data.html;
+        var newColumn = wrapper.firstElementChild;
+        var oldColumn = workspace.querySelector('.mail-list-column');
+        if (oldColumn && newColumn) {
+            workspace.replaceChild(newColumn, oldColumn);
+        }
+
+        if (data.folder_path) updateSidebarActive(data.folder_path, data.folder_b64);
+        // Cached snapshots deliberately don't re-apply unread_counts — the
+        // current (live) badges are fresher than the snapshot's.
+        if (!fromCache && data.unread_counts) applyUnreadCounts(data.unread_counts);
+        if (data.title) {
+            var parts = document.title.split(' — ');
+            document.title = data.title + (parts.length > 1 ? ' — ' + parts.slice(1).join(' — ') : '');
+        }
+        if (pushHistory && data.url && window.history && window.history.pushState) {
+            window.history.pushState({ folderB64: folderB64 }, '', data.url);
+        }
+
+        if (fromCache) {
+            // Force the immediate revalidation poll below (needsForceSync path).
+            var cachedCard = getListCard();
+            if (cachedCard) cachedCard.setAttribute('data-cache-stale', '1');
+        }
+
+        reinitMailListColumn();
+        removeStaleOptimisticRows();
+        if (fromCache) sweepPendingRemovalRows();
+        if (pendingPostSendPreviewData) {
+            var previewPayload = pendingPostSendPreviewData;
+            pendingPostSendPreviewData = null;
+            injectPostSendListPreview(previewPayload);
+        }
+        if (visibleMailRowCount() > 0) {
+            setMailListLoading(false);
+            ensureListVisible(getListCard());
+        } else if (!data.list_loading) {
+            setMailListLoading(false);
+            syncListEmptyState();
+        }
+        if (data.list_loading) {
+            armMailListLoadingGuard();
+            var syncCard = getListCard();
+            if (syncCard) syncCard.classList.add('is-syncing');
+            window.setTimeout(function () { scheduleMailPoll(true, false); }, 800);
+            startPostSendReconcile([folderB64]);
+        } else {
+            var loadedCard = getListCard();
+            var needsForceSync = loadedCard
+                && (loadedCard.getAttribute('data-cache-stale') === '1'
+                    || postSendRefreshFolders.indexOf(folderB64) >= 0);
+            window.setTimeout(function () {
+                scheduleMailPoll(needsForceSync, false);
+            }, needsForceSync ? 0 : 250);
+        }
+        announceLive('Folder loaded: ' + (data.title || 'Mail'));
+    }
+
     function loadFolderAjax(folderB64, pushHistory, forceRefresh) {
         if (!folderB64 || !document.getElementById('mail-workspace')) return;
 
@@ -1318,6 +1446,21 @@
         closeComposePanel(false);
         mailSyncPaused = true;
         listMutationQuietUntil = 0;
+
+        // Cache-first paint: a previously seen folder renders instantly from
+        // the last server HTML; the forced poll (via data-cache-stale) then
+        // reconciles rows, badges and counts in the background. Skipped during
+        // post-send flux, when a refresh was explicitly requested, and for
+        // folders queued for a post-send refresh.
+        var cachedFragment = forceRefresh ? null : getFolderFragmentCached(folderB64);
+        if (cachedFragment
+            && !pendingPostSendPreviewData
+            && !isPostSendQuiet()
+            && postSendRefreshFolders.indexOf(folderB64) < 0) {
+            applyFolderFragment(cachedFragment, seq, folderB64, pushHistory, true);
+            mailSyncPaused = false;
+            return;
+        }
 
         var column = document.querySelector('.mail-list-column');
         if (column) column.classList.add('is-loading');
@@ -1354,59 +1497,8 @@
         }).then(function (data) {
             if (seq !== folderLoadSeq) return;
             if (!data || !data.ok || !data.html) throw new Error('Could not load folder.');
-
-            var workspace = document.getElementById('mail-workspace');
-            var pane = document.getElementById('reading-pane');
-            if (!workspace || !pane) return;
-
-            var wrapper = document.createElement('div');
-            wrapper.innerHTML = data.html;
-            var newColumn = wrapper.firstElementChild;
-            var oldColumn = workspace.querySelector('.mail-list-column');
-            if (oldColumn && newColumn) {
-                workspace.replaceChild(newColumn, oldColumn);
-            }
-
-            if (data.folder_path) updateSidebarActive(data.folder_path, data.folder_b64);
-            if (data.unread_counts) applyUnreadCounts(data.unread_counts);
-            if (data.title) {
-                var parts = document.title.split(' — ');
-                document.title = data.title + (parts.length > 1 ? ' — ' + parts.slice(1).join(' — ') : '');
-            }
-            if (pushHistory && data.url && window.history && window.history.pushState) {
-                window.history.pushState({ folderB64: folderB64 }, '', data.url);
-            }
-
-            reinitMailListColumn();
-            removeStaleOptimisticRows();
-            if (pendingPostSendPreviewData) {
-                var previewPayload = pendingPostSendPreviewData;
-                pendingPostSendPreviewData = null;
-                injectPostSendListPreview(previewPayload);
-            }
-            if (visibleMailRowCount() > 0) {
-                setMailListLoading(false);
-                ensureListVisible(getListCard());
-            } else if (!data.list_loading) {
-                setMailListLoading(false);
-                syncListEmptyState();
-            }
-            if (data.list_loading) {
-                armMailListLoadingGuard();
-                var syncCard = getListCard();
-                if (syncCard) syncCard.classList.add('is-syncing');
-                window.setTimeout(function () { scheduleMailPoll(true, false); }, 800);
-                startPostSendReconcile([folderB64]);
-            } else {
-                var loadedCard = getListCard();
-                var needsForceSync = loadedCard
-                    && (loadedCard.getAttribute('data-cache-stale') === '1'
-                        || postSendRefreshFolders.indexOf(folderB64) >= 0);
-                window.setTimeout(function () {
-                    scheduleMailPoll(needsForceSync, false);
-                }, needsForceSync ? 0 : 250);
-            }
-            announceLive('Folder loaded: ' + (data.title || 'Mail'));
+            rememberFolderFragment(folderB64, data);
+            applyFolderFragment(data, seq, folderB64, pushHistory, false);
         }).catch(function (err) {
             if (seq !== folderLoadSeq) return;
             if (err && err.name === 'AbortError') return;

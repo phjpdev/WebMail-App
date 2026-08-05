@@ -31,14 +31,19 @@ if ($composeActive !== '' && !str_starts_with($composeActive, '__')) {
 
 $employeeRoots = sidebar_employee_root_path_set();
 
+// O(1) active-folder matching: the active folder's identity keys, computed
+// once. At ~1000 folders the per-node sidebar_folder_matches_active chain
+// (several resolvePath calls each) was a large share of the sidebar render.
+$activeMatchKeys = sidebar_active_match_keys($activeFolder ?? '');
+
 $renderTreeLink = static function (
     array $folder,
     string $bucket,
     ?string $leafLabel = null
-) use ($activeFolder, $unreadCounts, $employeeRoots): void {
+) use ($activeMatchKeys, $unreadCounts, $employeeRoots): void {
     $displayName = $leafLabel ?? sidebar_folder_label($folder, $bucket);
     $navPath = sidebar_folder_nav_path($folder['path']);
-    $isActive = sidebar_folder_matches_active($activeFolder ?? '', $navPath);
+    $isActive = isset($activeMatchKeys[strtolower($navPath)]);
     $icon = folder_icon_type($folder['path']);
     $isEmployee = isset($employeeRoots[strtolower((string) ($folder['path'] ?? ''))]);
     $unread = folder_shows_unread_badge($navPath)
@@ -93,10 +98,31 @@ $renderTreeRow = static function (
     <?php
 };
 
+// One post-order pass marking every node whose CHILD subtree contains the
+// active folder ('_childActive') — replaces the per-branch recursive subtree
+// scan (sidebar_folder_branch_should_open), which was O(N²) at ~1000 folders.
+// Works for both the IMAP-prefix tree and the display forest (whose children
+// are NOT path-prefixed, so a prefix test would be wrong).
+$annotateActiveBranches = static function (array $node) use (&$annotateActiveBranches, $activeMatchKeys): array {
+    $childActive = false;
+    $children = [];
+    foreach ($node['children'] ?? [] as $child) {
+        $child = $annotateActiveBranches($child);
+        $nav = sidebar_folder_nav_path((string) ($child['folder']['path'] ?? ''));
+        if (($nav !== '' && isset($activeMatchKeys[strtolower($nav)])) || $child['_childActive']) {
+            $childActive = true;
+        }
+        $children[] = $child;
+    }
+    $node['children'] = $children;
+    $node['_childActive'] = $childActive;
+
+    return $node;
+};
+
 $renderSidebarFolderBranch = static function (array $node, int $depth = 0) use (
     &$renderSidebarFolderBranch,
-    $renderTreeRow,
-    $activeFolder
+    $renderTreeRow
 ): void {
     $folder = $node['folder'];
     $children = $node['children'] ?? [];
@@ -104,7 +130,7 @@ $renderSidebarFolderBranch = static function (array $node, int $depth = 0) use (
     $navPath = sidebar_folder_nav_path($folder['path']);
     $displayName = sidebar_folder_tree_label($folder);
     $branchKey = strtolower($navPath);
-    $branchOpen = $hasChildren && sidebar_folder_branch_should_open($children, $activeFolder ?? '');
+    $branchOpen = $hasChildren && !empty($node['_childActive']);
 
     if ($hasChildren) {
         $renderTreeRow($folder, 'other', $depth, $displayName, true, $branchOpen, $branchKey);
@@ -332,6 +358,10 @@ if ($grouped['other'] !== []) {
     $delimiter = $otherFolders[0]['delimiter'] ?? '.';
     $otherFolderTree = build_sidebar_other_folder_tree($otherFolders, 'path', $delimiter);
 }
+
+// Mark active-containing branches once (O(N)) for the branch-open state.
+$otherFolderTree = array_map($annotateActiveBranches, $otherFolderTree);
+$displayForest = array_map($annotateActiveBranches, $displayForest);
 
 // Total unread across the BOTTOM folders only (the custom folders below the
 // section divider — Erik, Emp and its members — not Inbox/Sent/Drafts/etc.).

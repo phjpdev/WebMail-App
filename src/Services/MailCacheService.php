@@ -24,6 +24,12 @@ class MailCacheService
     /** @var array<string, true>|null uppercase synced folder paths (see syncedFolderPathSet) */
     private static ?array $syncedPathSet = null;
 
+    /** @var array<string, int>|null lowercase folder_path => unseen count (see unseenCountMap) */
+    private static ?array $unseenCountMap = null;
+
+    /** @var array<string, bool> memo for badgeUsesIndexTruth, keyed by lowercase resolved path */
+    private static array $badgeTruthMemo = [];
+
     /**
      * Forget the per-request registry/index maps (after registry mutations).
      */
@@ -32,6 +38,12 @@ class MailCacheService
         self::$registryMaps = null;
         self::$indexPathMap = null;
         self::$syncedPathSet = null;
+        self::$unseenCountMap = null;
+        self::$badgeTruthMemo = [];
+        // These derive from the registry / index paths too — a registry
+        // mutation must not leave them serving pre-mutation resolutions.
+        self::$indexFolderPathCache = [];
+        self::$linkedUserCache = [];
     }
 
     /**
@@ -42,6 +54,50 @@ class MailCacheService
     {
         self::$syncedPathSet = null;
         self::$indexPathMap = null;
+        self::$unseenCountMap = null;
+        // badgeUsesIndexTruth's hasFolderData clause flips when a folder gets
+        // synced mid-request; indexFolderPath fallbacks may become resolvable.
+        self::$badgeTruthMemo = [];
+        self::$indexFolderPathCache = [];
+    }
+
+    /**
+     * Forget the unseen-count map after any mail_index write, so badges
+     * recomputed later in the same request see the new counts.
+     */
+    private static function resetUnseenCountMap(): void
+    {
+        self::$unseenCountMap = null;
+    }
+
+    /**
+     * ONE query for every folder's unseen count instead of a COUNT(*) per
+     * folder — the sidebar/badge loops call countUnseenInIndex() per folder,
+     * which at ~1000 registered folders meant ~1000+ COUNT queries per request.
+     *
+     * @return array<string, int> lowercase folder_path => unseen count
+     */
+    private static function unseenCountMap(): array
+    {
+        if (self::$unseenCountMap !== null) {
+            return self::$unseenCountMap;
+        }
+
+        $map = [];
+        try {
+            foreach (Database::query(
+                'SELECT folder_path, COUNT(*) AS c FROM mail_index WHERE seen = 0 GROUP BY folder_path'
+            )->fetchAll() as $row) {
+                $path = strtolower((string) ($row['folder_path'] ?? ''));
+                if ($path !== '') {
+                    $map[$path] = (int) ($row['c'] ?? 0);
+                }
+            }
+        } catch (\Throwable) {
+            // DB unavailable — no counts (matches the old per-query failure mode).
+        }
+
+        return self::$unseenCountMap = $map;
     }
 
     /**
@@ -320,6 +376,7 @@ class MailCacheService
                 'UPDATE mail_index SET seen = 0 WHERE folder_path = ? AND imap_uid = ?',
                 [$path, $uid]
             );
+            self::resetUnseenCountMap();
         }
     }
 
@@ -443,6 +500,7 @@ class MailCacheService
                 'UPDATE mail_index SET seen = 0 WHERE folder_path = ? AND imap_uid = ?',
                 [$folderPath, $uid]
             );
+            self::resetUnseenCountMap();
         }
     }
 
@@ -847,6 +905,44 @@ class MailCacheService
         $key = strtolower($path);
 
         return isset($maps['link'][$key]) || isset($maps['shared'][$key]);
+    }
+
+    /**
+     * Memoized implementation behind folder_badge_uses_index_truth() (helpers).
+     * Semantics identical to the original helper; memo cleared by both
+     * resetRuntimeMaps() (registry mutations) and resetSyncStateMaps() (a
+     * folder synced mid-request flips the hasFolderData clause).
+     */
+    public static function badgeUsesIndexTruth(string $folderPath): bool
+    {
+        $folderPath = FolderCache::resolvePath($folderPath);
+        if ($folderPath === '') {
+            return false;
+        }
+
+        $key = strtolower($folderPath);
+        if (isset(self::$badgeTruthMemo[$key])) {
+            return self::$badgeTruthMemo[$key];
+        }
+
+        $result = false;
+        if (employee_correspondent_privacy_emails($folderPath) !== null) {
+            $result = true;
+        } elseif (self::isSharedEmployeeMailbox($folderPath)) {
+            $result = true;
+        } elseif (self::usesPerUserRead($folderPath)) {
+            $result = true;
+        } elseif (
+            // Plain per-folder model: any badge-showing folder that is already
+            // indexed uses its mail_index count (seen=0) as the badge truth —
+            // before a folder is indexed we fall back to the IMAP/session count.
+            folder_shows_unread_badge($folderPath)
+            && self::hasFolderData(self::indexFolderPath($folderPath))
+        ) {
+            $result = true;
+        }
+
+        return self::$badgeTruthMemo[$key] = $result;
     }
 
     /**
@@ -1446,6 +1542,7 @@ class MailCacheService
                 $references !== '' ? $references : null,
             ]
         );
+        self::resetUnseenCountMap();
     }
 
     /**
@@ -1672,6 +1769,7 @@ class MailCacheService
             'UPDATE mail_index SET seen = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid = ?',
             [$seen ? 1 : 0, $folderPath, $uid]
         );
+        self::resetUnseenCountMap();
     }
 
     public static function indexSeenState(string $folderPath, int $uid): ?bool
@@ -1726,6 +1824,7 @@ class MailCacheService
             "UPDATE mail_index SET seen = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
             $params
         );
+        self::resetUnseenCountMap();
     }
 
     /**
@@ -1814,13 +1913,11 @@ class MailCacheService
         // its own unseen messages (IMAP \Seen mirrored in mail_index.seen). No
         // cross-folder merge, no per-user read, no thread-based seen — so the
         // badge always equals the unread blue bars in the folder's list.
+        // Reads the batched unseenCountMap (one GROUP BY query per request)
+        // instead of a COUNT(*) per call — this runs per folder in the badge loops.
         $folderPath = self::indexFolderPath($folderPath);
-        $row = Database::fetchOne(
-            'SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND seen = 0',
-            [$folderPath]
-        );
 
-        return (int) ($row['c'] ?? 0);
+        return self::unseenCountMap()[strtolower($folderPath)] ?? 0;
     }
 
     /**
@@ -2217,6 +2314,7 @@ class MailCacheService
         $folderPath = self::indexFolderPath($folderPath);
         Database::query('DELETE FROM mail_index WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
         Database::query('DELETE FROM mail_bodies WHERE folder_path = ? AND imap_uid = ?', [$folderPath, $uid]);
+        self::resetUnseenCountMap();
         self::reconcileSyncStateFromIndex($folderPath);
     }
 
@@ -2299,6 +2397,7 @@ class MailCacheService
             );
         }
 
+        self::resetUnseenCountMap();
         self::reconcileSyncStateFromIndex($indexPath !== '' ? $indexPath : $resolved);
     }
 
@@ -2338,6 +2437,7 @@ class MailCacheService
         );
 
         if ($indexRemoved > 0) {
+            self::resetUnseenCountMap();
             self::reconcileSyncStateFromIndex($fromPath);
         }
 
