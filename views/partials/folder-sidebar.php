@@ -6,6 +6,8 @@
  * @var array<string, int> $unreadCounts
  */
 
+perf_mark('sidebar_render_start');
+
 $unreadCounts = $unreadCounts ?? [];
 $primaryOrder = sidebar_primary_folder_order();
 $grouped = array_fill_keys(array_merge($primaryOrder, ['other']), []);
@@ -416,3 +418,4 @@ $sumBottomUnread($displayForest);
         </div>
     <?php endif; ?>
 </nav>
+<?php perf_mark('sidebar_render_done'); ?>

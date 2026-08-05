@@ -5523,37 +5523,36 @@ function mail_normalize_sync_paths(array $paths): array
  */
 function employee_messages_imap_path(string $folderPath): string
 {
+    // Called several times per folder on every sidebar/badge pass — memoize per
+    // request, and use the batched employee-registry map instead of a DB query
+    // per call (with ~1000 registered folders those queries were seconds of DB
+    // churn on EVERY page).
+    static $memo = [];
+    if (isset($memo[$folderPath])) {
+        return $memo[$folderPath];
+    }
+
     $resolved = \App\Services\FolderCache::resolvePath($folderPath);
     if ($resolved === '') {
-        return $folderPath;
+        return $memo[$folderPath] = $folderPath;
     }
 
     if (preg_match('/^INBOX\.[^.]+\.Inbox$/i', $resolved)) {
-        return $resolved;
+        return $memo[$folderPath] = $resolved;
     }
 
     $root = employee_mailbox_root_prefix($resolved);
     $messagesPath = $root . '.Inbox';
 
-    try {
-        $row = App\Database::fetchOne(
-            "SELECT imap_path FROM folders
-             WHERE active = 1 AND folder_type = 'employee'
-             AND LOWER(imap_path) IN (LOWER(?), LOWER(?))
-             LIMIT 1",
-            [$resolved, $messagesPath]
-        );
-        if ($row !== null) {
-            return \App\Services\FolderCache::resolvePath($messagesPath);
-        }
-        if (employee_is_mailbox_container($resolved)) {
-            return \App\Services\FolderCache::resolvePath($messagesPath);
-        }
-    } catch (\Throwable) {
-        return $resolved;
+    if (
+        \App\Services\MailCacheService::isEmployeeRegistryPath($resolved)
+        || \App\Services\MailCacheService::isEmployeeRegistryPath($messagesPath)
+        || employee_is_mailbox_container($resolved)
+    ) {
+        return $memo[$folderPath] = \App\Services\FolderCache::resolvePath($messagesPath);
     }
 
-    return $resolved;
+    return $memo[$folderPath] = $resolved;
 }
 
 /**
@@ -5668,18 +5667,8 @@ function employee_is_mailbox_container(string $path): bool
         return false;
     }
 
-    try {
-        $row = App\Database::fetchOne(
-            "SELECT 1 FROM folders
-             WHERE active = 1 AND folder_type = 'employee' AND LOWER(imap_path) = LOWER(?)
-             LIMIT 1",
-            [$path . '.Inbox']
-        );
-
-        return $row !== null;
-    } catch (\Throwable) {
-        return false;
-    }
+    // Batched registry map — no SQL per call (this runs per folder per pass).
+    return \App\Services\MailCacheService::isEmployeeRegistryPath($path . '.Inbox');
 }
 
 /**

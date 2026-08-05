@@ -15,6 +15,109 @@ class MailCacheService
     /** @var array<string, int|null> uppercase path => linked_user_id */
     private static array $linkedUserCache = [];
 
+    /** @var array{link: array<string, int>, shared: array<string, bool>}|null */
+    private static ?array $registryMaps = null;
+
+    /** @var array<string, string>|null lowercase folder_path => canonical index path */
+    private static ?array $indexPathMap = null;
+
+    /** @var array<string, true>|null uppercase synced folder paths (see syncedFolderPathSet) */
+    private static ?array $syncedPathSet = null;
+
+    /**
+     * Forget the per-request registry/index maps (after registry mutations).
+     */
+    public static function resetRuntimeMaps(): void
+    {
+        self::$registryMaps = null;
+        self::$indexPathMap = null;
+        self::$syncedPathSet = null;
+    }
+
+    /**
+     * Forget the sync-state derived maps after a mail_sync_state write, so a
+     * folder synced within this request immediately reads as "has data".
+     */
+    private static function resetSyncStateMaps(): void
+    {
+        self::$syncedPathSet = null;
+        self::$indexPathMap = null;
+    }
+
+    /**
+     * ONE query for the whole employee-folder registry instead of per-folder
+     * LOWER(imap_path) lookups. With a huge imported registry (~1000 folders)
+     * the per-folder query families (indexFolderPath, linkedUserId,
+     * isSharedEmployeeMailbox — each 1-6 queries per miss, called for every
+     * folder on every FolderCache::load) added up to thousands of table scans
+     * per request and made EVERY page take 10s+.
+     *
+     * @return array{link: array<string, int>, shared: array<string, bool>}
+     */
+    private static function registryMaps(): array
+    {
+        if (self::$registryMaps !== null) {
+            return self::$registryMaps;
+        }
+
+        $maps = ['link' => [], 'shared' => []];
+        try {
+            $rows = Database::query(
+                "SELECT imap_path, linked_user_id FROM folders WHERE active = 1 AND folder_type = 'employee'"
+            )->fetchAll();
+            foreach ($rows as $row) {
+                $path = strtolower((string) ($row['imap_path'] ?? ''));
+                if ($path === '') {
+                    continue;
+                }
+                if (!empty($row['linked_user_id'])) {
+                    $maps['link'][$path] = (int) $row['linked_user_id'];
+                } else {
+                    $maps['shared'][$path] = true;
+                }
+            }
+        } catch (\Throwable) {
+            // DB unavailable — behave like "no employee folders" (matches the
+            // old per-query catch blocks).
+        }
+
+        return self::$registryMaps = $maps;
+    }
+
+    /**
+     * ONE query per table for every indexed folder path (mail_sync_state has a
+     * row per synced folder, mail_index a handful of distinct paths) instead of
+     * six LOWER(folder_path) scans per never-indexed folder.
+     *
+     * @return array<string, string>
+     */
+    private static function indexPathMap(): array
+    {
+        if (self::$indexPathMap !== null) {
+            return self::$indexPathMap;
+        }
+
+        $map = [];
+        try {
+            foreach (Database::query('SELECT folder_path FROM mail_sync_state')->fetchAll() as $row) {
+                $path = (string) ($row['folder_path'] ?? '');
+                if ($path !== '' && !isset($map[strtolower($path)])) {
+                    $map[strtolower($path)] = $path;
+                }
+            }
+            foreach (Database::query('SELECT DISTINCT folder_path FROM mail_index')->fetchAll() as $row) {
+                $path = (string) ($row['folder_path'] ?? '');
+                if ($path !== '' && !isset($map[strtolower($path)])) {
+                    $map[strtolower($path)] = $path;
+                }
+            }
+        } catch (\Throwable) {
+            // DB unavailable — no indexed folders visible (same as old behavior).
+        }
+
+        return self::$indexPathMap = $map;
+    }
+
     /**
      * Folder path as stored in mail_index / mail_sync_state (case-insensitive lookup).
      */
@@ -45,18 +148,13 @@ class MailCacheService
         $candidates[] = $folderPath;
         $candidates[] = $resolved;
 
+        $map = self::indexPathMap();
         foreach ($candidates as $candidate) {
-            foreach (['mail_sync_state', 'mail_index'] as $table) {
-                $row = Database::fetchOne(
-                    "SELECT folder_path FROM {$table} WHERE LOWER(folder_path) = LOWER(?) LIMIT 1",
-                    [$candidate]
-                );
-                if ($row !== null && ($row['folder_path'] ?? '') !== '') {
-                    $canonical = (string) $row['folder_path'];
-                    self::$indexFolderPathCache[$lookup] = $canonical;
+            $canonical = $map[strtolower($candidate)] ?? '';
+            if ($canonical !== '') {
+                self::$indexFolderPathCache[$lookup] = $canonical;
 
-                    return $canonical;
-                }
+                return $canonical;
             }
         }
 
@@ -87,25 +185,16 @@ class MailCacheService
             $candidates[] = $messagesPath;
         }
 
-        try {
-            $linkedId = null;
-            foreach (array_values(array_unique($candidates)) as $candidate) {
-                $row = Database::fetchOne(
-                    "SELECT linked_user_id FROM folders
-                     WHERE active = 1 AND folder_type = 'employee' AND linked_user_id IS NOT NULL
-                     AND LOWER(imap_path) = LOWER(?)
-                     LIMIT 1",
-                    [$candidate]
-                );
-                if ($row !== null && !empty($row['linked_user_id'])) {
-                    $linkedId = (int) $row['linked_user_id'];
-                    break;
-                }
+        $maps = self::registryMaps();
+        $linkedId = null;
+        foreach (array_values(array_unique($candidates)) as $candidate) {
+            $id = $maps['link'][strtolower($candidate)] ?? null;
+            if ($id !== null) {
+                $linkedId = $id;
+                break;
             }
-            self::$linkedUserCache[$key] = $linkedId;
-        } catch (\Throwable) {
-            self::$linkedUserCache[$key] = null;
         }
+        self::$linkedUserCache[$key] = $linkedId;
 
         return self::$linkedUserCache[$key];
     }
@@ -722,24 +811,42 @@ class MailCacheService
      */
     public static function syncedFolderPathSet(): array
     {
-        static $set = null;
-        if ($set !== null) {
-            return $set;
+        if (self::$syncedPathSet !== null) {
+            return self::$syncedPathSet;
         }
 
         $set = [];
-        foreach (Database::query(
-            'SELECT folder_path, headers_cached, imap_total, last_sync_at FROM mail_sync_state'
-        )->fetchAll() as $row) {
-            if (empty($row['last_sync_at'])) {
-                continue;
+        try {
+            foreach (Database::query(
+                'SELECT folder_path, headers_cached, imap_total, last_sync_at FROM mail_sync_state'
+            )->fetchAll() as $row) {
+                if (empty($row['last_sync_at'])) {
+                    continue;
+                }
+                if ((int) ($row['headers_cached'] ?? 0) > 0 || (int) ($row['imap_total'] ?? 0) === 0) {
+                    $set[strtoupper((string) $row['folder_path'])] = true;
+                }
             }
-            if ((int) ($row['headers_cached'] ?? 0) > 0 || (int) ($row['imap_total'] ?? 0) === 0) {
-                $set[strtoupper((string) $row['folder_path'])] = true;
-            }
+        } catch (\Throwable) {
+            // DB unavailable — treat as no synced folders.
         }
 
-        return $set;
+        return self::$syncedPathSet = $set;
+    }
+
+    /**
+     * True when an ACTIVE employee-type registry row exists for this exact
+     * path (case-insensitive). Batched registry map — no SQL per call.
+     */
+    public static function isEmployeeRegistryPath(string $path): bool
+    {
+        if ($path === '') {
+            return false;
+        }
+        $maps = self::registryMaps();
+        $key = strtolower($path);
+
+        return isset($maps['link'][$key]) || isset($maps['shared'][$key]);
     }
 
     /**
@@ -758,19 +865,12 @@ class MailCacheService
         // "INBOX.support" node keeps its data under "INBOX.support.Inbox"), so
         // resolve here too — otherwise callers passing the raw node path get a
         // false "cold" result and the UI shows a needless "Loading…" spinner.
+        // Reads the batched syncedFolderPathSet (one query per request) — this
+        // is called per folder on every sidebar/badge pass, and a per-call SQL
+        // lookup at ~1000 registered folders was seconds of DB churn per page.
         $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
-        $row = Database::fetchOne(
-            'SELECT headers_cached, imap_total, last_sync_at
-             FROM mail_sync_state WHERE folder_path = ? LIMIT 1',
-            [$folderPath]
-        );
 
-        if ($row === null || empty($row['last_sync_at'])) {
-            return false;
-        }
-
-        return (int) ($row['headers_cached'] ?? 0) > 0
-            || (int) ($row['imap_total'] ?? 0) === 0;
+        return isset(self::syncedFolderPathSet()[strtoupper($folderPath)]);
     }
 
     /**
@@ -837,22 +937,11 @@ class MailCacheService
             $candidates[] = $messagesPath;
         }
 
-        try {
-            foreach (array_values(array_unique($candidates)) as $candidate) {
-                $row = Database::fetchOne(
-                    'SELECT folder_type, linked_user_id FROM folders
-                     WHERE active = 1 AND LOWER(imap_path) = LOWER(?)
-                     LIMIT 1',
-                    [$candidate]
-                );
-                if ($row !== null
-                    && ($row['folder_type'] ?? '') === 'employee'
-                    && ($row['linked_user_id'] ?? null) === null) {
-                    return true;
-                }
+        $maps = self::registryMaps();
+        foreach (array_values(array_unique($candidates)) as $candidate) {
+            if (isset($maps['shared'][strtolower($candidate)])) {
+                return true;
             }
-        } catch (\Throwable) {
-            return false;
         }
 
         return false;
@@ -870,6 +959,7 @@ class MailCacheService
         Database::query('DELETE FROM mail_bodies WHERE folder_path = ?', [$folderPath]);
         Database::query('DELETE FROM mail_sync_state WHERE folder_path = ?', [$folderPath]);
         Database::query('DELETE FROM mail_user_read WHERE folder_path = ?', [$folderPath]);
+        self::resetSyncStateMaps();
     }
 
     /**
@@ -974,6 +1064,7 @@ class MailCacheService
         Database::query('UPDATE mail_index SET folder_path = ? WHERE folder_path = ?', [$newPath, $oldPath]);
         Database::query('UPDATE mail_bodies SET folder_path = ? WHERE folder_path = ?', [$newPath, $oldPath]);
         Database::query('UPDATE mail_sync_state SET folder_path = ? WHERE folder_path = ?', [$newPath, $oldPath]);
+        self::resetSyncStateMaps();
     }
 
     public static function invalidateFolder(string $folderPath): void
@@ -987,6 +1078,7 @@ class MailCacheService
             'UPDATE mail_sync_state SET last_sync_at = NULL WHERE folder_path = ?',
             [$folderPath]
         );
+        self::resetSyncStateMaps();
     }
 
     public static function isStale(string $folderPath): bool
@@ -2267,6 +2359,7 @@ class MailCacheService
              WHERE folder_path = ?',
             [$listable, $listable, $folderPath]
         );
+        self::resetSyncStateMaps();
     }
 
     public static function messageIdForUid(string $folderPath, int $uid): ?string
@@ -2567,6 +2660,7 @@ class MailCacheService
                 last_sync_at = NOW()',
             [$folderPath, max(0, $imapTotal), max(0, $headersCached)]
         );
+        self::resetSyncStateMaps();
     }
 
     private static function parseMsgDate(mixed $date): ?string

@@ -69,6 +69,8 @@ class FolderCache
         self::$registryCache = null;
         self::$pathResolveCache = null;
         self::$employeeRootsCache = null;
+        self::$registryMatchSets = null;
+        MailCacheService::resetRuntimeMaps();
     }
 
     /** @var array<string, array{path: string, display_name: string}>|null */
@@ -1404,16 +1406,41 @@ class FolderCache
      *
      * @param array<int|string, array<string, mixed>> $registry
      */
+    /** @var array{paths: array<string, true>, roots: array<string, true>}|null */
+    private static ?array $registryMatchSets = null;
+
     private function matchesRegisteredMailbox(string $path, array $registry): bool
     {
-        foreach ($registry as $key => $entry) {
-            $regPath = (string) ($entry['path'] ?? $key);
-            if ($this->pathMatchesRegistryMailbox($path, $regPath)) {
-                return true;
+        // O(1) set lookup instead of scanning every registry row per folder —
+        // the old loop was O(folders × registry) per sidebar pass, which at
+        // ~1000 imported folders meant ~2M iterations per page and seconds of
+        // CPU on every request.
+        if (self::$registryMatchSets === null) {
+            $sets = ['paths' => [], 'roots' => []];
+            foreach ($registry as $key => $entry) {
+                $regPath = self::resolvePath((string) ($entry['path'] ?? $key));
+                if ($regPath === '') {
+                    continue;
+                }
+                $sets['paths'][strtoupper($regPath)] = true;
+                $root = employee_mailbox_root_prefix($regPath);
+                if ($root !== '') {
+                    $sets['roots'][strtoupper($root)] = true;
+                }
             }
+            self::$registryMatchSets = $sets;
         }
 
-        return false;
+        $resolved = self::resolvePath($path);
+        if ($resolved === '') {
+            return false;
+        }
+        if (isset(self::$registryMatchSets['paths'][strtoupper($resolved)])) {
+            return true;
+        }
+        $root = employee_mailbox_root_prefix($resolved);
+
+        return $root !== '' && isset(self::$registryMatchSets['roots'][strtoupper($root)]);
     }
 
     private function isUnregisteredInboxOrphan(string $path, array $registry): bool
