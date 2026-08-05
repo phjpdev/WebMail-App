@@ -15,6 +15,17 @@ class FolderCache
     private const UNREAD_TTL = 90;
 
     /**
+     * Max IMAP STATUS calls per badge refresh. With very large registries
+     * (hundreds of imported folders) one STATUS per folder per refresh made
+     * login and every 90s refresh block for minutes. System folders and folders
+     * currently showing a badge always refresh; the rest rotate through a
+     * session cursor so every badge still converges over a few cycles. The
+     * DB-only reconcile (light polls) keeps active folders accurate in between.
+     */
+    private const STATUS_BUDGET = 25;
+    private const STATUS_CURSOR_KEY = '_badge_status_cursor';
+
+    /**
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}|null
      */
     public function get(): ?array
@@ -134,6 +145,15 @@ class FolderCache
         if ($paths === []) {
             return;
         }
+
+        // A huge registry (hundreds of imported folders with no index data yet)
+        // funnels ALL its folders here via the badge reconcile — budget it like
+        // every other STATUS refresh so one poll can't fire hundreds of IMAP
+        // calls. Small explicit lists (after-action refreshes) pass unchanged.
+        $paths = (new self())->statusBudgetPaths(
+            $paths,
+            (array) ($_SESSION[self::SESSION_KEY]['unread_counts'] ?? [])
+        );
 
         releaseSessionLock();
 
@@ -743,15 +763,19 @@ class FolderCache
             if ($cached !== null) {
                 $session = $_SESSION[self::SESSION_KEY] ?? [];
                 if (!$skipUnreadRefresh && time() > (int) ($session['unread_expires'] ?? 0)) {
+                    perf_mark('fc_unread_refresh_start');
                     $cached = $cache->refreshUnread($cached);
+                    perf_mark('fc_unread_refresh_done');
                 }
 
                 return $cache->filterForUser($cached);
             }
         }
 
+        perf_mark('fc_cold_load_start');
         $imap = new ImapService();
         if (!$imap->connect()) {
+            perf_mark('fc_cold_imap_connect_FAILED');
             return [
                 'folders' => [],
                 'unread_counts' => [],
@@ -759,12 +783,17 @@ class FolderCache
                 'error' => $imap->getLastError(),
             ];
         }
+        perf_mark('fc_cold_imap_connected');
 
         $folders = $imap->listFolders();
+        perf_mark('fc_cold_list_done');
         $paths = array_column($folders, 'path');
-        $unreadCounts = $skipUnreadRefresh
-            ? array_fill_keys($paths, 0)
-            : $imap->getFolderBadgeCounts($paths);
+        $unreadCounts = array_fill_keys($paths, 0);
+        if (!$skipUnreadRefresh) {
+            $statusPaths = $cache->statusBudgetPaths($paths);
+            $unreadCounts = array_merge($unreadCounts, $imap->getFolderBadgeCounts($statusPaths));
+            perf_mark('fc_cold_status_done');
+        }
         $cache->set($folders, $unreadCounts);
 
         $result = [
@@ -789,6 +818,7 @@ class FolderCache
         }
 
         $paths = $this->pathsToRefreshUnread(array_column($data['folders'], 'path'));
+        $paths = $this->statusBudgetPaths($paths, $data['unread_counts'] ?? []);
         if ($paths === []) {
             return $data;
         }
@@ -833,6 +863,52 @@ class FolderCache
     {
         // Shared mailbox: every user sees every folder, so refresh all badges.
         return $allPaths;
+    }
+
+    /**
+     * Cap how many folders get a live IMAP STATUS this request (see
+     * STATUS_BUDGET). Priority folders — INBOX, system folders, anything
+     * currently showing a badge — always make the cut so visible badges can
+     * appear and clear; the remainder rotate via a session cursor so every
+     * folder is eventually refreshed.
+     *
+     * @param list<string> $paths
+     * @param array<string, int> $currentCounts
+     * @return list<string>
+     */
+    private function statusBudgetPaths(array $paths, array $currentCounts = []): array
+    {
+        if (count($paths) <= self::STATUS_BUDGET) {
+            return $paths;
+        }
+
+        $priority = [];
+        $rest = [];
+        foreach ($paths as $path) {
+            $isPriority = strcasecmp($path, 'INBOX') === 0
+                || system_folder_bucket_for_path($path) !== null
+                || (int) ($currentCounts[$path] ?? 0) > 0;
+            if ($isPriority) {
+                $priority[] = $path;
+            } else {
+                $rest[] = $path;
+            }
+        }
+
+        $selected = array_slice($priority, 0, self::STATUS_BUDGET);
+
+        $budget = self::STATUS_BUDGET - count($selected);
+        $restTotal = count($rest);
+        if ($budget > 0 && $restTotal > 0) {
+            $take = min($budget, $restTotal);
+            $cursor = (int) ($_SESSION[self::STATUS_CURSOR_KEY] ?? 0) % $restTotal;
+            for ($i = 0; $i < $take; $i++) {
+                $selected[] = $rest[($cursor + $i) % $restTotal];
+            }
+            $_SESSION[self::STATUS_CURSOR_KEY] = ($cursor + $take) % $restTotal;
+        }
+
+        return $selected;
     }
 
     /**

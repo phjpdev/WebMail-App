@@ -116,6 +116,7 @@ class ImapService
         $this->connection = $connection;
         self::$sharedConnection = $connection;
         self::registerShutdown();
+        perf_mark('imap_fresh_connection_opened');
 
         return true;
     }

@@ -8,6 +8,9 @@ require dirname(__DIR__) . '/src/helpers.php';
 bootstrapEnv(dirname(__DIR__));
 bootstrapAppTimezone();
 
+// Log any request slower than 0.8s to storage/logs/slow.log with phase timings.
+perf_register_slow_request_logger();
+
 $config = config('app');
 if (!$config['debug']) {
     ini_set('display_errors', '0');
@@ -35,6 +38,9 @@ session_start([
     // Only mark the session cookie Secure over HTTPS so local HTTP dev still works.
     'cookie_secure' => $isHttps,
 ]);
+// A big gap BEFORE this mark = this request waited on the session file lock
+// (some other slow request of the same session was still running).
+perf_mark('session_started');
 
 // Allow instant Back/Forward (bfcache) while keeping authenticated pages out
 // of shared/proxy caches. "no-cache" still forces revalidation for normal
@@ -152,6 +158,7 @@ $router->post('/admin/aliases/{id}/delete', fn ($p) => $adminController->aliases
 $router->get('/admin/folders', fn () => $adminController->foldersIndex());
 $router->get('/admin/folders/create', fn () => $adminController->foldersCreate());
 $router->post('/admin/folders/store', fn () => $adminController->foldersStore());
+$router->post('/admin/folders/import', fn () => $adminController->foldersImport());
 $router->get('/admin/folders/{id}/edit', fn ($p) => $adminController->foldersEdit($p));
 $router->post('/admin/folders/{id}/update', fn ($p) => $adminController->foldersUpdate($p));
 $router->post('/admin/folders/{id}/delete', fn ($p) => $adminController->foldersDelete($p));
@@ -168,4 +175,5 @@ $router->post('/admin/rules/{id}/delete', fn ($p) => $adminController->rulesDele
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
 
+perf_mark('dispatch_start');
 $router->dispatch($method, $uri);

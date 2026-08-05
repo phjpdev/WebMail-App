@@ -240,6 +240,82 @@ class AdminFolderService
     }
 
     /**
+     * Scan the mail server and register every folder that is not in the
+     * registry yet. Existing rows are never touched (unique key on imap_path),
+     * so re-running is always safe. Returns the imported display names.
+     *
+     * @return array{imported: int, names: list<string>}
+     */
+    public function importServerFolders(): array
+    {
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            throw new \RuntimeException(
+                'Could not connect to the mail server: ' . ($imap->getLastError() ?: 'connection failed')
+            );
+        }
+
+        $serverFolders = $imap->listFolders(true);
+        if ($serverFolders === []) {
+            throw new \RuntimeException('The mail server returned no folders.');
+        }
+
+        // Compare against ALL registered paths (active or not) — imap_path is unique.
+        $registered = [];
+        foreach (Database::query('SELECT imap_path FROM folders')->fetchAll() as $row) {
+            $registered[strtolower((string) $row['imap_path'])] = true;
+        }
+
+        $names = [];
+        foreach ($serverFolders as $folder) {
+            $path = $folder['path'];
+            if ($path === '' || isset($registered[strtolower($path)])) {
+                continue;
+            }
+
+            $delimiter = ($folder['delimiter'] ?? '.') !== '' ? $folder['delimiter'] : '.';
+            $segments = explode($delimiter, $path);
+            $leaf = (string) end($segments);
+            // Mailbox paths use hyphens where display names had spaces
+            // (e.g. INBOX.John-Tran <-> "John Tran") — reverse that for display.
+            $display = trim(str_replace(['-', '_'], ' ', $leaf));
+            if ($display === '') {
+                $display = $leaf !== '' ? $leaf : $path;
+            }
+
+            Database::query(
+                'INSERT INTO folders (imap_path, display_name, folder_type, active) VALUES (?, ?, ?, 1)',
+                [$path, $display, $this->inferFolderType($path)]
+            );
+            $registered[strtolower($path)] = true;
+            $names[] = $display;
+        }
+
+        if ($names !== []) {
+            (new FolderCache())->clear();
+        }
+
+        return ['imported' => count($names), 'names' => $names];
+    }
+
+    /**
+     * Map a mailbox path onto the registry's folder_type enum, reusing the
+     * same name-based detection the sidebar icons use.
+     */
+    private function inferFolderType(string $path): string
+    {
+        return match (folder_icon_type($path)) {
+            'inbox' => 'inbox',
+            'sent' => 'sent',
+            'spam' => 'spam',
+            'trash' => 'trash',
+            // drafts/archive have no enum value of their own — seed data uses 'other'.
+            'draft', 'archive' => 'other',
+            default => 'client',
+        };
+    }
+
+    /**
      * @param array{imap_path: string, display_name: string, folder_type: string, linked_user_id?: int|null} $data
      */
     public function insertFolder(array $data, bool $clearFolderCache = true): int

@@ -1,0 +1,1 @@
+webmail build 2026-08-06-b — 1000-folder performance fixes (IMAP STATUS budget + batched badge reconcile)

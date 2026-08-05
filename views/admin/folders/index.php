@@ -22,6 +22,15 @@ $hasFolders = $primaryFolders !== [] || $folderTree !== [];
 
     <div class="page-header-actions">
 
+        <form method="post" action="<?= e(url('admin/folders/import')) ?>" class="admin-action-form"
+              data-confirm-title="Import folders from the mail server?"
+              data-confirm-message="Scans the mail server and adds every folder that is not registered here yet. Existing folders are not changed, so it is safe to run again."
+              data-confirm-label="Import"
+              data-confirm-loading="Importing folders…">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-secondary">Import from mail server</button>
+        </form>
+
         <a class="btn btn-primary" href="<?= e(url('admin/folders/create')) ?>">Add folder</a>
 
     </div>

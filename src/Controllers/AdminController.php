@@ -487,6 +487,36 @@ class AdminController
         redirect('admin/folders');
     }
 
+    public function foldersImport(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+
+        try {
+            $result = $this->folders->importServerFolders();
+        } catch (\Throwable $e) {
+            app_log('Folder import failed: ' . $e->getMessage());
+            flash('error', $e->getMessage() ?: 'Could not import folders from the mail server.');
+            redirect('admin/folders');
+        }
+
+        if ($result['imported'] === 0) {
+            flash('success', 'All mail server folders are already registered — nothing new to import.');
+            redirect('admin/folders');
+        }
+
+        $this->audit(
+            'folder_import',
+            'Imported ' . $result['imported'] . ' folder(s) from the mail server: '
+                . implode(', ', array_slice($result['names'], 0, 20))
+                . ($result['imported'] > 20 ? ', …' : '')
+        );
+        flash('success', 'Imported ' . $result['imported'] . ' folder' . ($result['imported'] === 1 ? '' : 's')
+            . ' from the mail server: ' . implode(', ', array_slice($result['names'], 0, 8))
+            . ($result['imported'] > 8 ? ', …' : ''));
+        redirect('admin/folders');
+    }
+
     /**
      * @param array<string, string> $params
      */

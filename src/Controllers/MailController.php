@@ -552,7 +552,9 @@ class MailController
         // filter runs per interval across all of them — a fast no-op the rest of the
         // time. This is the gentle variant (a single ~2-min poll per session), sized
         // for shared hosting after the 3-request/30s version overloaded it.
+        perf_mark('livesync_filter_start');
         FilterService::runBackground(false);
+        perf_mark('livesync_filter_done');
 
         // Reflect any newly-routed mail in THIS session's sidebar badges from the
         // updated index (mostly DB work; an IMAP STATUS only for not-yet-warmed
@@ -941,7 +943,14 @@ class MailController
      */
     private function reconcileSidebarBadgesFromIndex(bool $dbOnly = false): void
     {
+        perf_mark('reconcile_start');
         $folderData = FolderCache::load(skipUnreadRefresh: true);
+
+        // ONE query for "which folders have index data" instead of a
+        // hasFolderData() query per folder — with a huge imported registry
+        // (~1000 folders) the per-folder loop meant thousands of SQL calls per
+        // badge poll and pegged the server CPU.
+        $synced = MailCacheService::syncedFolderPathSet();
 
         if (!$dbOnly) {
             $refreshPaths = [];
@@ -953,7 +962,7 @@ class MailController
                 if (!folder_badge_uses_index_truth($path)) {
                     continue;
                 }
-                if (!MailCacheService::hasFolderData($path)) {
+                if (!MailCacheService::hasFolderDataInSet($path, $synced)) {
                     $refreshPaths[] = $path;
                 }
             }
@@ -976,8 +985,15 @@ class MailController
             if ($dbOnly && FolderCache::isPendingBadgePath($path)) {
                 continue;
             }
+            // Never-indexed folders have no index truth to reconcile — their
+            // badge keeps the session/STATUS value. Skipping them turns a
+            // ~1000-folder loop into a handful of active folders.
+            if (!MailCacheService::hasFolderDataInSet($path, $synced)) {
+                continue;
+            }
             MailCacheService::reconcileBadgeFromIndex($path);
         }
+        perf_mark('reconcile_done');
     }
 
     /**

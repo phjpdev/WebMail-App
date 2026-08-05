@@ -155,6 +155,58 @@ function base_path(string $path = ''): string
     return dirname(__DIR__) . ($path !== '' ? '/' . ltrim($path, '/') : '');
 }
 
+/**
+ * Record a named timing checkpoint for the slow-request log. No-op unless
+ * perf_register_slow_request_logger() ran (i.e. web requests only).
+ */
+function perf_mark(string $label): void
+{
+    if (!isset($GLOBALS['__perf_marks'])) {
+        return;
+    }
+    $GLOBALS['__perf_marks'][] = [$label, microtime(true)];
+}
+
+/**
+ * Log any request slower than $thresholdMs to storage/logs/slow.log with a
+ * phase-by-phase breakdown (from perf_mark checkpoints). Diagnosis tool for
+ * "the site is slow" reports — the phase with the big number is the culprit.
+ */
+function perf_register_slow_request_logger(float $thresholdMs = 800.0): void
+{
+    $GLOBALS['__perf_t0'] = microtime(true);
+    $GLOBALS['__perf_marks'] = [];
+
+    register_shutdown_function(static function () use ($thresholdMs): void {
+        $t0 = $GLOBALS['__perf_t0'] ?? null;
+        if ($t0 === null) {
+            return;
+        }
+        $totalMs = (microtime(true) - $t0) * 1000;
+        if ($totalMs < $thresholdMs) {
+            return;
+        }
+
+        $line = sprintf(
+            '[%s] %s %s took %s ms (peak %.1f MB)',
+            date('Y-m-d H:i:s'),
+            $_SERVER['REQUEST_METHOD'] ?? '?',
+            $_SERVER['REQUEST_URI'] ?? '?',
+            number_format($totalMs, 0),
+            memory_get_peak_usage(true) / 1048576
+        );
+
+        $prev = $t0;
+        foreach (($GLOBALS['__perf_marks'] ?? []) as [$label, $t]) {
+            $line .= sprintf('%s    +%sms  %s', PHP_EOL, number_format(($t - $prev) * 1000, 0), $label);
+            $prev = $t;
+        }
+        $line .= sprintf('%s    +%sms  (rest of request)', PHP_EOL, number_format((microtime(true) - $prev) * 1000, 0));
+
+        @file_put_contents(base_path('storage/logs/slow.log'), $line . PHP_EOL, FILE_APPEND);
+    });
+}
+
 function url(string $path = ''): string
 {
     $base = config('app')['url'];
@@ -184,6 +236,7 @@ function flash(string $key, ?string $message = null): ?string
 
 function view(string $name, array $data = []): void
 {
+    perf_mark("view_render_start:{$name}");
     extract($data, EXTR_SKIP);
     $viewPath = base_path("views/{$name}.php");
 
@@ -192,6 +245,7 @@ function view(string $name, array $data = []): void
     }
 
     require $viewPath;
+    perf_mark("view_render_done:{$name}");
 }
 
 /**

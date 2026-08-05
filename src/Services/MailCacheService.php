@@ -711,6 +711,47 @@ class MailCacheService
         return $list;
     }
 
+    /**
+     * Bulk variant of hasFolderData(): ONE query for the whole registry.
+     * With a huge imported registry (~1000 folders) calling hasFolderData()
+     * per folder per badge poll meant thousands of queries per request and
+     * pegged the server CPU. Returns upper-cased folder paths that have sync
+     * data, memoized per request.
+     *
+     * @return array<string, true>
+     */
+    public static function syncedFolderPathSet(): array
+    {
+        static $set = null;
+        if ($set !== null) {
+            return $set;
+        }
+
+        $set = [];
+        foreach (Database::query(
+            'SELECT folder_path, headers_cached, imap_total, last_sync_at FROM mail_sync_state'
+        )->fetchAll() as $row) {
+            if (empty($row['last_sync_at'])) {
+                continue;
+            }
+            if ((int) ($row['headers_cached'] ?? 0) > 0 || (int) ($row['imap_total'] ?? 0) === 0) {
+                $set[strtoupper((string) $row['folder_path'])] = true;
+            }
+        }
+
+        return $set;
+    }
+
+    /**
+     * hasFolderData() against a prefetched syncedFolderPathSet() — no SQL.
+     */
+    public static function hasFolderDataInSet(string $folderPath, array $set): bool
+    {
+        $indexPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+
+        return isset($set[strtoupper($indexPath)]);
+    }
+
     public static function hasFolderData(string $folderPath): bool
     {
         // Sync state is stored under the resolved index path (e.g. the shared
@@ -1098,7 +1139,9 @@ class MailCacheService
             || self::imapTotalDrifted($folderPath, $imapTotal)
             || self::badgeAheadOfIndex($folderPath)
         ) {
+            perf_mark('header_sync_start:' . $folderPath);
             self::syncFolderHeaders($imap, $folderPath);
+            perf_mark('header_sync_done:' . $folderPath);
         }
     }
 
