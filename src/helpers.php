@@ -8646,7 +8646,12 @@ function mail_apply_folder_list_view_pipeline(string $folderPath, array $list, b
         $list['page'] = $page;
         $list['total_pages'] = $totalPages;
     } else {
-        $list['total'] = count($messages);
+        // Keep the honest folder total from listFromCache / listMessages (the
+        // indexed message count that drives pagination); only floor it at the
+        // rendered row count so optimistic/pending rows are never under-counted.
+        // (Previously this clobbered total with the PAGE row count, which broke
+        // pagination range text and hid the folder's real size.)
+        $list['total'] = max((int) ($list['total'] ?? 0), count($messages));
     }
     unset($list['window_full']);
 

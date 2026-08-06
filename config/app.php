@@ -32,6 +32,12 @@ return [
     'mail_per_page' => (int) env('MAIL_PER_PAGE', 15),
     // Local MySQL cache (no cron — synced on login, folder open, poll).
     'mail_cache_header_limit' => (int) env('MAIL_CACHE_HEADER_LIMIT', 200),
+    // Full-history browsing: messages fetched per chunk when a deep page
+    // reaches past the indexed window, and the max chunks per request.
+    'deep_page_chunk' => (int) env('MAIL_DEEP_PAGE_CHUNK', 200),
+    'deep_page_max_chunks' => (int) env('MAIL_DEEP_PAGE_MAX_CHUNKS', 3),
+    // Bulk "select all in folder" safety cap (server-enforced).
+    'mail_bulk_all_max' => (int) env('MAIL_BULK_ALL_MAX', 500),
     'mail_cache_ttl' => (int) env('MAIL_CACHE_TTL', 120),
     'mail_cache_bootstrap_limit' => (int) env('MAIL_CACHE_BOOTSTRAP_LIMIT', 150),
 ];

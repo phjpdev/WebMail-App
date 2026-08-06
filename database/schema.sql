@@ -100,12 +100,14 @@ CREATE TABLE IF NOT EXISTS mail_index (
     subject VARCHAR(998) NOT NULL DEFAULT '',
     msg_date DATETIME NULL,
     seen TINYINT(1) NOT NULL DEFAULT 0,
+    backfilled TINYINT(1) NOT NULL DEFAULT 0,
     flagged TINYINT(1) NOT NULL DEFAULT 0,
     has_attachment TINYINT(1) NOT NULL DEFAULT 0,
     size INT UNSIGNED NOT NULL DEFAULT 0,
     synced_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_mail_index_folder_uid (folder_path, imap_uid),
-    INDEX idx_mail_index_folder_date (folder_path, msg_date DESC, imap_uid DESC)
+    INDEX idx_mail_index_folder_date (folder_path, msg_date DESC, imap_uid DESC),
+    INDEX idx_mail_index_badge (backfilled, seen, folder_path)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS mail_bodies (
@@ -130,6 +132,9 @@ CREATE TABLE IF NOT EXISTS mail_bodies (
 CREATE TABLE IF NOT EXISTS mail_sync_state (
     folder_path VARCHAR(255) NOT NULL PRIMARY KEY,
     imap_total INT UNSIGNED NOT NULL DEFAULT 0,
+    server_total INT UNSIGNED NULL DEFAULT NULL,
+    oldest_uid INT UNSIGNED NULL DEFAULT NULL,
+    backfill_done TINYINT(1) NOT NULL DEFAULT 0,
     headers_cached INT UNSIGNED NOT NULL DEFAULT 0,
     last_sync_at TIMESTAMP NULL DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

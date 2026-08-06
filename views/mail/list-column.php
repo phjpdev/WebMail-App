@@ -25,11 +25,16 @@
         $headerUnread = folder_shows_unread_badge($folderPath)
             ? (int) ($unreadCount ?? 0)
             : 0;
+        // Full-history: show "N of M synced" while older history is still on
+        // the server only ("Load older messages" / the CLI import grows N).
+        $historyPartial = (int) ($serverTotal ?? 0) > (int) $totalMessages && empty($searchQuery);
         $headerTitle = folder_uses_draft_badge($folderPath)
             ? ($headerUnread === 1 ? '1 draft' : $headerUnread . ' drafts')
             : ($headerUnread > 0
                 ? $headerUnread . ' unread'
-                : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's'));
+                : ($historyPartial
+                    ? (int) $totalMessages . ' of ' . (int) $serverTotal . ' synced'
+                    : (int) $totalMessages . ' message' . ($totalMessages === 1 ? '' : 's')));
         ?>
         <?php if ($headerUnread > 0): ?>
         <span class="page-header-count page-header-count--unread" id="mail-count-label" data-total="<?= (int) $totalMessages ?>" data-unread="<?= $headerUnread ?>" title="<?= e($headerTitle) ?>"><?= $headerUnread ?></span>
@@ -68,6 +73,7 @@ $syncQuery = $syncQueryParts ? '?' . implode('&', $syncQueryParts) : '';
     data-folder-url="<?= e(folder_url($folderPath)) ?>"
     data-folder-kind="<?= e(folder_icon_type($folderPath)) ?>"
     data-total-messages="<?= (int) $totalMessages ?>"
+    data-bulk-max="<?= (int) (config('app')['mail_bulk_all_max'] ?? 500) ?>"
     data-cache-stale="<?= !empty($listCacheStale) ? '1' : '0' ?>">
 
     <?php require base_path('views/partials/mail-toolbar.php'); ?>

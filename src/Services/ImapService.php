@@ -286,8 +286,25 @@ class ImapService
         }
 
         $overview = array_reverse($overview);
-        $messages = [];
 
+        return [
+            'messages' => $this->mapOverviewRows($overview),
+            'total' => $total,
+            'page' => $page,
+            'per_page' => $perPage,
+            'total_pages' => $totalPages,
+        ];
+    }
+
+    /**
+     * Map imap_fetch_overview rows to the app's message-array shape.
+     *
+     * @param array<int, object> $overview
+     * @return list<array<string, mixed>>
+     */
+    private function mapOverviewRows(array $overview): array
+    {
+        $messages = [];
         foreach ($overview as $row) {
             $uid = (int) ($row->uid ?? 0);
             $messages[] = [
@@ -307,13 +324,81 @@ class ImapService
             ];
         }
 
-        return [
-            'messages' => $messages,
-            'total' => $total,
-            'page' => $page,
-            'per_page' => $perPage,
-            'total_pages' => $totalPages,
-        ];
+        return $messages;
+    }
+
+    /** @var array<string, list<int>> per-request memo for the expunged-watermark fallback */
+    private static array $allUidsCache = [];
+
+    /**
+     * Fetch the $count messages immediately OLDER than $beforeUid — the
+     * backfill cursor primitive. UIDs and sequence numbers are both
+     * arrival-ordered, so "the $count messages below this UID's sequence
+     * position" IS a UID-descending walk, in one O(1) overview call at any
+     * depth (no 76k-uid search needed).
+     *
+     * @return array{messages: list<array<string, mixed>>, failed?: bool, exhausted?: bool}
+     */
+    public function listMessagesBeforeUid(string $path, int $beforeUid, int $count): array
+    {
+        if ($beforeUid <= 0 || $count <= 0 || !$this->openFolder($path)) {
+            return ['messages' => [], 'failed' => true];
+        }
+
+        $msgno = @imap_msgno($this->connection, $beforeUid);
+        if ($msgno === false) {
+            return ['messages' => [], 'failed' => true];
+        }
+
+        if ($msgno === 1) {
+            // The watermark IS the oldest message — nothing older exists.
+            return ['messages' => [], 'exhausted' => true];
+        }
+
+        if ($msgno >= 2) {
+            $end = $msgno - 1;
+            $start = max(1, $end - $count + 1);
+            $overview = @imap_fetch_overview($this->connection, "$start:$end");
+            if ($overview === false) {
+                return ['messages' => [], 'failed' => true];
+            }
+
+            return ['messages' => $this->mapOverviewRows(array_reverse($overview))];
+        }
+
+        // msgno === 0: the watermark UID was expunged. Fall back to the full
+        // UID list (memoized per request — this is the only whole-folder call)
+        // and take the next $count UIDs below the watermark.
+        if (!isset(self::$allUidsCache[$path])) {
+            self::$allUidsCache[$path] = $this->allMessageUids($path);
+        }
+        $older = [];
+        foreach (self::$allUidsCache[$path] as $uid) { // descending order
+            if ($uid < $beforeUid) {
+                $older[] = $uid;
+                if (count($older) >= $count) {
+                    break;
+                }
+            }
+        }
+        if ($older === []) {
+            return ['messages' => [], 'exhausted' => true];
+        }
+
+        $messages = [];
+        foreach (array_chunk($older, 50) as $chunk) {
+            $overview = @imap_fetch_overview($this->connection, implode(',', $chunk), FT_UID);
+            if ($overview === false) {
+                continue;
+            }
+            foreach ($this->mapOverviewRows($overview) as $msg) {
+                $messages[] = $msg;
+            }
+        }
+        // Newest-first like every other list source.
+        usort($messages, static fn (array $a, array $b): int => ($b['uid'] <=> $a['uid']));
+
+        return ['messages' => $messages];
     }
 
     /**

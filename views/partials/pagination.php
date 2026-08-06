@@ -5,6 +5,8 @@
  * @var int $totalMessages
  * @var string $baseUrl URL with trailing ? or & for query params
  * @var int $currentPerPage
+ * @var int|null $serverTotal true IMAP message count (full-history browsing)
+ * @var bool|null $backfillDone whether the folder's whole history is indexed
  */
 if (($totalPages ?? 1) < 1) {
     return;
@@ -14,9 +16,13 @@ $totalPages = (int) ($totalPages ?? 1);
 $totalMessages = (int) ($totalMessages ?? 0);
 $baseUrl = $baseUrl ?? '?';
 $currentPerPage = (int) ($currentPerPage ?? mail_per_page());
+$serverTotal = (int) ($serverTotal ?? 0);
+$backfillDone = !empty($backfillDone ?? true);
+$historyRemaining = empty($searchQuery) && !$backfillDone && $serverTotal > $totalMessages;
 $sep = str_contains($baseUrl, '?') ? (str_ends_with($baseUrl, '?') || str_ends_with($baseUrl, '&') ? '' : '&') : '?';
 $rangeStart = $totalMessages === 0 ? 0 : (($page - 1) * $currentPerPage) + 1;
 $rangeEnd = min($page * $currentPerPage, $totalMessages);
+$rangeStart = min($rangeStart, max(0, $rangeEnd));
 $prevUrl = $baseUrl . $sep . 'page=' . ($page - 1);
 $nextUrl = $baseUrl . $sep . 'page=' . ($page + 1);
 ?>
@@ -49,6 +55,9 @@ $nextUrl = $baseUrl . $sep . 'page=' . ($page + 1);
         <?php if ($totalPages > 1): ?>
             <span class="pagination-page-label">· Page <?= $page ?> of <?= $totalPages ?></span>
         <?php endif; ?>
+        <?php if ($historyRemaining): ?>
+            <span class="pagination-server-total" title="Older messages are still on the mail server — they load as you browse past the last page">· <?= $serverTotal ?> on server</span>
+        <?php endif; ?>
     </div>
 
     <?php if ($totalPages > 1): ?>
@@ -73,6 +82,16 @@ $nextUrl = $baseUrl . $sep . 'page=' . ($page + 1);
             <?php if ($end < $totalPages - 1): ?><span class="pagination-ellipsis">…</span><?php endif; ?>
             <a class="pagination-page" href="<?= e($baseUrl . $sep . 'page=' . $totalPages) ?>"><?= $totalPages ?></a>
         <?php endif; ?>
+        <?php if ($historyRemaining): ?>
+            <a class="pagination-page pagination-load-older" href="<?= e($baseUrl . $sep . 'page=' . ($totalPages + 1)) ?>"
+               title="Fetch the next batch of older messages from the mail server">Load older</a>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+    <?php if ($historyRemaining && $totalPages <= 1): ?>
+    <div class="pagination-pages" aria-hidden="true">
+        <a class="pagination-page pagination-load-older" href="<?= e($baseUrl . $sep . 'page=' . ($totalPages + 1)) ?>"
+           title="Fetch the next batch of older messages from the mail server">Load older</a>
     </div>
     <?php endif; ?>
 

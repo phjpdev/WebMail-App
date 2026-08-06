@@ -86,7 +86,11 @@ class MailCacheService
         $map = [];
         try {
             foreach (Database::query(
-                'SELECT folder_path, COUNT(*) AS c FROM mail_index WHERE seen = 0 GROUP BY folder_path'
+                // backfilled = 0: history-backfilled old unread never counts
+                // toward sidebar badges (user decision) — and the covering
+                // idx_mail_index_badge keeps this an index-only range scan at
+                // millions of backfilled rows.
+                'SELECT folder_path, COUNT(*) AS c FROM mail_index WHERE seen = 0 AND backfilled = 0 GROUP BY folder_path'
             )->fetchAll() as $row) {
                 $path = strtolower((string) ($row['folder_path'] ?? ''));
                 if ($path !== '') {
@@ -1226,23 +1230,21 @@ class MailCacheService
             return self::countMessagesInIndex($folderPath);
         }
 
-        $rows = Database::query(
-            'SELECT imap_uid FROM mail_index WHERE folder_path = ?',
-            [$folderPath]
-        )->fetchAll();
-        if ($rows === []) {
-            return 0;
+        // Count only the (small, session-scoped) tombstone uids that actually
+        // exist in the index instead of materializing every row — with the
+        // full-history backfill a folder can hold tens of thousands of rows.
+        $tombstoneUids = array_values(array_filter(array_map('intval', array_keys($removed))));
+        $present = 0;
+        if ($tombstoneUids !== []) {
+            $placeholders = implode(',', array_fill(0, count($tombstoneUids), '?'));
+            $row = Database::fetchOne(
+                "SELECT COUNT(*) AS c FROM mail_index WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+                array_merge([$folderPath], $tombstoneUids)
+            );
+            $present = (int) ($row['c'] ?? 0);
         }
 
-        $count = 0;
-        foreach ($rows as $row) {
-            $uid = (int) ($row['imap_uid'] ?? 0);
-            if ($uid > 0 && !isset($removed[$uid])) {
-                $count++;
-            }
-        }
-
-        return $count;
+        return max(0, self::countMessagesInIndex($folderPath) - $present);
     }
 
     /**
@@ -1322,6 +1324,9 @@ class MailCacheService
     public static function refreshHeadersIfNeeded(ImapService $imap, string $folderPath): void
     {
         $imapTotal = $imap->getMessageCount($folderPath);
+        if ($imapTotal > 0) {
+            self::recordServerTotal($folderPath, $imapTotal);
+        }
         if (
             self::isStale($folderPath)
             || self::imapTotalDrifted($folderPath, $imapTotal)
@@ -1334,16 +1339,75 @@ class MailCacheService
     }
 
     /**
-     * @return array{folder_path: string, imap_total: int, headers_cached: int, last_sync_at: string|null}|null
+     * @return array{folder_path: string, imap_total: int, headers_cached: int, last_sync_at: string|null, server_total: int|null, oldest_uid: int|null, backfill_done: int}|null
      */
     public static function getSyncState(string $folderPath): ?array
     {
         $folderPath = self::indexFolderPath($folderPath);
 
         return Database::fetchOne(
-            'SELECT folder_path, imap_total, headers_cached, last_sync_at FROM mail_sync_state WHERE folder_path = ?',
+            'SELECT folder_path, imap_total, headers_cached, last_sync_at, server_total, oldest_uid, backfill_done
+             FROM mail_sync_state WHERE folder_path = ?',
             [$folderPath]
         );
+    }
+
+    /**
+     * Persist the TRUE server message count (imap_num_msg). Deliberately does
+     * NOT touch imap_total (badge code depends on its local-row-count
+     * semantics) or last_sync_at (would suppress TTL refreshes). Folders whose
+     * whole history fits the index self-mark backfill_done — so all small
+     * (e.g. Hostinger) folders never trigger deep-fetch machinery.
+     */
+    public static function recordServerTotal(string $folderPath, int $serverTotal): void
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '' || $serverTotal < 0) {
+            return;
+        }
+
+        $current = self::getSyncState($folderPath);
+        $indexed = self::countMessagesInIndex($folderPath);
+        $done = $serverTotal <= $indexed ? 1 : null;
+        if (
+            $current !== null
+            && (int) ($current['server_total'] ?? -1) === $serverTotal
+            && ($done === null || (int) ($current['backfill_done'] ?? 0) === $done)
+        ) {
+            return; // unchanged — skip the write (and the map resets)
+        }
+
+        Database::query(
+            'INSERT INTO mail_sync_state (folder_path, server_total, backfill_done)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                server_total = VALUES(server_total),
+                backfill_done = GREATEST(backfill_done, VALUES(backfill_done))',
+            [$folderPath, $serverTotal, $done ?? 0]
+        );
+        self::resetSyncStateMaps();
+    }
+
+    /**
+     * Persist the backfill cursor (lowest indexed UID) and optionally mark the
+     * folder's history fully indexed.
+     */
+    public static function setBackfillWatermark(string $folderPath, int $oldestUid, ?bool $done = null): void
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        if ($folderPath === '' || $oldestUid <= 0) {
+            return;
+        }
+
+        Database::query(
+            'INSERT INTO mail_sync_state (folder_path, oldest_uid, backfill_done)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                oldest_uid = LEAST(COALESCE(oldest_uid, VALUES(oldest_uid)), VALUES(oldest_uid)),
+                backfill_done = GREATEST(backfill_done, VALUES(backfill_done))',
+            [$folderPath, $oldestUid, $done ? 1 : 0]
+        );
+        self::resetSyncStateMaps();
     }
 
     /**
@@ -1367,6 +1431,10 @@ class MailCacheService
         $messages = $list['messages'];
 
         self::upsertIndexMessages($folderPath, $messages, $imapTotal);
+        if ($imapTotal >= 0) {
+            // True server count for the "N of M synced" display + deep paging.
+            self::recordServerTotal($folderPath, $imapTotal);
+        }
 
         $serverUids = [];
         foreach ($messages as $msg) {
@@ -1442,6 +1510,7 @@ class MailCacheService
 
         $indexed = self::countListableMessagesInIndex($folderPath);
         self::touchSyncState($folderPath, max((int) ($list['total'] ?? 0), $indexed), $indexed);
+        self::recordServerTotal($folderPath, (int) ($list['total'] ?? 0));
 
         return count($list['messages']);
     }
@@ -1509,8 +1578,8 @@ class MailCacheService
 
         Database::query(
             'INSERT INTO mail_index
-                (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, flagged, has_attachment, size, message_id, in_reply_to, references_ids, synced_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, backfilled, flagged, has_attachment, size, message_id, in_reply_to, references_ids, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE
                 from_addr = VALUES(from_addr),
                 to_addrs = COALESCE(NULLIF(VALUES(to_addrs), \'\'), to_addrs),
@@ -1518,6 +1587,7 @@ class MailCacheService
                 subject = VALUES(subject),
                 msg_date = VALUES(msg_date),
                 seen = GREATEST(seen, VALUES(seen)),
+                backfilled = LEAST(backfilled, VALUES(backfilled)),
                 flagged = VALUES(flagged),
                 has_attachment = VALUES(has_attachment),
                 size = VALUES(size),
@@ -1543,6 +1613,169 @@ class MailCacheService
             ]
         );
         self::resetUnseenCountMap();
+    }
+
+    /**
+     * Multi-row variant of upsertIndexRow for the history backfill — identical
+     * merge semantics plus the `backfilled` marker (LEAST-merged so a row ever
+     * touched by the normal recent-window sync stays 0 / badge-countable).
+     * Calls resetUnseenCountMap ONCE at the end instead of per row.
+     *
+     * @param list<array<string, mixed>> $messages
+     * @return int rows written
+     */
+    public static function upsertIndexRowsBulk(string $folderPath, array $messages, bool $backfilled): int
+    {
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '' || $messages === []) {
+            return 0;
+        }
+
+        $flag = $backfilled ? 1 : 0;
+        $written = 0;
+        foreach (array_chunk($messages, 100) as $chunk) {
+            $groups = [];
+            $params = [];
+            foreach ($chunk as $msg) {
+                $uid = (int) ($msg['uid'] ?? 0);
+                if ($uid <= 0 || mail_is_uid_removed($folderPath, $uid)) {
+                    continue;
+                }
+                $to = (string) ($msg['to'] ?? '');
+                $cc = (string) ($msg['cc'] ?? '');
+                $messageId = mail_normalize_thread_id((string) ($msg['message_id'] ?? ''));
+                $inReplyTo = mail_normalize_thread_id((string) ($msg['in_reply_to'] ?? ''));
+                $references = trim((string) ($msg['references'] ?? ''));
+
+                $groups[] = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())';
+                array_push(
+                    $params,
+                    $folderPath,
+                    $uid,
+                    (string) ($msg['from'] ?? ''),
+                    $to !== '' ? $to : null,
+                    $cc !== '' ? $cc : null,
+                    (string) ($msg['subject'] ?? '(no subject)'),
+                    self::parseMsgDate($msg['date'] ?? null),
+                    !empty($msg['seen']) ? 1 : 0,
+                    $flag,
+                    !empty($msg['flagged']) ? 1 : 0,
+                    !empty($msg['has_attachment']) ? 1 : 0,
+                    (int) ($msg['size'] ?? 0),
+                    $messageId !== '' ? $messageId : null,
+                    $inReplyTo !== '' ? $inReplyTo : null,
+                    $references !== '' ? $references : null,
+                );
+            }
+            if ($groups === []) {
+                continue;
+            }
+
+            Database::query(
+                'INSERT INTO mail_index
+                    (folder_path, imap_uid, from_addr, to_addrs, cc_addrs, subject, msg_date, seen, backfilled, flagged, has_attachment, size, message_id, in_reply_to, references_ids, synced_at)
+                 VALUES ' . implode(', ', $groups) . '
+                 ON DUPLICATE KEY UPDATE
+                    from_addr = VALUES(from_addr),
+                    to_addrs = COALESCE(NULLIF(VALUES(to_addrs), \'\'), to_addrs),
+                    cc_addrs = COALESCE(NULLIF(VALUES(cc_addrs), \'\'), cc_addrs),
+                    subject = VALUES(subject),
+                    msg_date = VALUES(msg_date),
+                    seen = GREATEST(seen, VALUES(seen)),
+                    backfilled = LEAST(backfilled, VALUES(backfilled)),
+                    flagged = VALUES(flagged),
+                    has_attachment = VALUES(has_attachment),
+                    size = VALUES(size),
+                    message_id = COALESCE(NULLIF(VALUES(message_id), \'\'), message_id),
+                    in_reply_to = COALESCE(NULLIF(VALUES(in_reply_to), \'\'), in_reply_to),
+                    references_ids = COALESCE(NULLIF(VALUES(references_ids), \'\'), references_ids),
+                    synced_at = NOW()',
+                $params
+            );
+            $written += count($groups);
+        }
+
+        if ($written > 0) {
+            self::resetUnseenCountMap();
+        }
+
+        return $written;
+    }
+
+    /**
+     * Extend the index older-ward until the requested page has rows to show
+     * (or the per-request chunk budget is spent). The loop condition is on ROW
+     * COUNT, not date, so requested-offset coverage is guaranteed even when
+     * msg_date order diverges from UID order (imported/moved mail).
+     *
+     * @return bool true when any rows were added
+     */
+    public static function extendIndexForDeepPage(ImapService $imap, string $folderPath, int $page, int $perPage): bool
+    {
+        $folderPath = self::indexFolderPath(FolderCache::resolvePath($folderPath));
+        if ($folderPath === '' || $page < 1) {
+            return false;
+        }
+
+        $state = self::getSyncState($folderPath);
+        if (!empty($state['backfill_done'])) {
+            return false;
+        }
+
+        $chunk = max(25, (int) (config('app')['deep_page_chunk'] ?? 200));
+        $maxChunks = max(1, (int) (config('app')['deep_page_max_chunks'] ?? 3));
+        $needed = $page * max(1, $perPage);
+
+        $oldest = (int) ($state['oldest_uid'] ?? 0);
+        if ($oldest <= 0) {
+            $row = Database::fetchOne(
+                'SELECT MIN(imap_uid) AS u FROM mail_index WHERE folder_path = ?',
+                [$folderPath]
+            );
+            $oldest = (int) ($row['u'] ?? 0);
+        }
+        if ($oldest <= 0) {
+            // Folder never synced at all — the normal recent-window sync must
+            // run first (deep paging past an empty index is meaningless).
+            return false;
+        }
+
+        $added = false;
+        for ($i = 0; $i < $maxChunks; $i++) {
+            if (self::countMessagesInIndex($folderPath) >= $needed) {
+                break;
+            }
+
+            perf_mark('deep_backfill_chunk_start:' . $folderPath);
+            $res = $imap->listMessagesBeforeUid($folderPath, $oldest, $chunk);
+            perf_mark('deep_backfill_chunk_done:' . $folderPath);
+
+            if (!empty($res['failed'])) {
+                break; // serve what we have; a later visit retries
+            }
+            if (!empty($res['exhausted']) || $res['messages'] === []) {
+                self::setBackfillWatermark($folderPath, $oldest, done: true);
+                break;
+            }
+
+            self::upsertIndexRowsBulk($folderPath, $res['messages'], backfilled: true);
+            $added = true;
+
+            $chunkMin = $oldest;
+            foreach ($res['messages'] as $msg) {
+                $uid = (int) ($msg['uid'] ?? 0);
+                if ($uid > 0 && $uid < $chunkMin) {
+                    $chunkMin = $uid;
+                }
+            }
+            if ($chunkMin >= $oldest) {
+                break; // no progress — avoid a spin
+            }
+            $oldest = $chunkMin;
+            self::setBackfillWatermark($folderPath, $oldest);
+        }
+
+        return $added;
     }
 
     /**
@@ -1763,10 +1996,18 @@ class MailCacheService
         return $messages;
     }
 
-    public static function updateIndexSeen(string $folderPath, int $uid, bool $seen): void
+    /**
+     * $clearBackfilled: pass true ONLY from an explicit user mark-unread action
+     * — a human-touched old message should count in sidebar badges again. The
+     * badge-reconcile phantom-sync path must leave `backfilled` untouched, or
+     * every backfilled old unread would leak into the badges it was floored
+     * out of.
+     */
+    public static function updateIndexSeen(string $folderPath, int $uid, bool $seen, bool $clearBackfilled = false): void
     {
+        $backfilledSql = $clearBackfilled ? ', backfilled = 0' : '';
         Database::query(
-            'UPDATE mail_index SET seen = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid = ?',
+            "UPDATE mail_index SET seen = ?, synced_at = NOW(){$backfilledSql} WHERE folder_path = ? AND imap_uid = ?",
             [$seen ? 1 : 0, $folderPath, $uid]
         );
         self::resetUnseenCountMap();
@@ -1812,16 +2053,17 @@ class MailCacheService
     /**
      * @param list<int> $uids
      */
-    public static function updateIndexSeenBulk(string $folderPath, array $uids, bool $seen): void
+    public static function updateIndexSeenBulk(string $folderPath, array $uids, bool $seen, bool $clearBackfilled = false): void
     {
         if ($uids === []) {
             return;
         }
 
+        $backfilledSql = $clearBackfilled ? ', backfilled = 0' : '';
         $placeholders = implode(',', array_fill(0, count($uids), '?'));
         $params = array_merge([$seen ? 1 : 0, $folderPath], $uids);
         Database::query(
-            "UPDATE mail_index SET seen = ?, synced_at = NOW() WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
+            "UPDATE mail_index SET seen = ?, synced_at = NOW(){$backfilledSql} WHERE folder_path = ? AND imap_uid IN ({$placeholders})",
             $params
         );
         self::resetUnseenCountMap();
@@ -2279,11 +2521,21 @@ class MailCacheService
      * hosts where STATUS/SEARCH disagree with per-message flags, and set the
      * sidebar badge from the index when the folder is fully cached.
      */
+    /** Bound for the per-uid reconcile loop below — one explicit refresh on a
+     *  folder with thousands of server-side unread must not do thousands of
+     *  IMAP round-trips. Newest-first slice; older unread reconcile lazily. */
+    private const MAX_BADGE_RECONCILE_UIDS = 300;
+
     public static function reconcileFolderBadge(ImapService $imap, string $folderPath): int
     {
         self::refreshHeadersIfNeeded($imap, $folderPath);
 
-        foreach ($imap->getUnseenUids($folderPath) as $uid) {
+        $unseenUids = $imap->getUnseenUids($folderPath);
+        if (count($unseenUids) > self::MAX_BADGE_RECONCILE_UIDS) {
+            $unseenUids = array_slice($unseenUids, 0, self::MAX_BADGE_RECONCILE_UIDS);
+        }
+
+        foreach ($unseenUids as $uid) {
             $uid = (int) $uid;
             if ($imap->isSeen($folderPath, $uid)) {
                 // Phantom UNSEEN — overview says read; clear stale server flag.

@@ -224,6 +224,31 @@ class MailController
         $list = ['messages' => [], 'total' => 0, 'page' => 1, 'per_page' => $perPage, 'total_pages' => 0];
         $servedFromCache = false;
 
+        // Full-history browsing: when the requested page reaches past the
+        // indexed window and the folder's history isn't fully indexed yet,
+        // extend the index older-ward on demand (bounded chunk budget), then
+        // serve from the cache as usual. listFromCache clamps out-of-range
+        // pages, so detection must happen here, before the cache read.
+        $historyState = MailCacheService::getSyncState($folderPath);
+        if ($imapConnected && $query === '' && $page > 1) {
+            $serverTotal = (int) ($historyState['server_total'] ?? 0);
+            $indexed = MailCacheService::countListableMessagesInIndex($folderPath);
+            $indexedPages = (int) ceil(max(0, $indexed) / max(1, $perPage));
+            if (
+                $page > max(1, $indexedPages)
+                && empty($historyState['backfill_done'])
+                && $serverTotal > MailCacheService::countMessagesInIndex($folderPath)
+            ) {
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    perf_mark('deep_page_extend_start');
+                    MailCacheService::extendIndexForDeepPage($imap, $folderPath, $page, $perPage);
+                    perf_mark('deep_page_extend_done');
+                    $historyState = MailCacheService::getSyncState($folderPath);
+                }
+            }
+        }
+
         if ($imapConnected && $query === '' && $preferCache) {
             $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached !== null) {
@@ -388,6 +413,10 @@ class MailController
             'perPage' => $perPage,
             'listAwaitingSync' => $listAwaitingSync,
             'listCacheStale' => !empty($list['stale']),
+            // Full-history browsing: true server count + whether all of it is
+            // indexed (drives the "N of M synced" header and Load-older link).
+            'serverTotal' => (int) ($historyState['server_total'] ?? 0),
+            'backfillDone' => !empty($historyState['backfill_done']),
         ];
     }
 
@@ -2970,6 +2999,24 @@ class MailController
         $searchQuery = trim($_POST['q'] ?? '');
 
         if (($_POST['all_in_folder'] ?? '') === '1') {
+            // Safety cap: with full-history indexing a folder can hold tens of
+            // thousands of rows — an uncapped "all in folder" would attempt that
+            // many IMAP operations. Server-side authoritative (the client hides
+            // the affordance above the cap, but a forged POST must fail too).
+            if ($searchQuery === '') {
+                $cap = (int) (config('app')['mail_bulk_all_max'] ?? 500);
+                $indexedCount = MailCacheService::countMessagesInIndex(
+                    MailCacheService::indexFolderPath($resolvedPath)
+                );
+                if ($indexedCount > $cap) {
+                    json_response([
+                        'ok' => false,
+                        'error' => 'This folder has too many messages for a bulk action (limit '
+                            . $cap . '). Use search to narrow down, or act page by page.',
+                    ], 422);
+                }
+            }
+
             // Refresh from the server FIRST. "Select all" is commonly used for a
             // destructive permanent-delete, and a stale cache (e.g. a Trash the
             // flaky host's deferred moves haven't caught up to) would silently
@@ -3178,8 +3225,10 @@ class MailController
 
         // Plain per-folder model: set the message's IMAP \Seen + mirror it in the
         // index, then recompute this folder's badge. No per-user read, no
-        // thread/correspondent cross-folder marking.
-        MailCacheService::updateIndexSeen($folderPath, $uid, $seen);
+        // thread/correspondent cross-folder marking. clearBackfilled: a human
+        // explicitly touched this message, so it counts in badges again even if
+        // it came from the history backfill.
+        MailCacheService::updateIndexSeen($folderPath, $uid, $seen, clearBackfilled: true);
         MailCacheService::reconcileBadgeFromIndex($folderPath);
         $counts = FolderCache::sidebarUnreadCountsFromSession();
 
@@ -3278,7 +3327,7 @@ class MailController
 
         // Plain per-folder model: mirror IMAP \Seen in the index for all uids,
         // recompute the badge, then apply on IMAP.
-        MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen);
+        MailCacheService::updateIndexSeenBulk($folderPath, $uids, $seen, clearBackfilled: true);
         MailCacheService::reconcileBadgeFromIndex($folderPath);
         $counts = FolderCache::sidebarUnreadCountsFromSession();
 

@@ -3247,8 +3247,16 @@
                 pagination.hidden = false;
                 var range = pagination.querySelector('.pagination-range');
                 if (range) {
-                    var perPage = parseInt((document.getElementById('per-page-select') || {}).value || '25', 10) || 25;
-                    range.textContent = '1–' + Math.min(newTotal, perPage) + ' of ' + newTotal;
+                    // Per-page option VALUES are URLs; the visible number is the text.
+                    var ppSelect = document.getElementById('per-page-select');
+                    var ppText = ppSelect && ppSelect.selectedIndex >= 0
+                        ? ppSelect.options[ppSelect.selectedIndex].text
+                        : '';
+                    var perPage = parseInt(ppText, 10) || 25;
+                    // Page-aware range (deep history pages are no longer page 1 only).
+                    var pageNow = parseInt((card && card.getAttribute('data-page')) || '1', 10) || 1;
+                    var start = newTotal === 0 ? 0 : Math.min((pageNow - 1) * perPage + 1, newTotal);
+                    range.textContent = start + '–' + Math.min(pageNow * perPage, newTotal) + ' of ' + newTotal;
                 }
             }
         }
@@ -5584,9 +5592,19 @@
         }
 
         if (allOnPageSelected && total > pageCount) {
+            // Safety cap: full-history folders can hold tens of thousands of
+            // messages — never offer "select all" above the bulk limit (the
+            // server enforces the same cap on forged requests).
+            var capCard = getListCard();
+            var bulkMax = parseInt((capCard && capCard.getAttribute('data-bulk-max')) || '500', 10) || 500;
             banner.hidden = false;
-            banner.innerHTML = checkedOnPage + ' messages on this page are selected. '
-                + '<button type="button" data-select-all-action="all">Select all ' + total + ' messages ' + scope + '</button>';
+            if (total > bulkMax) {
+                banner.innerHTML = checkedOnPage + ' messages on this page are selected. '
+                    + 'This folder is too large to select all at once (limit ' + bulkMax + ').';
+            } else {
+                banner.innerHTML = checkedOnPage + ' messages on this page are selected. '
+                    + '<button type="button" data-select-all-action="all">Select all ' + total + ' messages ' + scope + '</button>';
+            }
             return;
         }
 
