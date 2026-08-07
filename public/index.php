@@ -141,6 +141,11 @@ $router->post('/test-email', fn () => $dashboardController->sendTestEmail());
 
 $router->get('/admin', fn () => $adminController->dashboard());
 $router->post('/admin/sync', fn () => $adminController->sync());
+$router->post('/admin/history/start', fn () => $adminController->historyImportStart());
+$router->post('/admin/history/stop', fn () => $adminController->historyImportStop());
+$router->get('/admin/history/status', fn () => $adminController->historyImportStatus());
+// Internal background-chain worker (token-authenticated, no session).
+$router->post('/history/worker', fn () => $adminController->historyImportWorker());
 $router->get('/admin/audit', fn () => $adminController->auditIndex());
 $router->get('/admin/users', fn () => $adminController->usersIndex());
 $router->get('/admin/users/create', fn () => $adminController->usersCreate());

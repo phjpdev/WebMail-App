@@ -585,6 +585,10 @@ class MailController
         FilterService::runBackground(false);
         perf_mark('livesync_filter_done');
 
+        // Background old-email import: any user's poll re-kicks a stalled
+        // import chain (cheap state-file read; no-op when not importing).
+        history_import_watchdog();
+
         // Reflect any newly-routed mail in THIS session's sidebar badges from the
         // updated index (mostly DB work; an IMAP STATUS only for not-yet-warmed
         // folders), then return the FRESH counts so the client bumps the badge and

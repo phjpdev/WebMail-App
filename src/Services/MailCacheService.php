@@ -1703,6 +1703,112 @@ class MailCacheService
     }
 
     /**
+     * One time-budgeted batch of the full-history import. Walks every IMAP
+     * folder; for each not-yet-complete folder pulls older-message chunks via
+     * the UID watermark cursor until the budget is spent. Fully resumable —
+     * all progress persists in mail_sync_state. Used by the background worker
+     * chain and (optionally) the CLI.
+     *
+     * @return array{complete: bool, folders_done: int, folders_total: int, rows_added: int, current_folder: string}
+     */
+    public static function historyImportBatch(ImapService $imap, float $budgetSeconds = 20.0): array
+    {
+        $paths = array_column($imap->listFolders(true), 'path');
+        $result = [
+            'complete' => false,
+            'folders_done' => 0,
+            'folders_total' => count($paths),
+            'rows_added' => 0,
+            'current_folder' => '',
+        ];
+        if ($paths === []) {
+            return $result;
+        }
+
+        // One query for every folder's backfill state.
+        $stateByPath = [];
+        foreach (Database::query(
+            'SELECT folder_path, oldest_uid, backfill_done, last_sync_at FROM mail_sync_state'
+        )->fetchAll() as $row) {
+            $stateByPath[strtolower((string) $row['folder_path'])] = $row;
+        }
+
+        $chunk = max(25, (int) (config('app')['deep_page_chunk'] ?? 200));
+        $deadline = microtime(true) + max(2.0, $budgetSeconds);
+
+        foreach ($paths as $path) {
+            $indexPath = self::indexFolderPath($path);
+            $state = $stateByPath[strtolower($indexPath)] ?? null;
+            if ($state !== null && !empty($state['backfill_done'])) {
+                $result['folders_done']++;
+                continue;
+            }
+            if (microtime(true) >= $deadline) {
+                return $result;
+            }
+
+            $result['current_folder'] = $path;
+
+            // Never-synced folder: pull the recent window first (normal
+            // badge-correct sync), then continue below.
+            if ($state === null || empty($state['last_sync_at'])) {
+                self::syncFolderHeaders($imap, $path);
+            }
+
+            $serverTotal = $imap->getMessageCount($path);
+            self::recordServerTotal($path, max(0, $serverTotal));
+            $fresh = self::getSyncState($path);
+            if (!empty($fresh['backfill_done'])) {
+                $result['folders_done']++;
+                continue;
+            }
+
+            $oldest = (int) ($fresh['oldest_uid'] ?? 0);
+            if ($oldest <= 0) {
+                $row = Database::fetchOne(
+                    'SELECT MIN(imap_uid) AS u FROM mail_index WHERE folder_path = ?',
+                    [$indexPath]
+                );
+                $oldest = (int) ($row['u'] ?? 0);
+            }
+            if ($oldest <= 0) {
+                continue; // empty/unindexable — skip this pass
+            }
+
+            while (microtime(true) < $deadline) {
+                $res = $imap->listMessagesBeforeUid($path, $oldest, $chunk);
+                if (!empty($res['failed'])) {
+                    break; // flaky chunk — the next batch retries this folder
+                }
+                if (!empty($res['exhausted']) || $res['messages'] === []) {
+                    self::setBackfillWatermark($path, $oldest, done: true);
+                    $result['folders_done']++;
+                    break;
+                }
+
+                $result['rows_added'] += self::upsertIndexRowsBulk($path, $res['messages'], backfilled: true);
+
+                $chunkMin = $oldest;
+                foreach ($res['messages'] as $msg) {
+                    $uid = (int) ($msg['uid'] ?? 0);
+                    if ($uid > 0 && $uid < $chunkMin) {
+                        $chunkMin = $uid;
+                    }
+                }
+                if ($chunkMin >= $oldest) {
+                    break; // no progress — avoid a spin
+                }
+                $oldest = $chunkMin;
+                self::setBackfillWatermark($path, $oldest);
+            }
+        }
+
+        $result['complete'] = $result['folders_done'] >= $result['folders_total'];
+
+        return $result;
+    }
+
+    /**
      * Extend the index older-ward until the requested page has rows to show
      * (or the per-request chunk budget is spent). The loop condition is on ROW
      * COUNT, not date, so requested-offset coverage is guaranteed even when

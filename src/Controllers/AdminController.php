@@ -12,6 +12,8 @@ use App\Services\AdminRuleService;
 use App\Services\AdminUserService;
 use App\Services\FilterService;
 use App\Services\FolderCache;
+use App\Services\ImapService;
+use App\Services\MailCacheService;
 
 class AdminController
 {
@@ -99,6 +101,146 @@ class AdminController
         FilterService::runBackground(true);
         flash('success', 'Mail sync completed.');
         redirect('admin');
+    }
+
+    /**
+     * ---- Background full-history import (runs even with all windows closed) ----
+     * start/stop/status are admin endpoints; the worker is a token-guarded
+     * internal endpoint driven by a self-continuing HTTP chain: each worker
+     * request runs one time-budgeted batch, then fire-and-forgets the next.
+     * Watchdogs (live-sync polls + the status endpoint) re-kick a stalled
+     * chain, so the import survives crashes and reboots.
+     */
+    public function historyImportStart(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+
+        $state = history_import_state();
+        if (empty($state['running'])) {
+            $state = [
+                'running' => true,
+                'token' => bin2hex(random_bytes(16)),
+                'heartbeat' => time(),
+                'started_at' => time(),
+                'rows_total' => (int) ($state['rows_total'] ?? 0),
+                'progress' => $state['progress'] ?? [],
+            ];
+            history_import_state_write($state);
+            $this->audit('history_import', 'Started background old-email import');
+        }
+        history_import_spawn();
+
+        json_response(['ok' => true, 'running' => true]);
+    }
+
+    public function historyImportStop(): void
+    {
+        requireAdmin();
+        verify_csrf_or_fail();
+
+        $state = history_import_state();
+        $state['running'] = false;
+        history_import_state_write($state);
+        $this->audit('history_import', 'Paused background old-email import');
+
+        json_response(['ok' => true, 'running' => false]);
+    }
+
+    public function historyImportStatus(): void
+    {
+        requireAdmin();
+        releaseSessionLock();
+        // The status poll doubles as a watchdog: a stalled chain gets re-kicked
+        // whenever an admin is looking at the dashboard.
+        history_import_watchdog();
+
+        $state = history_import_state();
+        $progress = is_array($state['progress'] ?? null) ? $state['progress'] : [];
+
+        json_response([
+            'ok' => true,
+            'running' => !empty($state['running']),
+            'complete' => !empty($state['completed_at']),
+            'rows_total' => (int) ($state['rows_total'] ?? 0),
+            'folders_done' => (int) ($progress['folders_done'] ?? 0),
+            'folders_total' => (int) ($progress['folders_total'] ?? 0),
+            'current_folder' => (string) ($progress['current_folder'] ?? ''),
+            'heartbeat_age' => isset($state['heartbeat']) ? max(0, time() - (int) $state['heartbeat']) : null,
+        ]);
+    }
+
+    /**
+     * Internal chain worker — token-authenticated (the chain carries no admin
+     * session). Runs one batch, persists progress, spawns the next link.
+     */
+    public function historyImportWorker(): void
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        $state = history_import_state();
+        $token = (string) ($_POST['token'] ?? '');
+        if (
+            empty($state['running'])
+            || $token === ''
+            || !hash_equals((string) ($state['token'] ?? ''), $token)
+        ) {
+            json_response(['ok' => false], 403);
+        }
+
+        // The spawner disconnects after ~400ms — keep running regardless.
+        ignore_user_abort(true);
+        releaseSessionLock();
+        set_time_limit(120);
+
+        // Single-flight: a concurrent link (double watchdog kick) exits silently.
+        $lock = Database::fetchOne("SELECT GET_LOCK('dj_history_import', 0) AS l");
+        if ((int) ($lock['l'] ?? 0) !== 1) {
+            json_response(['ok' => true, 'busy' => true]);
+        }
+
+        try {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                // Heartbeat anyway so the watchdog waits its full interval
+                // before retrying instead of hammering a down server.
+                $state = history_import_state();
+                $state['heartbeat'] = time();
+                history_import_state_write($state);
+                json_response(['ok' => false, 'error' => 'imap_down']);
+            }
+
+            $result = MailCacheService::historyImportBatch($imap, 20.0);
+
+            $state = history_import_state(); // re-read: Stop may have been clicked
+            $state['heartbeat'] = time();
+            $state['rows_total'] = (int) ($state['rows_total'] ?? 0) + (int) $result['rows_added'];
+            $state['progress'] = [
+                'folders_done' => $result['folders_done'],
+                'folders_total' => $result['folders_total'],
+                'current_folder' => $result['current_folder'],
+            ];
+            if ($result['complete']) {
+                $state['running'] = false;
+                $state['completed_at'] = time();
+            }
+            history_import_state_write($state);
+
+            $continue = !empty($state['running']);
+        } catch (\Throwable $e) {
+            app_log('History import batch failed: ' . $e->getMessage());
+            $state = history_import_state();
+            $state['heartbeat'] = time();
+            history_import_state_write($state);
+            $continue = false; // watchdog resumes after the heartbeat ages
+        } finally {
+            Database::query("SELECT RELEASE_LOCK('dj_history_import')");
+        }
+
+        if ($continue) {
+            history_import_spawn();
+        }
+
+        json_response(['ok' => true]);
     }
 
     public function usersIndex(): void

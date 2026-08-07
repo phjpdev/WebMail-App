@@ -156,6 +156,81 @@ function base_path(string $path = ''): string
 }
 
 /**
+ * ---- Background full-history import (no command line / no cron) ----
+ * A self-continuing HTTP chain: each worker request runs one time-budgeted
+ * batch, then fire-and-forgets the next request to itself. State lives in
+ * storage/history-import-state.json (storage/ is blocked from the web).
+ * Watchdogs (live-sync polls + the admin status endpoint) re-kick the chain
+ * if it stalls, so it survives crashes and even server reboots as soon as
+ * anyone opens the app.
+ */
+function history_import_state(): array
+{
+    $path = base_path('storage/history-import-state.json');
+    if (!is_file($path)) {
+        return [];
+    }
+    $data = json_decode((string) @file_get_contents($path), true);
+
+    return is_array($data) ? $data : [];
+}
+
+function history_import_state_write(array $state): void
+{
+    @file_put_contents(
+        base_path('storage/history-import-state.json'),
+        json_encode($state),
+        LOCK_EX
+    );
+}
+
+/**
+ * Fire-and-forget a background worker request to our own app. Returns fast
+ * (~300ms max); the spawned request keeps running server-side.
+ */
+function history_import_spawn(): void
+{
+    $state = history_import_state();
+    if (empty($state['running']) || empty($state['token'])) {
+        return;
+    }
+
+    $url = rtrim((string) config('app')['url'], '/') . '/history/worker';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['token' => (string) $state['token']]),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT_MS => 400,
+        CURLOPT_CONNECTTIMEOUT_MS => 400,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => 0,
+    ]);
+    @curl_exec($ch); // timeout expected — the worker keeps running
+    curl_close($ch);
+}
+
+/**
+ * Re-kick the chain when it looks dead (no heartbeat for 90s). Called from
+ * background polls and the admin status endpoint — cheap file read.
+ */
+function history_import_watchdog(): void
+{
+    $state = history_import_state();
+    if (empty($state['running'])) {
+        return;
+    }
+    if (time() - (int) ($state['heartbeat'] ?? 0) < 90) {
+        return;
+    }
+    // Stamp the heartbeat BEFORE spawning so concurrent watchdogs don't
+    // multi-spawn (the worker's GET_LOCK is the hard guarantee anyway).
+    $state['heartbeat'] = time();
+    history_import_state_write($state);
+    history_import_spawn();
+}
+
+/**
  * Record a named timing checkpoint for the slow-request log. No-op unless
  * perf_register_slow_request_logger() ran (i.e. web requests only).
  */
