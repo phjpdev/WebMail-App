@@ -49,6 +49,12 @@ class FolderCache
      */
     public function set(array $folders, array $unreadCounts = []): void
     {
+        // Re-open the session BEFORE writing: after releaseSessionLock() a bare
+        // $_SESSION write only mutates the in-memory copy, and the next
+        // ensure_session_writable() replaces $_SESSION wholesale from disk —
+        // silently discarding the expensive cold IMAP folder list and forcing
+        // every full page load to re-list ~1000 folders twice.
+        ensure_session_writable();
         $_SESSION[self::SESSION_KEY] = [
             'folders' => $folders,
             'unread_counts' => self::sanitizeUnreadCounts($unreadCounts),
@@ -226,6 +232,34 @@ class FolderCache
         }
     }
 
+    /** True while a bulk badge pass batches setUnreadCount() normalization. */
+    private static bool $unreadBatchActive = false;
+
+    /**
+     * Defer the full-map normalize in setUnreadCount() until endUnreadBatch().
+     * The per-call normalize is O(all folders); calling it once per folder in a
+     * ~1000-folder reconcile loop was measured at ~10s of CPU per poll.
+     */
+    public static function beginUnreadBatch(): void
+    {
+        self::$unreadBatchActive = true;
+    }
+
+    public static function endUnreadBatch(): void
+    {
+        if (!self::$unreadBatchActive) {
+            return;
+        }
+        self::$unreadBatchActive = false;
+        ensure_session_writable();
+        self::ensureCache();
+        if (isset($_SESSION[self::SESSION_KEY]['unread_counts'])) {
+            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
+                $_SESSION[self::SESSION_KEY]['unread_counts']
+            );
+        }
+    }
+
     /**
      * Patch a single folder's cached unread count (e.g. from mail_index reconciliation).
      */
@@ -242,9 +276,11 @@ class FolderCache
             $_SESSION[self::SESSION_KEY]['unread_counts'][$path] = folder_shows_unread_badge($path)
                 ? max(0, $count)
                 : 0;
-            $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
-                $_SESSION[self::SESSION_KEY]['unread_counts']
-            );
+            if (!self::$unreadBatchActive) {
+                $_SESSION[self::SESSION_KEY]['unread_counts'] = self::normalizeUnreadCounts(
+                    $_SESSION[self::SESSION_KEY]['unread_counts']
+                );
+            }
         }
     }
 
@@ -754,9 +790,15 @@ class FolderCache
         $cache = new self();
 
         if (Auth::user() !== null && empty($_SESSION['_mail_registry_defaults'])) {
-            if ((new SystemBootstrapService())->ensureRegistryDefaults()) {
+            $bootstrap = new SystemBootstrapService();
+            $bootstrap->ensurePerformanceIndexes();
+            if ($bootstrap->ensureRegistryDefaults()) {
                 (new self())->clear();
             }
+            // Persist the flag even when the request already released the
+            // session lock — a discarded write here re-runs the bootstrap
+            // (and its IMAP round trips) on every subsequent request.
+            ensure_session_writable();
             $_SESSION['_mail_registry_defaults'] = true;
         }
 

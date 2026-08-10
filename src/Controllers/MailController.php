@@ -976,6 +976,14 @@ class MailController
      */
     private function reconcileSidebarBadgesFromIndex(bool $dbOnly = false): void
     {
+        // Light polls piggyback this reconcile on every 30s folder sync from
+        // every open tab. It only propagates DB-truth badge changes, so once
+        // per ~20s per session is plenty — the skipped polls still return
+        // their cached rows instantly.
+        if ($dbOnly && time() - (int) ($_SESSION['_badge_reconcile_at'] ?? 0) < 20) {
+            return;
+        }
+
         perf_mark('reconcile_start');
         $folderData = FolderCache::load(skipUnreadRefresh: true);
 
@@ -1005,27 +1013,38 @@ class MailController
             }
         }
 
-        foreach ($folderData['folders'] ?? [] as $folder) {
-            $path = (string) ($folder['path'] ?? '');
-            if ($path === '' || !folder_badge_uses_index_truth($path)) {
-                continue;
+        FolderCache::beginUnreadBatch();
+        try {
+            foreach ($folderData['folders'] ?? [] as $folder) {
+                $path = (string) ($folder['path'] ?? '');
+                if ($path === '' || !folder_badge_uses_index_truth($path)) {
+                    continue;
+                }
+                // In the frequent DB-only path, don't clobber a badge that's
+                // optimistically ahead of a not-yet-synced index (pending new mail) —
+                // only reconcile settled folders. That still lets another account's
+                // READ (which lowers the shared index count) propagate here, without
+                // prematurely dropping a fresh new-mail bump.
+                if ($dbOnly && FolderCache::isPendingBadgePath($path)) {
+                    continue;
+                }
+                // Never-indexed folders have no index truth to reconcile — their
+                // badge keeps the session/STATUS value. Skipping them turns a
+                // ~1000-folder loop into a handful of active folders.
+                if (!MailCacheService::hasFolderDataInSet($path, $synced)) {
+                    continue;
+                }
+                MailCacheService::reconcileBadgeFromIndex($path);
             }
-            // In the frequent DB-only path, don't clobber a badge that's
-            // optimistically ahead of a not-yet-synced index (pending new mail) —
-            // only reconcile settled folders. That still lets another account's
-            // READ (which lowers the shared index count) propagate here, without
-            // prematurely dropping a fresh new-mail bump.
-            if ($dbOnly && FolderCache::isPendingBadgePath($path)) {
-                continue;
-            }
-            // Never-indexed folders have no index truth to reconcile — their
-            // badge keeps the session/STATUS value. Skipping them turns a
-            // ~1000-folder loop into a handful of active folders.
-            if (!MailCacheService::hasFolderDataInSet($path, $synced)) {
-                continue;
-            }
-            MailCacheService::reconcileBadgeFromIndex($path);
+        } finally {
+            FolderCache::endUnreadBatch();
         }
+        ensure_session_writable();
+        $_SESSION['_badge_reconcile_at'] = time();
+        // setUnreadCount() re-acquired the session lock for its writes; without
+        // this release the lock stays held to the end of the request, and every
+        // other request of this session queues behind it in session_start().
+        releaseSessionLock();
         perf_mark('reconcile_done');
     }
 

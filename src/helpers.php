@@ -2008,12 +2008,15 @@ function mail_find_messages_in_folder_for_subject(string $folderPath, string $ba
     $indexPath = \App\Services\FolderCache::resolvePath($folderPath);
 
     try {
+        // Subject LIKE narrows in SQL (superset of the exact normalized
+        // comparison below) — the unfiltered whole-folder select was a
+        // per-message-open scan of thousands of rows.
         $rows = App\Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date
              FROM mail_index i
-             WHERE i.folder_path = ?
+             WHERE i.folder_path = ? AND i.subject LIKE ?
              ORDER BY i.msg_date ASC',
-            [$indexPath]
+            [$indexPath, '%' . addcslashes($baseSubject, '%_\\') . '%']
         )->fetchAll();
     } catch (\Throwable) {
         return [];
@@ -3689,6 +3692,23 @@ function mail_resort_list_by_message_date(array $messages): array
  * @return array{corr_folder: string, employee_inbox: string, employee_user_id: int, corr_email: string, peer_thread?: bool}|null
  */
 function mail_resolve_correspondent_thread_context(string $folderPath, ?array $message = null): ?array
+{
+    // Called up to 4x per message open, and the non-correspondent branches run
+    // leading-wildcard LIKE scans over mail_index — memoize per (folder, message).
+    static $memo = [];
+    $memoKey = $folderPath . '|' . ($message !== null
+        ? (string) ($message['uid'] ?? md5((string) ($message['subject'] ?? '')))
+        : '');
+    if (array_key_exists($memoKey, $memo)) {
+        return $memo[$memoKey];
+    }
+
+    $result = mail_resolve_correspondent_thread_context_uncached($folderPath, $message);
+
+    return $memo[$memoKey] = $result;
+}
+
+function mail_resolve_correspondent_thread_context_uncached(string $folderPath, ?array $message = null): ?array
 {
     $folderPath = \App\Services\FolderCache::resolvePath($folderPath);
     if ($folderPath === '') {
@@ -6754,6 +6774,16 @@ function sidebar_dedupe_primary_bucket(array $folders, string $bucket): array
 
 function folder_icon_type(string $path): string
 {
+    // Sits under folder_shows_unread_badge()/is_spam_folder()/is_trash_folder()
+    // inside the ~1000-folder badge loops — the un-memoized string parsing here
+    // was measured at ~10s of CPU per badge reconcile on a large registry.
+    static $memo = [];
+
+    return $memo[$path] ??= folder_icon_type_uncached($path);
+}
+
+function folder_icon_type_uncached(string $path): string
+{
     // Shared mailbox: no per-user "own inbox". Every user icons folders the same
     // way as admin — the logged-in employee's INBOX.<name>.Inbox is a name folder,
     // not a second Inbox.
@@ -7801,7 +7831,11 @@ function mail_is_employee_inbound_to_shared_mailbox(string $folderPath, array $m
  */
 function folder_shows_unread_badge(string $path): bool
 {
-    return !is_trash_folder($path) && !is_spam_folder($path);
+    // Called 3-5x per folder per badge pass (~1000 folders) — the underlying
+    // is_trash/is_spam checks re-parse the path every time, so memoize here.
+    static $memo = [];
+
+    return $memo[$path] ??= (!is_trash_folder($path) && !is_spam_folder($path));
 }
 
 /** Drafts badge shows total draft count, not IMAP \\Seen flags. */
@@ -8143,8 +8177,14 @@ function mail_per_page(): int
     if (isset($_GET['per_page'])) {
         $requested = (int) $_GET['per_page'];
         if (in_array($requested, $allowed, true)) {
-            $_SESSION['mail_per_page'] = $requested;
-            persist_user_preference('mail_per_page', $requested);
+            // Persist only a CHANGE: the list sync poll sends per_page on every
+            // request, and unconditionally writing here re-acquired the session
+            // lock plus a DB preference update every 30 seconds per tab.
+            if ((int) ($_SESSION['mail_per_page'] ?? 0) !== $requested) {
+                ensure_session_writable();
+                $_SESSION['mail_per_page'] = $requested;
+                persist_user_preference('mail_per_page', $requested);
+            }
 
             return $requested;
         }
@@ -9664,12 +9704,16 @@ function mail_find_cached_thread_replies(string $folderPath, int $uid, array $me
     $currentKey = mail_thread_reply_session_key($folderPath, $uid);
 
     try {
+        // Narrow in SQL to this thread's subject: fetching EVERY 'Re:%' row in
+        // the account (tens of thousands) and filtering in PHP cost seconds per
+        // message open. The LIKE filter is a superset of the exact normalized
+        // comparison below, which still decides membership.
         $rows = App\Database::query(
             'SELECT folder_path, imap_uid, from_addr, subject, msg_date
              FROM mail_index
-             WHERE subject LIKE ?
+             WHERE subject LIKE ? AND subject LIKE ?
              ORDER BY msg_date ASC',
-            ['Re:%']
+            ['Re:%', '%' . addcslashes($baseSubject, '%_\\') . '%']
         )->fetchAll();
     } catch (\Throwable) {
         return [];
@@ -9806,9 +9850,9 @@ function mail_find_correspondent_inbound_for_subject(
         $rows = App\Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date
              FROM mail_index i
-             WHERE LOWER(i.folder_path) = LOWER(?)
+             WHERE LOWER(i.folder_path) = LOWER(?) AND i.subject LIKE ?
              ORDER BY i.msg_date ASC',
-            [$ownInbox]
+            [$ownInbox, '%' . addcslashes($baseSubject, '%_\\') . '%']
         )->fetchAll();
     } catch (\Throwable) {
         return [];
@@ -9911,9 +9955,9 @@ function mail_find_correspondent_outbound_for_subject(
         $rows = App\Database::query(
             'SELECT i.imap_uid, i.from_addr, i.subject, i.msg_date
              FROM mail_index i
-             WHERE i.folder_path = ?
+             WHERE i.folder_path = ? AND i.subject LIKE ?
              ORDER BY i.msg_date ASC',
-            [$indexPath]
+            [$indexPath, '%' . addcslashes($baseSubject, '%_\\') . '%']
         )->fetchAll();
     } catch (\Throwable) {
         return [];

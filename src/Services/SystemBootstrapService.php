@@ -16,6 +16,41 @@ class SystemBootstrapService
     private static bool $lastChanged = false;
 
     /**
+     * One-time performance indexes for the thread builder's subject lookups and
+     * the message-id copy resolution. Deployments receive only file updates, so
+     * the app self-migrates: information_schema check first, so the normal case
+     * is one cheap SELECT per session.
+     */
+    public function ensurePerformanceIndexes(): void
+    {
+        $wanted = [
+            ['mail_index', 'idx_mail_index_subject',
+                'CREATE INDEX idx_mail_index_subject ON mail_index (subject(64))'],
+            ['mail_index', 'idx_mail_index_message_id',
+                'CREATE INDEX idx_mail_index_message_id ON mail_index (message_id)'],
+            ['mail_bodies', 'idx_mail_bodies_message_id',
+                'CREATE INDEX idx_mail_bodies_message_id ON mail_bodies (message_id)'],
+        ];
+
+        foreach ($wanted as [$table, $index, $ddl]) {
+            try {
+                $present = Database::fetchOne(
+                    'SELECT 1 AS present FROM information_schema.statistics
+                     WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?
+                     LIMIT 1',
+                    [$table, $index]
+                );
+                if ($present === null) {
+                    Database::query($ddl);
+                    app_log('Created performance index ' . $index . ' on ' . $table);
+                }
+            } catch (\Throwable $e) {
+                app_log('Perf index ' . $index . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
      * Fast DB-only registry rows so Support appears in the sidebar without IMAP.
      *
      * @return bool true when anything was inserted or updated

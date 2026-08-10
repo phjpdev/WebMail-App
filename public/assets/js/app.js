@@ -1301,7 +1301,9 @@
             if (!targetUid) return;
             var targetRow = rowsForUid(targetUid)[0];
             if (!targetRow || targetRow.getAttribute('data-seen') === '1') return;
-            warmMessageBodyForRow(targetRow);
+            // prefetchPane alone: it fetches AND caches the body server-side
+            // (/pane?prefetch=1 -> getBody/saveBody). Firing warm-body too made
+            // both requests IMAP-fetch the same message in parallel.
             prefetchPane(targetUid);
         }, 80);
     }

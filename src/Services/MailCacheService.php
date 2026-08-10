@@ -1922,7 +1922,10 @@ class MailCacheService
             'html' => $row['html_body'],
             'plain' => $row['plain_body'],
             'attachments' => is_array($attachments) ? $attachments : [],
-            'seen' => self::effectiveSeen($folderPath, $uid),
+            // Same truth effectiveSeen() reads — from the index row already
+            // fetched above, saving a third query per call (getBody runs in
+            // loops inside the thread builder).
+            'seen' => $index !== null && (bool) $index['seen'],
             'flagged' => $index !== null ? (bool) $index['flagged'] : false,
         ];
     }

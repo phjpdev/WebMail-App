@@ -193,17 +193,26 @@ if ($displayParentKey !== [] && $grouped['other'] !== []) {
     }
 
     if ($involved !== []) {
-        $findImapAncestorKey = static function (string $path) use ($folderByKey): ?string {
-            $path = \App\Services\FolderCache::resolvePath($path);
-            while (($pos = strrpos($path, '.')) !== false) {
-                $path = substr($path, 0, $pos);
-                $key = strtolower(employee_mailbox_root_prefix($path));
+        // Memoized: the convergence loop below re-asks for the same paths every
+        // pass, and each uncached lookup walks every ancestor segment — at
+        // ~1000 folders that multiplied into seconds of render time.
+        $imapAncestorMemo = [];
+        $findImapAncestorKey = static function (string $path) use ($folderByKey, &$imapAncestorMemo): ?string {
+            if (array_key_exists($path, $imapAncestorMemo)) {
+                return $imapAncestorMemo[$path];
+            }
+            $walk = \App\Services\FolderCache::resolvePath($path);
+            $found = null;
+            while (($pos = strrpos($walk, '.')) !== false) {
+                $walk = substr($walk, 0, $pos);
+                $key = strtolower(employee_mailbox_root_prefix($walk));
                 if ($key !== '' && isset($folderByKey[$key])) {
-                    return $key;
+                    $found = $key;
+                    break;
                 }
             }
 
-            return null;
+            return $imapAncestorMemo[$path] = $found;
         };
 
         $queue = array_keys($involved);
