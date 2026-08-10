@@ -6811,6 +6811,58 @@
         initMailThreadCards(document);
     }
 
+    // The message currently open for reading: the full-page read card, or the
+    // reading-pane card when the pane is visible and not showing a draft editor.
+    function currentOpenReadCard() {
+        var cards = document.querySelectorAll('.mail-read-card[data-uid]');
+        for (var i = 0; i < cards.length; i++) {
+            // #print-message-root holds a transient, toolbar-stripped print clone.
+            if (!cards[i].closest('#reading-pane-body') && !cards[i].closest('#print-message-root')) {
+                return cards[i];
+            }
+        }
+        // While a pane load is in flight the body still holds the PREVIOUS
+        // message's card behind the skeleton (mouse clicks are blocked by
+        // pointer-events:none there) — treat it as "nothing open".
+        var viewport = document.getElementById('reading-pane-viewport');
+        if (viewport && viewport.classList.contains('is-pane-loading')) return null;
+        var paneBody = document.getElementById('reading-pane-body');
+        if (paneBody && !paneBody.hidden && !paneBody.querySelector('.draft-editor-pane')) {
+            return paneBody.querySelector('.mail-read-card[data-uid]');
+        }
+        return null;
+    }
+
+    // Delete key deletes the open message by driving its toolbar Delete button,
+    // so the confirm dialog, thread expansion, optimistic UI and server call are
+    // identical to a mouse click.
+    function initDeleteKeyShortcut() {
+        document.addEventListener('keydown', function (e) {
+            if (e.key !== 'Delete' || e.repeat || e.defaultPrevented) return;
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+
+            // Not while typing: inputs, selects, compose/rich-text editors.
+            var el = e.target;
+            if (el && el.nodeType === 1) {
+                if (el.isContentEditable) return;
+                if (el.closest && el.closest('input, textarea, select')) return;
+            }
+
+            // Not while a dialog, context menu or any compose UI is open.
+            if (document.querySelector('.app-modal:not([hidden])')) return;
+            if (document.querySelector('.context-menu:not([hidden])')) return;
+            if (isComposeOpen()) return;
+
+            var card = currentOpenReadCard();
+            if (!card) return;
+            var btn = card.querySelector('[data-mail-action="trash"]');
+            if (!btn || btn.disabled) return;
+
+            e.preventDefault();
+            btn.click();
+        });
+    }
+
     function initRichEditor(root) {
         root = root || document;
         var form = root.querySelector ? root.querySelector('#compose-form') : document.getElementById('compose-form');
@@ -9339,6 +9391,7 @@
         initLiveSync();  // gentle variant: one lightweight request every 2 min
         initComposePanel();
         initReadViewActions();
+        initDeleteKeyShortcut();
         initConfirmForms();
         initGlobalFormLoading();
         initMobileReadSwipe();
