@@ -316,9 +316,27 @@
         return currentFolderKind() === 'trash';
     }
 
-    function deleteConfirmOptions(count) {
+    function decodeFolderEnc(enc) {
+        if (!enc) return '';
+        try {
+            return window.atob(String(enc).replace(/-/g, '+').replace(/_/g, '/'));
+        } catch (e) {
+            return '';
+        }
+    }
+
+    // Whether a delete acting on this source folder is permanent. The list
+    // card's folder kind covers list pages; the path check covers the
+    // standalone read page (e.g. mobile), where there is no list card.
+    function isTrashSource(sourceFolderEnc) {
+        if (isTrashFolder()) return true;
+        var path = decodeFolderEnc(sourceFolderEnc);
+        return path !== '' && path.toLowerCase().indexOf('trash') >= 0;
+    }
+
+    function deleteConfirmOptions(count, permanent) {
         var n = count || 1;
-        if (isTrashFolder()) {
+        if (permanent === undefined ? isTrashFolder() : permanent) {
             return {
                 title: n === 1 ? 'Delete permanently?' : 'Delete ' + n + ' messages permanently?',
                 message: n === 1
@@ -5896,6 +5914,14 @@
         }
 
         if (action === 'delete') {
+            // Move-to-Trash is recoverable — run it immediately, no dialog.
+            // Only a permanent delete (inside Trash) still asks first.
+            if (!isTrashFolder()) {
+                swallowBulkDeleteRejection(
+                    runBulkCommandExecute(action, selections, folderEnc, triggerBtn)
+                );
+                return;
+            }
             var deleteOpts = deleteConfirmOptions(selectionCount);
             showConfirmAction(Object.assign({}, deleteOpts, {
                 loadingLabel: deleteLoadingMessage(selectionCount),
@@ -5942,22 +5968,7 @@
                 showToast('error', 'Choose a folder to move to.');
                 return;
             }
-            if (isSpamFolderPath(moveTargetPath)) {
-                var spamCount = effectiveSelectionCount();
-                showConfirmAction({
-                    title: spamCount === 1 ? 'Move to Spam?' : 'Move ' + spamCount + ' messages to Spam?',
-                    message: spamCount === 1
-                        ? 'This message will be moved to the Spam folder.'
-                        : 'These messages will be moved to the Spam folder.',
-                    confirmLabel: 'Move to Spam',
-                    danger: false,
-                    loadingLabel: spamCount === 1 ? 'Moving to Spam…' : 'Moving messages…',
-                    action: function () {
-                        return runBulkCommandExecute(action, selections, folderEnc, triggerBtn);
-                    }
-                });
-                return;
-            }
+            // Moves to Spam run immediately like any other move — no dialog.
         }
 
         runBulkCommandExecute(action, selections, folderEnc, triggerBtn);
@@ -6199,6 +6210,17 @@
         applyUnreadCounts(counts);
     }
 
+    // Direct (no-confirm) delete calls: every rejection path inside
+    // runBulkCommandExecute has already shown the user a toast or op-toast, so
+    // the rejection itself only needs consuming to avoid unhandledrejection
+    // console noise. (The confirm-wrapped Trash path consumes it via
+    // showConfirmAction's catch instead.)
+    function swallowBulkDeleteRejection(promise) {
+        if (promise && typeof promise.catch === 'function') {
+            promise.catch(function () { /* feedback already shown */ });
+        }
+    }
+
     function runBulkCommandExecute(action, selections, folderEnc, triggerBtn) {
         selections = selections || selectedMailSelections();
         var uids = selections.map(function (sel) { return sel.uid; });
@@ -6348,6 +6370,7 @@
             }
             if (listMutationInFlight) {
                 if (action === 'delete') {
+                    showToast('error', 'Please wait for the current action to finish…', 2500);
                     return Promise.reject(new Error('Please wait for the current action to finish.'));
                 }
                 return;
@@ -8302,7 +8325,19 @@
                 }
             }
             if (kind === 'trash') {
-                var bulkDeleteOpts = deleteConfirmOptions(multiSelections.length);
+                // Permanent when the list is Trash OR any selected row lives in a
+                // Trash folder (global search results span every folder and the
+                // search page has no folder-kind card to consult).
+                var permanentBulk = isTrashFolder() || multiSelections.some(function (s) {
+                    return isTrashSource(s.folderB64 || '');
+                });
+                if (!permanentBulk) {
+                    swallowBulkDeleteRejection(
+                        runBulkCommandExecute('delete', multiSelections, listFolderEnc, triggerBtn)
+                    );
+                    return Promise.resolve(true);
+                }
+                var bulkDeleteOpts = deleteConfirmOptions(multiSelections.length, true);
                 return showConfirmAction(Object.assign({}, bulkDeleteOpts, {
                     loadingLabel: deleteLoadingMessage(multiSelections.length),
                     action: function () {
@@ -8321,7 +8356,13 @@
             var tFolderEnc = (threadRow && threadRow.getAttribute('data-folder-b64')) || sourceFolderEnc || currentMailFolderEnc();
             var threadSel = threadUids.map(function (u) { return { uid: u, folderB64: tFolderEnc }; });
             if (kind === 'trash') {
-                var thrDeleteOpts = deleteConfirmOptions(threadUids.length);
+                if (!isTrashSource(tFolderEnc)) {
+                    swallowBulkDeleteRejection(
+                        runBulkCommandExecute('delete', threadSel, tFolderEnc, triggerBtn)
+                    );
+                    return Promise.resolve(true);
+                }
+                var thrDeleteOpts = deleteConfirmOptions(threadUids.length, true);
                 return showConfirmAction(Object.assign({}, thrDeleteOpts, {
                     loadingLabel: deleteLoadingMessage(threadUids.length),
                     action: function () {
@@ -8354,19 +8395,14 @@
         }
 
         var confirmCfg = null;
-        if (kind === 'trash') {
-            confirmCfg = deleteConfirmOptions(1);
-        } else if (kind === 'spam') {
-            confirmCfg = {
-                title: 'Move to Spam?',
-                message: 'This message will be moved to the Spam folder.',
-                confirmLabel: 'Move to Spam',
-                danger: false
-            };
+        // Only a permanent delete (message living in Trash) still confirms;
+        // recoverable moves to Trash or Spam run immediately.
+        if (kind === 'trash' && isTrashSource(sourceFolderEnc)) {
+            confirmCfg = deleteConfirmOptions(1, true);
         }
         if (confirmCfg) {
             var actionOpts = {
-                loadingLabel: kind === 'trash' ? deleteLoadingMessage(1) : 'Moving to Spam…',
+                loadingLabel: deleteLoadingMessage(1),
                 // Completion feedback comes from the stateful op toast.
                 action: function () {
                     return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn);
@@ -8375,38 +8411,31 @@
             return showConfirmAction(Object.assign({}, confirmCfg, actionOpts))
                 .then(function (ok) { return !!ok; });
         }
-        return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn).then(function () { return true; });
+        return dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn)
+            .then(function (r) { return r !== false; }, function () { return false; });
     }
 
     // Move a whole conversation to Spam (kebab on a thread row). message/spam
     // accepts uids[]; optimistically drop the row and let the op resolve.
     function dispatchThreadSpam(sourceFolderEnc, threadUids, folderEnc, triggerBtn) {
         if (blockedByCriticalOp()) return Promise.resolve(false);
-        return showConfirmAction({
-            title: threadUids.length === 1 ? 'Move to Spam?' : 'Move ' + threadUids.length + ' messages to Spam?',
-            message: 'These messages will be moved to the Spam folder.',
-            confirmLabel: 'Move to Spam',
-            danger: false,
-            loadingLabel: 'Moving to Spam…',
-            action: function () {
-                var winner = threadUids[0];
-                beginListMutationQuiet(2500);
-                markUidsPendingRemoval(threadUids);
-                removeRowByUid(winner);
-                clearReadingPaneIfShowingUids(threadUids);
-                var payload = new URLSearchParams();
-                payload.set('_csrf', csrf);
-                payload.set('folder', folderEnc);
-                threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
-                return fireListMutation('message/spam', payload, {
-                    opToastHandle: beginOpToast({
-                        progress: 'Moving to Spam…',
-                        done: threadUids.length === 1 ? 'Message moved to Spam.' : 'Conversation moved to Spam.',
-                        fail: 'The messages could not be moved to Spam. They have been restored.'
-                    })
-                }).finally(function () { endListMutationQuiet(800); });
-            }
-        }).then(function (ok) { return !!ok; });
+        var winner = threadUids[0];
+        beginListMutationQuiet(2500);
+        markUidsPendingRemoval(threadUids);
+        removeRowByUid(winner);
+        clearReadingPaneIfShowingUids(threadUids);
+        var payload = new URLSearchParams();
+        payload.set('_csrf', csrf);
+        payload.set('folder', folderEnc);
+        threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
+        return fireListMutation('message/spam', payload, {
+            opToastHandle: beginOpToast({
+                progress: 'Moving to Spam…',
+                done: threadUids.length === 1 ? 'Message moved to Spam.' : 'Conversation moved to Spam.',
+                fail: 'The messages could not be moved to Spam. They have been restored.'
+            })
+        }).finally(function () { endListMutationQuiet(800); })
+            .then(function () { return true; }, function () { return false; });
     }
 
     function dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn) {
@@ -9279,6 +9308,86 @@
         updateSidebarSectionBadge();
     }
 
+    // Drag the divider between the message list and the reading pane to resize
+    // the list column; the width persists (localStorage) and a double-click
+    // resets to the default 42% split. The resizer is a sibling of the list
+    // column, so AJAX folder swaps (which replace only .mail-list-column) keep
+    // its listeners alive.
+    function initListColumnResizer() {
+        var resizer = document.getElementById('list-column-resizer');
+        var workspace = document.getElementById('mail-workspace');
+        if (!resizer || !workspace) return;
+        var MIN = 340;
+        var root = document.documentElement;
+
+        function maxWidth() {
+            // Keep the reading pane usable: its CSS min-width is 360px.
+            var total = workspace.getBoundingClientRect().width;
+            return Math.max(MIN, Math.min(720, total - 380));
+        }
+
+        function apply(px) {
+            root.style.setProperty('--list-column-width', px + 'px');
+            workspace.classList.add('has-custom-list-width');
+        }
+
+        try {
+            var saved = parseInt(localStorage.getItem('dj_list_column_width'), 10);
+            if (saved && saved >= MIN) {
+                // Below 1024px the pane is hidden and maxWidth() would clamp
+                // against a meaningless single-column layout; the CSS max-width
+                // cap protects the pane, so apply the saved value as-is there.
+                var narrow = window.matchMedia('(max-width: 1023px)').matches;
+                apply(narrow ? saved : Math.min(saved, maxWidth()));
+            }
+        } catch (e) { /* storage blocked */ }
+
+        var dragging = false;
+        function onMove(e) {
+            if (!dragging) return;
+            var x = e.touches ? e.touches[0].clientX : e.clientX;
+            var w = Math.round(x - workspace.getBoundingClientRect().left);
+            if (w < MIN) w = MIN;
+            var max = maxWidth();
+            if (w > max) w = max;
+            apply(w);
+        }
+        function onUp() {
+            if (!dragging) return;
+            dragging = false;
+            resizer.classList.remove('is-dragging');
+            document.body.classList.remove('is-resizing-list-column');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.removeEventListener('touchmove', onMove);
+            document.removeEventListener('touchend', onUp);
+            document.removeEventListener('touchcancel', onUp);
+            try {
+                var px = parseInt(getComputedStyle(root).getPropertyValue('--list-column-width'), 10);
+                if (px) localStorage.setItem('dj_list_column_width', String(px));
+            } catch (e) { /* storage blocked */ }
+        }
+        function start(e) {
+            if (window.matchMedia('(max-width: 1023px)').matches) return;
+            e.preventDefault();
+            dragging = true;
+            resizer.classList.add('is-dragging');
+            document.body.classList.add('is-resizing-list-column');
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+            document.addEventListener('touchmove', onMove, { passive: false });
+            document.addEventListener('touchend', onUp);
+            document.addEventListener('touchcancel', onUp);
+        }
+        resizer.addEventListener('mousedown', start);
+        resizer.addEventListener('touchstart', start, { passive: false });
+        resizer.addEventListener('dblclick', function () {
+            root.style.removeProperty('--list-column-width');
+            workspace.classList.remove('has-custom-list-width');
+            try { localStorage.removeItem('dj_list_column_width'); } catch (e) { /* storage blocked */ }
+        });
+    }
+
     // Drag the divider between the sidebar and main content to resize the sidebar;
     // the width persists (localStorage) and a double-click resets to default.
     function initSidebarResizer() {
@@ -9314,6 +9423,7 @@
             document.removeEventListener('mouseup', onUp);
             document.removeEventListener('touchmove', onMove);
             document.removeEventListener('touchend', onUp);
+            document.removeEventListener('touchcancel', onUp);
             try {
                 var px = parseInt(getComputedStyle(root).getPropertyValue('--sidebar-width'), 10);
                 if (px) localStorage.setItem('dj_sidebar_width', String(px));
@@ -9329,6 +9439,7 @@
             document.addEventListener('mouseup', onUp);
             document.addEventListener('touchmove', onMove, { passive: false });
             document.addEventListener('touchend', onUp);
+            document.addEventListener('touchcancel', onUp);
         }
         resizer.addEventListener('mousedown', start);
         resizer.addEventListener('touchstart', start, { passive: false });
@@ -9366,6 +9477,7 @@
 
     document.addEventListener('DOMContentLoaded', function () {
         initSidebarResizer();
+        initListColumnResizer();
         initPasswordToggles();
         initToasts();
         initIdleLogout();

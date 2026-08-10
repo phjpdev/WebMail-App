@@ -3,6 +3,8 @@
 <div class="mail-workspace" id="mail-workspace">
 <?php require base_path('views/mail/list-column.php'); ?>
 
+<div id="list-column-resizer" class="list-column-resizer" role="separator" aria-orientation="vertical" aria-label="Resize message list" title="Drag to resize — double-click to reset"></div>
+
 <aside class="reading-pane" id="reading-pane" aria-label="Message preview">
     <div class="reading-pane-viewport" id="reading-pane-viewport">
         <div class="reading-pane-empty" id="reading-pane-empty">

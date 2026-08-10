@@ -5649,6 +5649,44 @@ body:has(.mail-workspace) {
     overflow: hidden;
 }
 
+/* Drag handle between the message list and the reading pane. Hidden by
+   default; shown on desktop widths where the panes sit side by side. */
+.list-column-resizer {
+    display: none;
+    flex: 0 0 11px;
+    /* Overlap mostly into the reading pane: the list column's right edge
+       hosts its 6px scrollbar, which must stay grabbable for scrolling. */
+    margin-left: -2px;
+    margin-right: -9px;
+    position: relative;
+    z-index: 30;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+}
+
+.list-column-resizer::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 1px;
+    width: 2px;
+    background: transparent;
+    transition: background 0.12s ease, width 0.12s ease;
+}
+
+.list-column-resizer:hover::before,
+.list-column-resizer.is-dragging::before {
+    width: 4px;
+    background: var(--color-primary);
+}
+
+body.is-resizing-list-column {
+    cursor: col-resize;
+    user-select: none;
+}
+
 .mail-list-column .page-header--compact {
     flex-shrink: 0;
     margin-bottom: 0;
@@ -7422,17 +7460,29 @@ body:has(.mail-workspace) {
     }
 
     .mail-list-column {
-        flex: 0 0 42%;
-        width: 42%;
+        flex: 0 0 var(--list-column-width, 42%);
+        width: var(--list-column-width, 42%);
         min-width: 340px;
         max-width: 560px;
         border-right: 1px solid var(--color-border);
+    }
+
+    /* A user-dragged width may exceed the default 560px cap, but must always
+       leave the reading pane its 360px minimum. The calc() re-evaluates on
+       every window/sidebar resize, so a custom width can never clip the pane
+       off-screen — and the stored width comes back once space allows. */
+    .mail-workspace.has-custom-list-width .mail-list-column {
+        max-width: calc(100% - 360px);
     }
 
     .reading-pane {
         display: flex;
         flex: 1;
         min-width: 360px;
+    }
+
+    .list-column-resizer {
+        display: block;
     }
 }
 
