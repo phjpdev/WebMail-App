@@ -6860,10 +6860,12 @@
 
     // Delete key deletes the open message by driving its toolbar Delete button,
     // so the confirm dialog, thread expansion, optimistic UI and server call are
-    // identical to a mouse click.
+    // identical to a mouse click. Backspace is accepted too: Mac keyboards'
+    // "delete" key sends Backspace (forward-delete needs Fn), and Outlook.com
+    // maps both keys to delete as well.
     function initDeleteKeyShortcut() {
         document.addEventListener('keydown', function (e) {
-            if (e.key !== 'Delete' || e.repeat || e.defaultPrevented) return;
+            if ((e.key !== 'Delete' && e.key !== 'Backspace') || e.repeat || e.defaultPrevented) return;
             if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
             // Not while typing: inputs, selects, compose/rich-text editors.
