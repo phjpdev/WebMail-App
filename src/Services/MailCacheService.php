@@ -2028,7 +2028,11 @@ class MailCacheService
             return $result;
         }
 
-        foreach ($missing as $uid) {
+        // Cap the per-request IMAP fetches: each uncached body is a full fetch
+        // (~0.5s against a remote host), and 20 of them serially blocked this
+        // endpoint for 10s+. Rows left without a snippet stay empty in the DOM,
+        // so the next enrichment pass requests exactly the still-missing ones.
+        foreach (array_slice($missing, 0, 6) as $uid) {
             $message = $imap->getMessageByUid($folderPath, $uid);
             if ($message === null) {
                 continue;

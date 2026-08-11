@@ -899,6 +899,19 @@ function mail_resolve_move_target_path(string $targetPath): string
  */
 function mail_move_target_folders(array $folders, string $currentFolder): array
 {
+    // Rebuilt from the whole ~1000-folder registry on every message open (the
+    // pane's Move dropdown) and every list render — memoize per source folder.
+    static $memo = [];
+    $memoKey = $currentFolder . '#' . count($folders);
+    if (isset($memo[$memoKey])) {
+        return $memo[$memoKey];
+    }
+
+    return $memo[$memoKey] = mail_move_target_folders_uncached($folders, $currentFolder);
+}
+
+function mail_move_target_folders_uncached(array $folders, string $currentFolder): array
+{
     $currentFolder = \App\Services\FolderCache::resolvePath($currentFolder);
     $out = [];          // custom (non-system) folders
     $system = [];       // system targets keyed by bucket

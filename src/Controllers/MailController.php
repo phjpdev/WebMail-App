@@ -214,6 +214,7 @@ class MailController
                 FolderCache::syncUnreadBadges($folderPath);
             }
         }
+        perf_mark('ctx_filter_done');
 
         $page = max(1, (int) ($_GET['page'] ?? 1));
         $folders = $folderData['folders'];
@@ -309,6 +310,7 @@ class MailController
                 $imapError = $imap->getLastError();
             }
         }
+        perf_mark('ctx_list_ready');
 
         // Mail server unreachable (host IMAP outage): serve the cached list
         // read-only instead of an empty folder — the user keeps seeing their
@@ -389,6 +391,7 @@ class MailController
         $sidebarUnread = ($preferCache && !$explicitRefresh)
             ? FolderCache::sidebarUnreadCountsFromSession()
             : FolderCache::sidebarUnreadCounts();
+        perf_mark('ctx_unread_done');
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -1165,7 +1168,10 @@ class MailController
         if ($missing !== []) {
             $imap = new ImapService();
             if ($imap->connect() && $imap->openFolder($folderPath)) {
-                $fetched = $imap->batchHasAttachments($missing);
+                // Cap per-request probes: each is an IMAP round trip (~150ms
+                // remote). Uncapped rows are re-requested by the next
+                // enrichment pass and served from the flag cache thereafter.
+                $fetched = $imap->batchHasAttachments(array_slice($missing, 0, 8));
                 mail_store_attachment_flags($folderPath, $fetched);
                 foreach ($fetched as $uid => $has) {
                     $result[(int) $uid] = (bool) $has;
@@ -2310,7 +2316,6 @@ class MailController
             $imap = new ImapService();
             if ($imap->connect()) {
                 $this->handleSiblingCopies($imap, $resolvedFolderPath, $movedUids, $targetPath, $siblingMode);
-                ImapService::closeShared();
             }
         }
 
@@ -2659,7 +2664,6 @@ class MailController
                 app_log('Post-repair target sync failed: ' . $e->getMessage());
             }
         }
-        ImapService::closeShared();
 
         if (!$verified) {
             // Could not confirm against the live server (outage window): leave the
@@ -2731,8 +2735,6 @@ class MailController
             $movedTotal++;
         }
 
-        ImapService::closeShared();
-
         return $remaining;
     }
 
@@ -2777,7 +2779,6 @@ class MailController
 
             return 0;
         }
-        ImapService::closeShared();
 
         $movedTotal = 0;
         $removed = [];
@@ -2803,7 +2804,6 @@ class MailController
                 }
 
                 $moveResult = $this->runMovesOnImap($imap, $folderPath, $chunk, $targetPath, $siblingMode);
-                ImapService::closeShared();
 
                 $imapFromPath = FolderCache::resolvePath($folderPath);
                 $movedUids = $moveResult['removed'][$imapFromPath] ?? [];
@@ -2825,6 +2825,11 @@ class MailController
                 }
 
                 if ($attempt < 2) {
+                    // The attempt failed — ONLY now discard the connection so the
+                    // retry gets a clean one. Closing after every attempt (incl.
+                    // successful ones) forced a full TLS+LOGIN (~1-2s on this
+                    // host) per chunk and per follow-up step of the same op.
+                    ImapService::closeShared();
                     usleep(500000);
                 }
             }
@@ -2893,8 +2898,6 @@ class MailController
         } catch (\Throwable $e) {
             app_log('Post-move source sync failed for ' . $folderPath . ': ' . $e->getMessage());
         }
-
-        ImapService::closeShared();
 
         return $movedTotal;
     }
@@ -3002,8 +3005,11 @@ class MailController
             if ($deletedUids !== []) {
                 $deletedTotal += count($deletedUids);
                 mail_clear_removed_uids($folderPath, $deletedUids);
+            } else {
+                // Chunk failed — discard the connection so the next chunk gets a
+                // clean one. Keeping it on success avoids a full TLS+LOGIN per chunk.
+                ImapService::closeShared();
             }
-            ImapService::closeShared();
         }
 
         return $deletedTotal;
@@ -3049,7 +3055,6 @@ class MailController
                     $syncImap = new ImapService();
                     if ($syncImap->connect()) {
                         MailCacheService::syncFolderHeaders($syncImap, $resolvedPath);
-                        ImapService::closeShared();
                     }
                 } catch (\Throwable $e) {
                     app_log('all_in_folder pre-sync failed: ' . $e->getMessage());

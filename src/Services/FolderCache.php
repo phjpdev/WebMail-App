@@ -49,6 +49,7 @@ class FolderCache
      */
     public function set(array $folders, array $unreadCounts = []): void
     {
+        self::invalidateLoadMemo();
         // Re-open the session BEFORE writing: after releaseSessionLock() a bare
         // $_SESSION write only mutates the in-memory copy, and the next
         // ensure_session_writable() replaces $_SESSION wholesale from disk —
@@ -71,6 +72,7 @@ class FolderCache
 
     public function clear(): void
     {
+        self::invalidateLoadMemo();
         unset($_SESSION[self::SESSION_KEY]);
         self::$registryCache = null;
         self::$pathResolveCache = null;
@@ -91,6 +93,7 @@ class FolderCache
      */
     public static function bumpUnread(string $path, int $delta): array
     {
+        self::invalidateLoadMemo();
         ensure_session_writable();
         self::ensureCache();
         $key = self::SESSION_KEY;
@@ -121,6 +124,7 @@ class FolderCache
      */
     public static function invalidateUnread(): void
     {
+        self::invalidateLoadMemo();
         if (isset($_SESSION[self::SESSION_KEY])) {
             $_SESSION[self::SESSION_KEY]['unread_expires'] = 0;
         }
@@ -139,6 +143,7 @@ class FolderCache
         if ($paths === []) {
             return;
         }
+        self::invalidateLoadMemo();
 
         ensure_session_writable();
         self::ensureCache();
@@ -265,6 +270,7 @@ class FolderCache
      */
     public static function setUnreadCount(string $path, int $count): void
     {
+        self::invalidateLoadMemo();
         if ($path === '') {
             return;
         }
@@ -785,7 +791,42 @@ class FolderCache
     /**
      * @return array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}
      */
+    /**
+     * Per-request memo of load()'s filtered result. load() runs several times
+     * per request (list context, badge reconcile, sidebar counts) and each call
+     * repeated ~6 full passes over the ~1000-folder registry — seconds of CPU
+     * per page. Invalidated by every unread/folder-cache write.
+     *
+     * @var array<string, array{folders: list<array{path: string, name: string, delimiter: string}>, unread_counts: array<string, int>, connected: bool, error: string}>
+     */
+    private static array $loadMemo = [];
+
+    public static function invalidateLoadMemo(): void
+    {
+        self::$loadMemo = [];
+    }
+
     public static function load(bool $refresh = false, bool $skipUnreadRefresh = false): array
+    {
+        $memoKey = $skipUnreadRefresh ? 'skip' : 'full';
+        if (!$refresh && isset(self::$loadMemo[$memoKey])) {
+            return self::$loadMemo[$memoKey];
+        }
+
+        $result = self::loadUncached($refresh, $skipUnreadRefresh);
+        if (($result['connected'] ?? false) === true) {
+            self::$loadMemo[$memoKey] = $result;
+            // A full load's unread refresh also satisfies later skip-refresh
+            // callers within this request.
+            if ($memoKey === 'full') {
+                self::$loadMemo['skip'] = $result;
+            }
+        }
+
+        return $result;
+    }
+
+    private static function loadUncached(bool $refresh = false, bool $skipUnreadRefresh = false): array
     {
         $cache = new self();
 

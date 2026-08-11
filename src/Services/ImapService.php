@@ -16,6 +16,20 @@ class ImapService
     private static $sharedConnection = null;
     private static bool $shutdownRegistered = false;
 
+    /**
+     * Mailbox string currently SELECTed on the shared stream. Each imap_reopen
+     * is a full network round trip (~600ms against this remote host), and the
+     * per-uid fetch loops re-open the same folder for every message. Mutating
+     * operations (expunge, folder delete) null this so the next openFolder
+     * re-SELECTs and sees fresh server state.
+     */
+    private static ?string $selectedMailbox = null;
+
+    private static function invalidateSelectedFolder(): void
+    {
+        self::$selectedMailbox = null;
+    }
+
     /** @var list<array{path: string, name: string, delimiter: string}>|null */
     private static ?array $folderListCache = null;
 
@@ -40,6 +54,7 @@ class ImapService
             // Stale/dropped connection — discard and reconnect below.
             @imap_close(self::$sharedConnection);
             self::$sharedConnection = null;
+            self::invalidateSelectedFolder();
         }
 
         if (!function_exists('imap_open')) {
@@ -115,6 +130,7 @@ class ImapService
         @unlink(base_path('storage/imap-down.flag'));
         $this->connection = $connection;
         self::$sharedConnection = $connection;
+        self::$selectedMailbox = $this->getMailboxString() . 'INBOX';
         self::registerShutdown();
         perf_mark('imap_fresh_connection_opened');
 
@@ -139,6 +155,7 @@ class ImapService
             @imap_close(self::$sharedConnection);
             self::$sharedConnection = null;
         }
+        self::invalidateSelectedFolder();
         self::invalidateFolderListCache();
     }
 
@@ -222,14 +239,24 @@ class ImapService
             return false;
         }
 
-        $reopened = @imap_reopen($this->connection, $this->getMailboxString() . $this->encodeFolderPath($path));
+        $target = $this->getMailboxString() . $this->encodeFolderPath($path);
+        if ($this->connection === self::$sharedConnection && self::$selectedMailbox === $target) {
+            return true;
+        }
+
+        $reopened = @imap_reopen($this->connection, $target);
 
         if (!$reopened) {
+            self::invalidateSelectedFolder();
             $errors = imap_errors() ?: [];
             imap_alerts();
             $this->lastError = 'Failed to open folder: ' . implode('; ', $errors);
 
             return false;
+        }
+
+        if ($this->connection === self::$sharedConnection) {
+            self::$selectedMailbox = $target;
         }
 
         return true;
@@ -612,6 +639,7 @@ class ImapService
             $moved = $this->moveMessageCopyDelete($fromPath, $uid, $toPath, $wasSeen);
         } else {
             imap_expunge($this->connection);
+            self::invalidateSelectedFolder();
             if ($wasSeen) {
                 $this->markLastMessageSeen($toPath);
             }
@@ -643,6 +671,7 @@ class ImapService
         }
 
         imap_expunge($this->connection);
+        self::invalidateSelectedFolder();
 
         if (imap_msgno($this->connection, $uid) !== 0) {
             $this->lastError = 'Message still present after delete.';
@@ -693,6 +722,7 @@ class ImapService
 
         if ($deleted !== []) {
             imap_expunge($this->connection);
+            self::invalidateSelectedFolder();
         }
 
         return [
@@ -752,6 +782,7 @@ class ImapService
 
         if ($moved !== []) {
             imap_expunge($this->connection);
+            self::invalidateSelectedFolder();
         }
 
         return [
@@ -1875,6 +1906,9 @@ class ImapService
         // We then VERIFY by a live re-list and retry once, never trusting the
         // imap_deletemailbox return value alone.
         for ($attempt = 0; $attempt < 2; $attempt++) {
+            // Direct imap_reopen calls below bypass openFolder — drop the
+            // selected-folder memo so later openFolder calls re-SELECT.
+            self::invalidateSelectedFolder();
             if (@imap_reopen($this->connection, $mailbox)) {
                 @imap_delete($this->connection, '1:*');
                 @imap_expunge($this->connection);
@@ -2049,6 +2083,7 @@ class ImapService
         }
 
         imap_expunge($this->connection);
+        self::invalidateSelectedFolder();
 
         if (imap_msgno($this->connection, $uid) !== 0) {
             $this->lastError = 'Message still present in source folder after move.';
