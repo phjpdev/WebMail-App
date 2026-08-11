@@ -255,11 +255,46 @@ class ImapService
             return false;
         }
 
+        // This host can return TRUE from imap_reopen while the SELECT actually
+        // failed (stream stays on the previous mailbox, error only on the
+        // c-client stack). Trusting that lie into the selected-folder memo made
+        // every later fetch in the request hit the wrong mailbox. Drain the
+        // error stack and treat a mailbox-open failure as a real failure.
+        $errors = imap_errors() ?: [];
+        imap_alerts();
+        foreach ($errors as $err) {
+            $lower = strtolower((string) $err);
+            if (
+                self::isMissingMailboxError((string) $err)
+                || str_contains($lower, 'can\'t open')
+                || str_contains($lower, 'cannot open')
+                || str_contains($lower, 'unable to open')
+                || str_contains($lower, 'select failed')
+            ) {
+                self::invalidateSelectedFolder();
+                $this->lastError = 'Failed to open folder: ' . implode('; ', $errors);
+
+                return false;
+            }
+        }
+
         if ($this->connection === self::$sharedConnection) {
             self::$selectedMailbox = $target;
         }
 
         return true;
+    }
+
+    /**
+     * Force a real re-SELECT of the folder, bypassing the selected-folder memo.
+     * Used as a one-shot retry when a UID lookup unexpectedly fails — the memo
+     * may have recorded a select this flaky host silently ignored.
+     */
+    private function reselectFolder(string $path): bool
+    {
+        self::invalidateSelectedFolder();
+
+        return $this->openFolder($path);
     }
 
     public function getMessageCount(string $path): int
@@ -439,6 +474,13 @@ class ImapService
 
         $msgno = imap_msgno($this->connection, $uid);
         if ($msgno === 0) {
+            // The memo may hold a select this host silently dropped — one
+            // forced re-SELECT retry before declaring the message missing.
+            if ($this->reselectFolder($path)) {
+                $msgno = imap_msgno($this->connection, $uid);
+            }
+        }
+        if ($msgno === 0) {
             $this->lastError = 'Message not found.';
             return null;
         }
@@ -497,6 +539,9 @@ class ImapService
         }
 
         $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
+        if (($overview === false || $overview === []) && $this->reselectFolder($path)) {
+            $overview = imap_fetch_overview($this->connection, (string) $uid, FT_UID);
+        }
         if ($overview === false || $overview === []) {
             return null;
         }

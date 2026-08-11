@@ -1596,6 +1596,10 @@ class MailController
         $unreadCounts = $markedRead
             ? mail_unread_counts_after_read($folderPath)
             : FolderCache::sidebarUnreadCounts();
+        // The badge writes above re-acquired the session lock; the expensive
+        // sanitize + thread build below must not hold it (parallel pane/sync
+        // requests of the same session queue on session_start otherwise).
+        releaseSessionLock();
 
         $aliasService = new AliasService();
         $userId = Auth::user()['id'] ?? null;
@@ -2664,6 +2668,7 @@ class MailController
                 app_log('Post-repair target sync failed: ' . $e->getMessage());
             }
         }
+        releaseSessionLock();
 
         if (!$verified) {
             // Could not confirm against the live server (outage window): leave the
@@ -2898,6 +2903,11 @@ class MailController
         } catch (\Throwable $e) {
             app_log('Post-move source sync failed for ' . $folderPath . ': ' . $e->getMessage());
         }
+
+        // The badge/cache writes above re-acquired the session lock inside this
+        // deferred (post-flush) work — release so parallel requests of the same
+        // session stop queuing behind the move's verification tail.
+        releaseSessionLock();
 
         return $movedTotal;
     }
@@ -3471,9 +3481,14 @@ class MailController
 
         $data['user'] = Auth::user();
         $data['authUser'] = Auth::user();
+        // Consuming a flash unsets it — that write needs the session open, or
+        // the unset is discarded and the flash re-displays on the next page.
+        ensure_session_writable();
         $data['success'] = flash('success');
         $data['error'] = flash('error');
         $data['prefs'] = user_preferences();
+        // Don't hold the lock through the multi-second sidebar/list render.
+        releaseSessionLock();
 
         view($viewName, $data);
     }
