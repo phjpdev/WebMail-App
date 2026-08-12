@@ -196,18 +196,15 @@ class MailController
             // optimistic arrival rows for the real ones.
             || mail_get_pending_arrivals($folderPath) !== [];
 
+        // The routing filter runs inline ONLY on an explicit refresh: on plain
+        // page/folder opens it blocked first paint for up to ~7s whenever its
+        // throttle had expired (measured on the client's system). Ordinary
+        // routing is owned by the periodic live-sync, which runs the same
+        // filter in a background request.
         if (
             !$this->shouldSkipPostSendFilter()
-            && $this->isFilterSource($folderPath)
-        ) {
-            $filterResult = $this->maybeRunFilter($folderPath, $explicitRefresh);
-            if (($filterResult['moved'] ?? 0) > 0) {
-                FolderCache::syncUnreadBadges($folderPath);
-            }
-        } elseif (
-            !$this->shouldSkipPostSendFilter()
             && $explicitRefresh
-            && is_routed_destination_folder($folderPath)
+            && ($this->isFilterSource($folderPath) || is_routed_destination_folder($folderPath))
         ) {
             $filterResult = $this->maybeRunFilter($folderPath, true);
             if (($filterResult['moved'] ?? 0) > 0) {
@@ -681,7 +678,11 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $perPage = mail_per_page();
 
-        // Lightweight poll: MySQL cache only — never IMAP (keeps polling fast).
+        // Lightweight poll: the response is MySQL-cache only (instant), but a
+        // stale viewed folder gets a BACKGROUND IMAP refresh after the echo.
+        // Without this, mail delivered straight into the folder by the mail
+        // server (not routed by our filter) never appears until a manual
+        // refresh — the light poll alone can only re-serve what the index has.
         if ($light && $query === '') {
             $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
             if ($cached === null) {
@@ -694,6 +695,21 @@ class MailController
                 ];
             }
             $this->echoFolderSyncJson($folderPath, $cached, light: true);
+
+            $state = MailCacheService::getSyncState($folderPath) ?? [];
+            $lastSync = strtotime((string) ($state['last_sync_at'] ?? '')) ?: 0;
+            if (time() - $lastSync >= 60 && !$this->shouldSkipPostSendFilter()) {
+                finish_background(static function () use ($folderPath): void {
+                    $imap = new ImapService();
+                    if ($imap->connect()) {
+                        MailCacheService::syncFolderHeaders($imap, $folderPath);
+                        if (folder_badge_uses_index_truth($folderPath)) {
+                            MailCacheService::reconcileBadgeFromIndex($folderPath);
+                        }
+                        releaseSessionLock();
+                    }
+                });
+            }
 
             return;
         }
