@@ -9,11 +9,16 @@ use App\Database;
 class LoginRateLimit
 {
     private const MAX_ATTEMPTS = 5;
+    // Separate, higher ceiling for the whole IP: with the app served on a VM
+    // (everyone arrives from the same address) the old combined check let ONE
+    // person's 5 typos lock every account — including admin — for 15 minutes.
+    private const MAX_ATTEMPTS_PER_IP = 20;
     private const WINDOW_SECONDS = 900;
 
     public static function isBlocked(string $ip, string $username): bool
     {
-        return self::countRecent($ip, $username) >= self::MAX_ATTEMPTS;
+        return self::countRecentForUsername($username) >= self::MAX_ATTEMPTS
+            || self::countRecentForIp($ip) >= self::MAX_ATTEMPTS_PER_IP;
     }
 
     public static function recordFailure(string $ip, string $username): void
@@ -40,14 +45,30 @@ class LoginRateLimit
         }
     }
 
-    private static function countRecent(string $ip, string $username): int
+    private static function countRecentForUsername(string $username): int
     {
         try {
             $row = Database::fetchOne(
                 'SELECT COUNT(*) AS c FROM login_attempts
                  WHERE attempted_at > DATE_SUB(NOW(), INTERVAL ? SECOND)
-                 AND (ip_address = ? OR username = ?)',
-                [self::WINDOW_SECONDS, $ip, $username]
+                 AND username = ?',
+                [self::WINDOW_SECONDS, $username]
+            );
+
+            return (int) ($row['c'] ?? 0);
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    private static function countRecentForIp(string $ip): int
+    {
+        try {
+            $row = Database::fetchOne(
+                'SELECT COUNT(*) AS c FROM login_attempts
+                 WHERE attempted_at > DATE_SUB(NOW(), INTERVAL ? SECOND)
+                 AND ip_address = ?',
+                [self::WINDOW_SECONDS, $ip]
             );
 
             return (int) ($row['c'] ?? 0);

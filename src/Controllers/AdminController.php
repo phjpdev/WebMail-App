@@ -919,7 +919,9 @@ class AdminController
         return [
             'name' => trim($_POST['name'] ?? ''),
             'username' => trim($_POST['username'] ?? ''),
-            'password' => $_POST['password'] ?? '',
+            // Trimmed to match the login side — a pasted trailing space here
+            // created accounts whose "correct" password could never be typed.
+            'password' => trim($_POST['password'] ?? ''),
             'role' => $_POST['role'] ?? 'employee',
             'alias_email' => trim($_POST['alias_email'] ?? ''),
             'folder_name' => trim($_POST['folder_name'] ?? ''),

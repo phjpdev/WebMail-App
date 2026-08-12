@@ -33,7 +33,11 @@ class AuthController
         verify_csrf_or_fail();
 
         $username = trim($_POST['username'] ?? '');
-        $password = $_POST['password'] ?? '';
+        // Trimmed at BOTH login and admin user-save: a password pasted into the
+        // admin form with an invisible trailing space/newline otherwise never
+        // matches what the user types — which reads as "wrong password" and
+        // walks straight into the rate-limit lockout.
+        $password = trim($_POST['password'] ?? '');
 
         if ($username === '' || $password === '') {
             flash('error', 'Username and password are required.');

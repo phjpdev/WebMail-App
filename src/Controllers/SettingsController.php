@@ -32,9 +32,11 @@ class SettingsController
 
         verify_csrf_or_fail();
 
-        $current = $_POST['current_password'] ?? '';
-        $new = $_POST['new_password'] ?? '';
-        $confirm = $_POST['confirm_password'] ?? '';
+        // Trimmed to match the login side (see AuthController::login) — pasted
+        // trailing whitespace otherwise creates passwords nobody can type.
+        $current = trim($_POST['current_password'] ?? '');
+        $new = trim($_POST['new_password'] ?? '');
+        $confirm = trim($_POST['confirm_password'] ?? '');
         $user = Auth::user();
 
         if ($new === '' || strlen($new) < 8) {
