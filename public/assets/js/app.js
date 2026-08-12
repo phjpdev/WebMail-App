@@ -602,12 +602,11 @@
             });
         }
         setRowAriaSelected(uid);
-        var rows = container
-            ? Array.prototype.slice.call(container.querySelectorAll('[data-uid="' + escaped + '"]'))
-            : rowsForUid(uid);
-        if (rows[0]) {
-            scheduleComposePrefetch(rows[0]);
-        }
+        // NOTE: no compose prefetch here. Prefetching reply URLs on row select
+        // raced the pane's own message fetch — on any first-open message the
+        // prefetch missed the body cache and opened a SECOND parallel IMAP
+        // connection per click. Hover-warming on the pane's reply buttons
+        // (prefetchComposeFromPane) covers the compose-open path instead.
         updateCommandBar();
     }
 
@@ -804,23 +803,26 @@
     }
 
     function paneFetchWithRetry(url, retries) {
+        // Backoff grows per attempt — the remote host's connect alone can take
+        // 1-3s, so a 600ms-only retry window gave up far too early.
+        var delay = retries > 1 ? 800 : 1800;
         return fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
             .then(function (res) {
-                // 503 = the server couldn't reach the slow/remote mail host this
-                // time (a transient blip, not a deleted message). Retry once before
+                // 5xx = the server couldn't reach the slow/remote mail host this
+                // time (a transient blip, not a deleted message). Retry before
                 // surfacing it, so the message isn't wrongly reported as gone.
-                if (res.status === 503 && retries > 0) {
-                    return new Promise(function (resolve) { window.setTimeout(resolve, 600); })
+                if (res.status >= 500 && retries > 0) {
+                    return new Promise(function (resolve) { window.setTimeout(resolve, delay); })
                         .then(function () { return paneFetchWithRetry(url, retries - 1); });
                 }
                 return res;
             })
             .catch(function (err) {
                 // "Failed to fetch" is a network-level hiccup — common against a slow/
-                // remote IMAP host under concurrent load. Retry once before surfacing an
+                // remote IMAP host under concurrent load. Retry before surfacing an
                 // error, so a transient blip doesn't leave the message unopenable.
                 if (retries > 0 && err && err.name === 'TypeError') {
-                    return new Promise(function (resolve) { window.setTimeout(resolve, 600); })
+                    return new Promise(function (resolve) { window.setTimeout(resolve, delay); })
                         .then(function () { return paneFetchWithRetry(url, retries - 1); });
                 }
                 throw err;
@@ -848,6 +850,10 @@
                 if (pushHistory && hrefCached && window.history && window.history.pushState) {
                     window.history.pushState({ paneUid: uid }, '', hrefCached);
                 }
+                // Invalidate any in-flight fetch from a previous click so its
+                // late failure can't blank (or its late success overwrite)
+                // the message we're showing right now.
+                paneLoadSeq++;
                 setSelectedRow(uid);
                 applyPaneHtml(uid, cached, pushHistory);
                 if (cached.prefetched && isUnread) {
@@ -870,7 +876,7 @@
             window.history.pushState({ paneUid: uid }, '', messageHref);
         }
 
-        paneFetchWithRetry(url, 1)
+        paneFetchWithRetry(url, 2)
             .then(function (res) {
                 return res.json().then(function (data) {
                     if (!res.ok) {
@@ -891,15 +897,21 @@
             .catch(function (err) {
                 if (seq !== paneLoadSeq) return;
                 if (err && err.gone) {
+                    // Confirmed deleted on the server — clear the pane and row.
                     removeRowByUid(uid);
                     syncListEmptyState();
                     scheduleMailPoll(true, false);
+                    setPaneView('empty');
+                    announceLive('Could not load message.');
+                    return;
                 }
-                setPaneView('empty');
+                // Transient failure: do NOT blank the pane to "Select a message
+                // to read" — keep whatever was showing and surface a toast so
+                // the user can simply click again.
+                var body = document.getElementById('reading-pane-body');
+                setPaneView(body && body.innerHTML.trim() !== '' ? 'content' : 'empty');
                 announceLive('Could not load message.');
-                if (!err || !err.gone) {
-                    showToast('error', err.message || 'Could not load message.');
-                }
+                showToast('error', (err && err.message) || 'Could not load message — please try again.');
             });
     }
 

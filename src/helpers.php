@@ -461,6 +461,17 @@ function json_response_then(array $data, callable $after, int $status = 200): ne
     // blocked while background IMAP work runs in this same PHP process.
     releaseSessionLock();
 
+    // mod_php (client WAMP) has no fastcgi_finish_request: the browser only
+    // completes the response at the advertised Content-Length. Compression
+    // (mod_deflate / zlib) strips Content-Length and chunks the body, making
+    // the browser wait for SCRIPT EXIT — i.e. the whole deferred IMAP verify
+    // became user-visible latency on every delete/move. Disable it here.
+    @ini_set('zlib.output_compression', '0');
+    if (function_exists('apache_setenv')) {
+        @apache_setenv('no-gzip', '1');
+        @apache_setenv('dont-vary', '1');
+    }
+
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     // `Connection` is a forbidden hop-by-hop header on HTTP/2+ — sending it makes
@@ -504,6 +515,9 @@ function finish_background(callable $after): void
         }
         flush();
     }
+    // Marks the pre/post-flush boundary in slow.log so deferred work is no
+    // longer misattributed to user-facing time.
+    perf_mark('response_flushed');
 
     ignore_user_abort(true);
     @set_time_limit(300);
@@ -8197,6 +8211,7 @@ function mail_per_page(): int
                 ensure_session_writable();
                 $_SESSION['mail_per_page'] = $requested;
                 persist_user_preference('mail_per_page', $requested);
+                releaseSessionLock();
             }
 
             return $requested;
@@ -11443,17 +11458,23 @@ function compose_draft_form_context(string $folderPath, int $uid): ?array
         return null;
     }
 
-    $imap = new \App\Services\ImapService();
-    if (!$imap->connect()) {
-        return null;
-    }
-
-    $message = $imap->getMessageByUid($folderPath, $uid);
-    if ($message === null) {
-        return null;
-    }
-
+    // Cache-first: every draft auto-save caches the body, so opening a draft
+    // rarely needs IMAP at all (an unconditional connect cost ~1s per click).
     $cached = \App\Services\MailCacheService::getBody($folderPath, $uid);
+    $message = $cached;
+    if ($message === null) {
+        $imap = new \App\Services\ImapService();
+        if (!$imap->connect()) {
+            return null;
+        }
+
+        $message = $imap->getMessageByUid($folderPath, $uid);
+        if ($message === null) {
+            return null;
+        }
+        \App\Services\MailCacheService::saveBody($folderPath, $message);
+    }
+
     $aliasService = new \App\Services\AliasService();
     $sessionUser = \App\Auth::user();
     $userId = $sessionUser['id'] ?? null;

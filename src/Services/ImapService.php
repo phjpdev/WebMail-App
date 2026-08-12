@@ -625,6 +625,13 @@ class ImapService
 
         $msgno = imap_msgno($this->connection, $uid);
         if ($msgno === 0) {
+            // Same silently-dropped-SELECT hazard as getMessageByUid — one
+            // forced re-SELECT retry before failing the attachment with a 404.
+            if ($this->reselectFolder($path)) {
+                $msgno = imap_msgno($this->connection, $uid);
+            }
+        }
+        if ($msgno === 0) {
             return null;
         }
 

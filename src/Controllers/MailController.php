@@ -392,6 +392,9 @@ class MailController
             ? FolderCache::sidebarUnreadCountsFromSession()
             : FolderCache::sidebarUnreadCounts();
         perf_mark('ctx_unread_done');
+        // Badge writes along the way re-acquired the session lock — the list
+        // render that follows (fragment JSON or full page) must run unlocked.
+        releaseSessionLock();
 
         return [
             'title' => $this->folderDisplayName($folders, $folderPath),
@@ -730,27 +733,50 @@ class MailController
         }
 
         // Fast folder-open: when the ONLY reason to touch IMAP is that the cache is
-        // stale (ordinary navigation — not an explicit refresh/filter, a post-send
+        // stale (ordinary navigation — not an explicit filter run, a post-send
         // reconcile, or optimistic arrivals that must be replaced by real rows),
         // serve the cached list immediately and refresh headers from IMAP in the
-        // BACKGROUND. On this host every request queues behind whatever is holding
-        // a PHP worker, and a synchronous IMAP header-sync holds one for 2–6s — so
-        // getting off IMAP here is the biggest win for folder-open latency. The
-        // client's light poll picks up the freshened list on its next tick.
+        // BACKGROUND. This INCLUDES force=1: the client stamps every cache-first
+        // folder open as stale and force-polls it, so excluding force made every
+        // folder click block on a synchronous 1-3s IMAP header sync. The client's
+        // light poll picks up the freshened list on its next tick.
         if (
             $needsHeaderSync
             && !$forceFilter
-            && !$forceRefresh
+            && (!$forceRefresh || MailCacheService::hasFolderData($folderPath))
             && mail_get_post_send_preview($folderPath) === null
             && mail_get_pending_arrivals($folderPath) === []
         ) {
             $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage)
                 ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
             $this->echoFolderSyncJson($folderPath, $cached, light: true);
+
+            // Floor: skip even the background IMAP sync when this folder was
+            // synced moments ago — rapid folder switching otherwise re-lists
+            // the same folder every click.
+            $state = MailCacheService::getSyncState($folderPath) ?? [];
+            $lastSync = strtotime((string) ($state['last_sync_at'] ?? '')) ?: 0;
+            if (time() - $lastSync < 20) {
+                return;
+            }
+
             finish_background(static function () use ($folderPath): void {
                 $imap = new ImapService();
                 if ($imap->connect()) {
                     MailCacheService::syncFolderHeaders($imap, $folderPath);
+                    // Mirror the non-light echo path's badge settling — light
+                    // responses never clear the pending flag, and a stuck flag
+                    // re-triggers this sync on every subsequent open.
+                    if (folder_badge_uses_index_truth($folderPath)) {
+                        MailCacheService::reconcileBadgeFromIndex($folderPath);
+                    }
+                    if (
+                        MailCacheService::hasFolderData($folderPath)
+                        && !MailCacheService::badgeAheadOfIndex($folderPath)
+                    ) {
+                        FolderCache::clearPendingBadgePath($folderPath);
+                    }
+                    releaseSessionLock();
                 }
             });
 
@@ -1503,13 +1529,24 @@ class MailController
         }
 
         if ($message === null) {
+            // "Gone" must be CONFIRMED, not inferred: connect() succeeding does
+            // not mean the fetch worked — this host silently drops SELECTs, and
+            // a wrong "gone" evicts the cache row and blanks the client's pane
+            // ("Select a message to read"). Only report gone when uid resolution
+            // itself failed AND an independent overview probe (with its own
+            // re-SELECT retry) agrees the message is absent.
+            $confirmedGone = false;
             if ($serverReached) {
-                // The server responded and the message genuinely isn't there.
+                $confirmedGone = $imap->getLastError() === 'Message not found.'
+                    && $imap->getMessageOverviewByUid($folderPath, $uid) === null;
+            }
+
+            if ($confirmedGone) {
                 MailCacheService::removeMessage($folderPath, $uid);
                 $failureReason = 'gone';
             } else {
-                // Couldn't reach the mail server — leave the cached row intact so
-                // the message doesn't vanish; the caller reports a retryable error.
+                // Transient failure — leave the cached row intact so the message
+                // doesn't vanish; the caller reports a retryable error.
                 $failureReason = 'unavailable';
             }
 
@@ -1679,17 +1716,49 @@ class MailController
             exit;
         }
 
-        $imap = new ImapService();
-        if (!$imap->connect()) {
-            error_page(500, 'IMAP connection failed.');
-        }
+        // Connect lazily: a disk-cache hit must cost zero IMAP round trips.
+        $imap = null;
 
         $privacyEmails = employee_correspondent_privacy_emails($folderPath);
         if ($privacyEmails !== null) {
-            $message = MailCacheService::getBody($folderPath, $uid)
-                ?? $imap->getMessageByUid($folderPath, $uid);
+            $message = MailCacheService::getBody($folderPath, $uid);
+            if ($message === null) {
+                $imap = new ImapService();
+                if (!$imap->connect()) {
+                    error_page(500, 'IMAP connection failed.');
+                }
+                $message = $imap->getMessageByUid($folderPath, $uid);
+            }
             if ($message === null || !mail_message_involves_user($message, $privacyEmails)) {
                 error_page(404, 'Attachment not found.');
+            }
+        }
+
+        // Attachment bytes are immutable per (folder, uid, part) — serve repeat
+        // requests from disk. Without this, every open of an email with inline
+        // images fired one fresh IMAP connection PER IMAGE, every time.
+        $cacheDir = base_path('storage/cache/attachments');
+        $cacheKey = sha1($folderPath . '|' . $uid . '|' . $partId);
+        $metaFile = $cacheDir . '/' . $cacheKey . '.json';
+        $binFile = $cacheDir . '/' . $cacheKey . '.bin';
+
+        if (is_file($metaFile) && is_file($binFile)) {
+            $meta = json_decode((string) @file_get_contents($metaFile), true);
+            $content = @file_get_contents($binFile);
+            if (is_array($meta) && $content !== false) {
+                $this->emitAttachment(
+                    (string) ($meta['mime'] ?? ''),
+                    (string) ($meta['filename'] ?? ''),
+                    $content,
+                    $inline
+                );
+            }
+        }
+
+        if ($imap === null) {
+            $imap = new ImapService();
+            if (!$imap->connect()) {
+                error_page(500, 'IMAP connection failed.');
             }
         }
 
@@ -1698,10 +1767,62 @@ class MailController
             error_page(404, 'Attachment not found.');
         }
 
-        $mime = $this->safeAttachmentMime($attachment['mime'] ?? '', $attachment['filename'] ?? '');
-        $canInline = $inline && (str_starts_with($mime, 'image/') || $mime === 'application/pdf');
-        $filename = $this->safeAttachmentName($attachment['filename'] ?? 'attachment');
+        // Best-effort cache write (bounded at 5MB per part): bin first via
+        // tmp+rename (never serve a truncated file), then the small meta json.
+        // Any failure just leaves the IMAP path in place for the next request.
+        if (strlen($attachment['content']) <= 5 * 1024 * 1024) {
+            if (!is_dir($cacheDir)) {
+                @mkdir($cacheDir, 0755, true);
+            }
+            $tmp = $binFile . '.' . getmypid() . '.tmp';
+            if (@file_put_contents($tmp, $attachment['content']) !== false) {
+                @unlink($binFile);
+                if (@rename($tmp, $binFile)) {
+                    @file_put_contents($metaFile, json_encode([
+                        'mime' => (string) ($attachment['mime'] ?? ''),
+                        'filename' => (string) ($attachment['filename'] ?? ''),
+                    ]));
+                } else {
+                    @unlink($tmp);
+                }
+            }
+            // Occasionally prune month-old entries so the cache stays bounded.
+            if (mt_rand(1, 50) === 1) {
+                $cutoff = time() - 30 * 86400;
+                $scanned = 0;
+                foreach ((glob($cacheDir . '/*') ?: []) as $old) {
+                    if (++$scanned > 500) {
+                        break;
+                    }
+                    if (@filemtime($old) < $cutoff) {
+                        @unlink($old);
+                    }
+                }
+            }
+        }
 
+        $this->emitAttachment(
+            (string) ($attachment['mime'] ?? ''),
+            (string) ($attachment['filename'] ?? ''),
+            $attachment['content'],
+            $inline
+        );
+    }
+
+    /**
+     * Send attachment bytes with browser-cacheable headers. Success responses
+     * only — error pages keep the global no-cache header so a transient IMAP
+     * failure is never pinned in the browser cache.
+     */
+    private function emitAttachment(string $rawMime, string $rawName, string $content, bool $inline): never
+    {
+        $mime = $this->safeAttachmentMime($rawMime, $rawName);
+        $canInline = $inline && (str_starts_with($mime, 'image/') || $mime === 'application/pdf');
+        $filename = $this->safeAttachmentName($rawName !== '' ? $rawName : 'attachment');
+
+        // Attachment bytes never change for a given uid+part — let the browser
+        // keep them (overrides the global no-cache header from the front controller).
+        header('Cache-Control: private, max-age=604800, immutable');
         header('Content-Type: ' . $mime);
         header('X-Content-Type-Options: nosniff');
         header(
@@ -1709,8 +1830,8 @@ class MailController
             . '; filename="' . $filename . '"'
             . "; filename*=UTF-8''" . rawurlencode($filename)
         );
-        header('Content-Length: ' . strlen($attachment['content']));
-        echo $attachment['content'];
+        header('Content-Length: ' . strlen($content));
+        echo $content;
         exit;
     }
 

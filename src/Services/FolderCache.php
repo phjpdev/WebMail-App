@@ -235,6 +235,10 @@ class FolderCache
                 $_SESSION[self::SESSION_KEY]['unread_counts']
             );
         }
+        // The badge writes above re-acquired the session lock; every caller
+        // (folderSync force path, list context building, badge reconciles)
+        // continues into IMAP/render work that must not hold it.
+        releaseSessionLock();
     }
 
     /** True while a bulk badge pass batches setUnreadCount() normalization. */
@@ -841,6 +845,7 @@ class FolderCache
             // (and its IMAP round trips) on every subsequent request.
             ensure_session_writable();
             $_SESSION['_mail_registry_defaults'] = true;
+            releaseSessionLock();
         }
 
         if (!$refresh) {
@@ -880,6 +885,9 @@ class FolderCache
             perf_mark('fc_cold_status_done');
         }
         $cache->set($folders, $unreadCounts);
+        // set() re-acquired the lock for the write; the cold-load callers
+        // continue into list building and rendering — don't hold it there.
+        releaseSessionLock();
 
         $result = [
             'folders' => $folders,
