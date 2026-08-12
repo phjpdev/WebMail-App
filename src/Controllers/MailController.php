@@ -694,11 +694,12 @@ class MailController
                     'total_pages' => 0,
                 ];
             }
-            $this->echoFolderSyncJson($folderPath, $cached, light: true);
+            $age = MailCacheService::secondsSinceLastSync($folderPath);
+            $willRefresh = ($age === null || $age >= 25) && !$this->shouldSkipPostSendFilter();
 
-            $state = MailCacheService::getSyncState($folderPath) ?? [];
-            $lastSync = strtotime((string) ($state['last_sync_at'] ?? '')) ?: 0;
-            if (time() - $lastSync >= 60 && !$this->shouldSkipPostSendFilter()) {
+            $this->echoFolderSyncJson($folderPath, $cached, light: true, refreshing: $willRefresh);
+
+            if ($willRefresh) {
                 finish_background(static function () use ($folderPath): void {
                     $imap = new ImapService();
                     if ($imap->connect()) {
@@ -770,9 +771,8 @@ class MailController
             // Floor: skip even the background IMAP sync when this folder was
             // synced moments ago — rapid folder switching otherwise re-lists
             // the same folder every click.
-            $state = MailCacheService::getSyncState($folderPath) ?? [];
-            $lastSync = strtotime((string) ($state['last_sync_at'] ?? '')) ?: 0;
-            if (time() - $lastSync < 20) {
+            $age = MailCacheService::secondsSinceLastSync($folderPath);
+            if ($age !== null && $age < 20) {
                 return;
             }
 
@@ -879,7 +879,7 @@ class MailController
     /**
      * @param array{messages: list<array<string, mixed>>, total: int, page: int, per_page: int, total_pages: int} $list
      */
-    private function echoFolderSyncJson(string $folderPath, array $list, bool $light = false): void
+    private function echoFolderSyncJson(string $folderPath, array $list, bool $light = false, bool $refreshing = false): void
     {
         $list = mail_filter_removed_messages($folderPath, $list);
 
@@ -975,6 +975,10 @@ class MailController
             // run its thread-collapse pruning on them.
             'list_grouped' => trim($_GET['q'] ?? '') === '' && mail_should_group_list_by_thread($folderPath),
             'messages' => $messages,
+            // True when this response kicked a background IMAP refresh of the
+            // folder — the client polls again in a few seconds to pick up the
+            // fresh rows instead of waiting a full poll interval.
+            'refreshing' => $refreshing,
             'unread_counts' => $light
                 ? FolderCache::sidebarUnreadCountsFromSession()
                 : FolderCache::sidebarUnreadCounts(),

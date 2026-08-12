@@ -37,6 +37,24 @@ class Auth
                 "SELECT {$columns} FROM users WHERE username = ? LIMIT 1",
                 [$username]
             );
+
+            // Allow logging in with the user's alias EMAIL as well — users type
+            // whichever identity they know, and "Invalid username or password"
+            // for a perfectly valid email walks them into the rate limiter.
+            if ($user === null && str_contains($username, '@')) {
+                $alias = Database::fetchOne(
+                    'SELECT user_id FROM aliases
+                     WHERE email = ? AND active = 1 AND user_id IS NOT NULL
+                     LIMIT 1',
+                    [$username]
+                );
+                if ($alias !== null) {
+                    $user = Database::fetchOne(
+                        "SELECT {$columns} FROM users WHERE id = ? LIMIT 1",
+                        [(int) $alias['user_id']]
+                    );
+                }
+            }
         } catch (\Throwable $e) {
             app_log('Login database error: ' . $e->getMessage());
 

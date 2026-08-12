@@ -34,7 +34,7 @@
             <form method="post" action="<?= e(url('login')) ?>" class="login-form">
                 <?= csrf_field() ?>
                 <div class="form-group">
-                    <label for="username">Username</label>
+                    <label for="username">Username or email</label>
                     <input type="text" id="username" name="username" required autofocus autocomplete="username">
                 </div>
 

@@ -1183,14 +1183,36 @@ class MailCacheService
 
     public static function isStale(string $folderPath): bool
     {
-        $state = self::getSyncState($folderPath);
-        if ($state === null || empty($state['last_sync_at'])) {
+        $age = self::secondsSinceLastSync($folderPath);
+        if ($age === null) {
             return true;
         }
 
         $ttl = (int) (config('app')['mail_cache_ttl'] ?? 120);
 
-        return strtotime((string) $state['last_sync_at']) + $ttl < time();
+        return $age >= $ttl;
+    }
+
+    /**
+     * Seconds since this folder was last synced, computed ENTIRELY in MySQL so
+     * it is immune to a PHP-vs-MySQL timezone mismatch (mixing strtotime() with
+     * PHP time() gave negative ages on boxes where the two clocks differ, which
+     * silently disabled every staleness/refresh check). Null when never synced.
+     */
+    public static function secondsSinceLastSync(string $folderPath): ?int
+    {
+        $folderPath = self::indexFolderPath($folderPath);
+        $row = Database::fetchOne(
+            'SELECT TIMESTAMPDIFF(SECOND, last_sync_at, NOW()) AS age
+             FROM mail_sync_state WHERE folder_path = ?',
+            [$folderPath]
+        );
+
+        if ($row === null || $row['age'] === null) {
+            return null;
+        }
+
+        return max(0, (int) $row['age']);
     }
 
     /**

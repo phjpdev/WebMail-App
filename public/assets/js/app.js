@@ -5336,6 +5336,7 @@
 
         var page = parseInt(card.getAttribute('data-page') || '1', 10);
         var syncErrorShown = false;
+        var refreshFollowUpTimer = null;
 
         function poll(force, withFilter) {
             if (mailPollInFlight) {
@@ -5385,6 +5386,15 @@
                 })
                 .then(function (data) {
                     if (!data || !Array.isArray(data.messages)) return;
+                    // The server kicked a background IMAP refresh of this folder —
+                    // check back in a few seconds so new mail appears promptly
+                    // instead of waiting out a full poll interval.
+                    if (data.refreshing && !refreshFollowUpTimer) {
+                        refreshFollowUpTimer = window.setTimeout(function () {
+                            refreshFollowUpTimer = null;
+                            poll(false);
+                        }, 8000);
+                    }
                     var plainPath = liveCard.getAttribute('data-folder-plain') || '';
                     var folderUnread = (data.unread_counts && plainPath)
                         ? (folderShowsUnreadBadge(plainPath) ? folderUnreadLookup(data.unread_counts, plainPath) : 0)
