@@ -678,39 +678,43 @@ class MailController
         $light = ($_GET['light'] ?? '') === '1';
         $perPage = mail_per_page();
 
-        // Lightweight poll: the response is MySQL-cache only (instant), but a
-        // stale viewed folder gets a BACKGROUND IMAP refresh after the echo.
-        // Without this, mail delivered straight into the folder by the mail
-        // server (not routed by our filter) never appears until a manual
-        // refresh — the light poll alone can only re-serve what the index has.
+        // Lightweight poll. When the viewed folder is stale, sync its headers
+        // from IMAP INLINE (before responding) so the SAME response carries any
+        // new mail — the poll is self-sufficient. The old design synced in the
+        // background and depended on a JS follow-up poll to show the row, which
+        // browser background-tab timer throttling and timing races broke (new
+        // mail only appeared after a manual refresh). The inline sync holds this
+        // one background poll ~700ms longer, which is imperceptible (the user
+        // never waits on it), and removes the whole fragile follow-up chain.
+        // A folder mid-optimistic-update (post-send preview / pending arrival)
+        // is NOT synced here — a sync would race its optimistic row.
         if ($light && $query === '') {
-            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage);
-            if ($cached === null) {
-                $cached = [
-                    'messages' => [],
-                    'total' => 0,
-                    'page' => $page,
-                    'per_page' => $perPage,
-                    'total_pages' => 0,
-                ];
-            }
             $age = MailCacheService::secondsSinceLastSync($folderPath);
-            $willRefresh = ($age === null || $age >= 25) && !$this->shouldSkipPostSendFilter();
+            $shouldSync = ($age === null || $age >= 25)
+                && mail_get_post_send_preview($folderPath) === null
+                && mail_get_pending_arrivals($folderPath) === [];
 
-            $this->echoFolderSyncJson($folderPath, $cached, light: true, refreshing: $willRefresh);
-
-            if ($willRefresh) {
-                finish_background(static function () use ($folderPath): void {
-                    $imap = new ImapService();
-                    if ($imap->connect()) {
-                        MailCacheService::syncFolderHeaders($imap, $folderPath);
-                        if (folder_badge_uses_index_truth($folderPath)) {
-                            MailCacheService::reconcileBadgeFromIndex($folderPath);
-                        }
-                        releaseSessionLock();
+            if ($shouldSync) {
+                $imap = new ImapService();
+                if ($imap->connect()) {
+                    MailCacheService::syncFolderHeaders($imap, $folderPath);
+                    // Don't clobber an optimistically-ahead badge with raw
+                    // index truth while a new-mail bump is still pending.
+                    if (folder_badge_uses_index_truth($folderPath)
+                        && !FolderCache::isPendingBadgePath($folderPath)) {
+                        MailCacheService::reconcileBadgeFromIndex($folderPath);
                     }
-                });
+                }
             }
+
+            // Read the (now-fresh) window AFTER the sync so new rows are included.
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage)
+                ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+
+            // refreshing:false — the response already reflects the sync, so the
+            // client needs no follow-up poll.
+            $this->echoFolderSyncJson($folderPath, $cached, light: true, refreshing: false);
+            releaseSessionLock();
 
             return;
         }
@@ -749,14 +753,16 @@ class MailController
             }
         }
 
-        // Fast folder-open: when the ONLY reason to touch IMAP is that the cache is
-        // stale (ordinary navigation — not an explicit filter run, a post-send
-        // reconcile, or optimistic arrivals that must be replaced by real rows),
-        // serve the cached list immediately and refresh headers from IMAP in the
-        // BACKGROUND. This INCLUDES force=1: the client stamps every cache-first
-        // folder open as stale and force-polls it, so excluding force made every
-        // folder click block on a synchronous 1-3s IMAP header sync. The client's
-        // light poll picks up the freshened list on its next tick.
+        // Folder-open revalidation poll (force=1 without an explicit filter run):
+        // the client already painted this folder instantly from its own cached
+        // fragment, so THIS request is a background revalidation. Sync headers
+        // INLINE so the response carries any mail that arrived while the user was
+        // in another folder — then a single navigation poll shows it, instead of
+        // returning the stale cache and waiting for the next 30s interval poll
+        // (which is exactly why new mail "only showed after clicking Refresh":
+        // Refresh sends filter=1 and takes the synchronous path below, plain
+        // navigation did not). A ~20s floor still skips the IMAP round trip on
+        // rapid folder switching, where the cache is already current.
         if (
             $needsHeaderSync
             && !$forceFilter
@@ -764,37 +770,27 @@ class MailController
             && mail_get_post_send_preview($folderPath) === null
             && mail_get_pending_arrivals($folderPath) === []
         ) {
-            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage)
-                ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
-            $this->echoFolderSyncJson($folderPath, $cached, light: true);
-
-            // Floor: skip even the background IMAP sync when this folder was
-            // synced moments ago — rapid folder switching otherwise re-lists
-            // the same folder every click.
             $age = MailCacheService::secondsSinceLastSync($folderPath);
-            if ($age !== null && $age < 20) {
-                return;
-            }
-
-            finish_background(static function () use ($folderPath): void {
+            if ($age === null || $age >= 20) {
                 $imap = new ImapService();
                 if ($imap->connect()) {
                     MailCacheService::syncFolderHeaders($imap, $folderPath);
-                    // Mirror the non-light echo path's badge settling — light
-                    // responses never clear the pending flag, and a stuck flag
-                    // re-triggers this sync on every subsequent open.
-                    if (folder_badge_uses_index_truth($folderPath)) {
+                    if (folder_badge_uses_index_truth($folderPath)
+                        && !FolderCache::isPendingBadgePath($folderPath)) {
                         MailCacheService::reconcileBadgeFromIndex($folderPath);
                     }
-                    if (
-                        MailCacheService::hasFolderData($folderPath)
-                        && !MailCacheService::badgeAheadOfIndex($folderPath)
-                    ) {
+                    if (MailCacheService::hasFolderData($folderPath)
+                        && !MailCacheService::badgeAheadOfIndex($folderPath)) {
                         FolderCache::clearPendingBadgePath($folderPath);
                     }
-                    releaseSessionLock();
                 }
-            });
+            }
+
+            // Read the (now-fresh) window AFTER the sync so new rows are included.
+            $cached = MailCacheService::listConversationWindow($folderPath, $page, $perPage)
+                ?? ['messages' => [], 'total' => 0, 'page' => $page, 'per_page' => $perPage, 'total_pages' => 0];
+            $this->echoFolderSyncJson($folderPath, $cached, light: true);
+            releaseSessionLock();
 
             return;
         }

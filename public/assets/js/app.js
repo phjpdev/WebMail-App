@@ -123,6 +123,10 @@
     var mailPollIntervalId = null;
     var mailPollInFlight = false;
     var mailPollAbort = null;
+    // Module-scoped so stopMailSync() can cancel a pending refresh follow-up on a
+    // folder switch — otherwise the previous folder's timer fires poll() against
+    // its own URL and leaks that folder's rows into the new list.
+    var mailRefreshFollowUpTimer = null;
     var activeMailPollUrl = '';
     var mailSyncPaused = false;
     var lastMailPollAt = 0;
@@ -1063,6 +1067,10 @@
             mailPollAbort = null;
         }
         mailPollInFlight = false;
+        if (mailRefreshFollowUpTimer) {
+            window.clearTimeout(mailRefreshFollowUpTimer);
+            mailRefreshFollowUpTimer = null;
+        }
     }
 
     function bindAllMailRows(root) {
@@ -5336,7 +5344,26 @@
 
         var page = parseInt(card.getAttribute('data-page') || '1', 10);
         var syncErrorShown = false;
-        var refreshFollowUpTimer = null;
+
+        // Fire a single follow-up light poll ~5s after the server said it kicked
+        // a background refresh. If a quiet/pause window is active at fire time,
+        // re-arm instead of dropping it, so new mail can't get stuck waiting for
+        // the next full interval. One pending timer at most (the guard below).
+        // The timer is module-scoped (mailRefreshFollowUpTimer) so a folder
+        // switch's stopMailSync() cancels it — a leaked timer would poll the OLD
+        // folder and contaminate the new list. The .then folder-identity guard
+        // is the second line of defence if it ever fires late.
+        function scheduleRefreshFollowUp() {
+            if (mailRefreshFollowUpTimer) return;
+            mailRefreshFollowUpTimer = window.setTimeout(function () {
+                mailRefreshFollowUpTimer = null;
+                if (mailPollInFlight || mailSyncPaused || isListMutationQuiet() || isPostSendQuiet()) {
+                    scheduleRefreshFollowUp();
+                    return;
+                }
+                poll(false);
+            }, 5000);
+        }
 
         function poll(force, withFilter) {
             if (mailPollInFlight) {
@@ -5359,6 +5386,9 @@
 
             mailPollInFlight = true;
             lastMailPollAt = Date.now();
+            // Snapshot the nav sequence so a response that started before a
+            // folder switch is dropped (defence-in-depth alongside the URL guard).
+            var pollSeq = folderLoadSeq;
             liveCard.classList.add('is-syncing');
             var url = pollUrl + (pollUrl.indexOf('?') >= 0 ? '&' : '?') + 'page=' + page;
             if (!force) {
@@ -5385,15 +5415,27 @@
                     return res.json();
                 })
                 .then(function (data) {
+                    // Folder-identity guard: this poll captured its fetch URL in
+                    // the closure, but rows are inserted into whatever list is on
+                    // screen NOW. If the user switched folders (or a leaked
+                    // follow-up timer from the previous folder fired), the folder
+                    // on screen no longer matches this response — dropping it here
+                    // prevents the previous folder's rows from contaminating the
+                    // current list (the phantom cross-folder rows + mis-order).
+                    var currentCard = document.querySelector('[data-mail-sync="1"]');
+                    if (!currentCard || currentCard.getAttribute('data-poll-url') !== pollUrl || pollSeq !== folderLoadSeq) {
+                        return;
+                    }
+                    liveCard = currentCard;
                     if (!data || !Array.isArray(data.messages)) return;
                     // The server kicked a background IMAP refresh of this folder —
                     // check back in a few seconds so new mail appears promptly
-                    // instead of waiting out a full poll interval.
-                    if (data.refreshing && !refreshFollowUpTimer) {
-                        refreshFollowUpTimer = window.setTimeout(function () {
-                            refreshFollowUpTimer = null;
-                            poll(false);
-                        }, 8000);
+                    // instead of waiting out a full poll interval. Self-reschedule
+                    // if a quiet/pause window is active when the timer fires, so
+                    // the follow-up is never silently dropped (which would leave
+                    // new mail waiting for the next 30s interval).
+                    if (data.refreshing) {
+                        scheduleRefreshFollowUp();
                     }
                     var plainPath = liveCard.getAttribute('data-folder-plain') || '';
                     var folderUnread = (data.unread_counts && plainPath)
