@@ -4156,6 +4156,22 @@
         return (path.match(/\./g) || []).length;
     }
 
+    function folderLeafLower(path) {
+        var s = String(path || '');
+        var i = s.lastIndexOf('.');
+        return (i >= 0 ? s.slice(i + 1) : s).toLowerCase();
+    }
+
+    // A REAL top-level mailbox system folder (INBOX.Sent, INBOX.Junk, …), matched by
+    // EXACT leaf name — never by substring — so custom folders whose names merely
+    // contain a system word ("Junk Training", "Presentation") are NOT misclassified.
+    function isSystemMailboxFolder(path, leaves) {
+        var p = String(path || '');
+        if (p.toUpperCase().slice(0, 6) !== 'INBOX.') return false;
+        if (p.indexOf('.', 6) !== -1) return false; // must be exactly one level under INBOX
+        return leaves.indexOf(folderLeafLower(p)) >= 0;
+    }
+
     function folderIconHtml(iconType) {
         return '<span class="ctx-folder-icon folder-icon folder-icon-' + iconType + '" aria-hidden="true"></span>';
     }
@@ -4214,8 +4230,9 @@
         document.querySelectorAll('.sidebar-link[data-folder-path]').forEach(function (link) {
             var path = link.getAttribute('data-folder-path');
             if (!path || path === current) return;
-            var lower = path.toLowerCase();
-            if (lower.indexOf('spam') >= 0 || lower.indexOf('junk') >= 0 || lower.indexOf('trash') >= 0 || lower.indexOf('draft') >= 0) return;
+            // Exclude only REAL top-level system folders (Junk/Trash/Drafts), matched
+            // by exact leaf — so custom folders like "Junk Training" are kept.
+            if (isSystemMailboxFolder(path, ['spam', 'junk', 'trash', 'draft', 'drafts'])) return;
             var textEl = link.querySelector('.sidebar-link-text');
             out.push({
                 path: path,
@@ -4237,10 +4254,10 @@
         if (!sel) return collectMoveFoldersFromSidebar();
         var out = [];
         sel.querySelectorAll('option').forEach(function (opt) {
-            if (!opt.value || isDraftFolderPath(opt.value)) return;
-            if (isSpamFolderPath(opt.value)) {
-                if (out.some(function (f) { return isSpamFolderPath(f.path); })) return;
-            }
+            // Trust the server's move-target list (it already excludes Sent/Drafts and
+            // offers one Inbox/Archive/Junk/Trash target). The old substring re-filter
+            // wrongly dropped custom folders like "Junk Training" / "Draft Ideas".
+            if (!opt.value) return;
             out.push({
                 path: opt.value,
                 name: opt.textContent.trim(),
@@ -4256,10 +4273,10 @@
         if (!sel) return collectToolbarMoveFolders();
         var out = [];
         sel.querySelectorAll('option').forEach(function (opt) {
-            if (!opt.value || isDraftFolderPath(opt.value)) return;
-            if (isSpamFolderPath(opt.value)) {
-                if (out.some(function (f) { return isSpamFolderPath(f.path); })) return;
-            }
+            // Trust the server's move-target list (it already excludes Sent/Drafts and
+            // offers one Inbox/Archive/Junk/Trash target). The old substring re-filter
+            // wrongly dropped custom folders like "Junk Training" / "Draft Ideas".
+            if (!opt.value) return;
             out.push({
                 path: opt.value,
                 name: opt.textContent.trim(),
