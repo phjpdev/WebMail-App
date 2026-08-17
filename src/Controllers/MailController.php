@@ -1918,7 +1918,7 @@ class MailController
     {
         $mime = strtolower(trim($mime));
 
-        if ($mime === '' || !preg_match('#^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$#', $mime)) {
+        if ($mime === '' || !preg_match('~^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$~', $mime)) {
             $mime = 'application/octet-stream';
         }
 
