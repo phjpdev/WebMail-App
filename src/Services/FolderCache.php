@@ -15,6 +15,14 @@ class FolderCache
     private const UNREAD_TTL = 90;
 
     /**
+     * How often (seconds) a full load re-lists the server's folders so folders
+     * created/removed in another mail client auto-appear/disappear (and new ones
+     * get registered) without a re-login. Longer than UNREAD_TTL so it fires
+     * less often, and only on full loads (never the message-action fast paths).
+     */
+    private const FOLDER_LIST_TTL = 120;
+
+    /**
      * Max IMAP STATUS calls per badge refresh. With very large registries
      * (hundreds of imported folders) one STATUS per folder per refresh made
      * login and every 90s refresh block for minutes. System folders and folders
@@ -60,6 +68,7 @@ class FolderCache
             'folders' => $folders,
             'unread_counts' => self::sanitizeUnreadCounts($unreadCounts),
             'unread_expires' => time() + self::UNREAD_TTL,
+            'folders_expires' => time() + self::FOLDER_LIST_TTL,
         ];
         self::$pathResolveCache = null;
     }
@@ -858,6 +867,15 @@ class FolderCache
                     perf_mark('fc_unread_refresh_done');
                 }
 
+                // Pick up folders created/removed in another mail client and
+                // auto-register the new ones, so the sidebar updates without a
+                // re-login. Throttled (FOLDER_LIST_TTL) and full loads only.
+                if (!$skipUnreadRefresh && time() > (int) ($session['folders_expires'] ?? 0)) {
+                    perf_mark('fc_folder_revalidate_start');
+                    $cached = $cache->revalidateServerFolders($cached);
+                    perf_mark('fc_folder_revalidate_done');
+                }
+
                 return $cache->filterForUser($cached);
             }
         }
@@ -928,6 +946,134 @@ class FolderCache
         }
 
         return $data;
+    }
+
+    /**
+     * Re-list the server's folders (throttled by FOLDER_LIST_TTL). New folders
+     * created in another mail client are auto-registered and merged into the
+     * cached list so they show without a re-login; folders deleted there drop
+     * out. Never wipes the sidebar on a failed/empty LIST.
+     *
+     * @param array{folders: list<array<string, mixed>>, unread_counts: array<string, int>, connected: bool, error: string} $cached
+     * @return array{folders: list<array<string, mixed>>, unread_counts: array<string, int>, connected: bool, error: string}
+     */
+    private function revalidateServerFolders(array $cached): array
+    {
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            $this->touchFolderListExpiry(); // back off — don't re-list every request while down
+            return $cached; // mail server unreachable — keep the current list
+        }
+
+        $serverFolders = $imap->listFolders();
+        if ($serverFolders === []) {
+            $this->touchFolderListExpiry(); // back off on a failed/empty LIST
+            return $cached; // never blank the sidebar
+        }
+
+        $cachedPaths = [];
+        foreach ($cached['folders'] as $f) {
+            $p = strtoupper((string) ($f['path'] ?? ''));
+            if ($p !== '') {
+                $cachedPaths[$p] = true;
+            }
+        }
+
+        $serverPaths = [];
+        $newFolders = [];
+        foreach ($serverFolders as $f) {
+            $p = (string) ($f['path'] ?? '');
+            if ($p === '') {
+                continue;
+            }
+            $serverPaths[strtoupper($p)] = true;
+            if (!isset($cachedPaths[strtoupper($p)])) {
+                $newFolders[] = $f;
+            }
+        }
+
+        // Nothing added or removed — just push the next check forward.
+        if ($newFolders === [] && count($serverPaths) === count($cachedPaths)) {
+            $this->touchFolderListExpiry();
+
+            return $cached;
+        }
+
+        if ($newFolders !== []) {
+            try {
+                (new AdminFolderService())->registerUnregisteredFolders($newFolders);
+            } catch (\Throwable $e) {
+                // A registration hiccup must never fail a background poll's whole
+                // response — the folders still list from IMAP and registration retries.
+                app_log('Auto folder-register failed: ' . $e->getMessage());
+            }
+            self::$registryCache = null;
+            self::$registryMatchSets = null;
+        }
+
+        $unread = $cached['unread_counts'] ?? [];
+        $this->set($serverFolders, $unread); // rewrites the list + resets both TTLs
+        releaseSessionLock();
+
+        return [
+            'folders' => $serverFolders,
+            'unread_counts' => $unread,
+            'connected' => true,
+            'error' => '',
+        ];
+    }
+
+    private function touchFolderListExpiry(): void
+    {
+        ensure_session_writable();
+        if (isset($_SESSION[self::SESSION_KEY])) {
+            $_SESSION[self::SESSION_KEY]['folders_expires'] = time() + self::FOLDER_LIST_TTL;
+        }
+        releaseSessionLock();
+    }
+
+    /**
+     * Short, order-independent hash of the visible folder set. The live-sync
+     * poll compares this to the sidebar's current signature to decide whether
+     * folders changed (and the sidebar needs a live refresh).
+     *
+     * @param list<array<string, mixed>> $folders
+     */
+    public static function foldersSignature(array $folders): string
+    {
+        $paths = [];
+        foreach ($folders as $f) {
+            $p = strtoupper((string) ($f['path'] ?? ''));
+            if ($p !== '') {
+                $paths[] = $p;
+            }
+        }
+        sort($paths);
+
+        return substr(md5(implode("\n", $paths)), 0, 12);
+    }
+
+    /**
+     * Run the throttled server-folder revalidation against the session cache
+     * (see revalidateServerFolders) from the background poll — a cheap no-op
+     * until FOLDER_LIST_TTL elapses. Lets folders created/removed in another
+     * mail client be detected without a page navigation.
+     */
+    public static function syncFoldersIfDue(): void
+    {
+        $session = $_SESSION[self::SESSION_KEY] ?? null;
+        if (!is_array($session) || !isset($session['folders'])) {
+            return; // no cold cache yet — a full page load will build it
+        }
+        if (time() <= (int) ($session['folders_expires'] ?? 0)) {
+            return; // not due yet
+        }
+
+        $cache = new self();
+        $cached = $cache->get();
+        if ($cached !== null) {
+            $cache->revalidateServerFolders($cached);
+        }
     }
 
     /**

@@ -598,7 +598,49 @@ class MailController
         // fires the new-mail sound/notification in this one request — no follow-ups.
         $this->reconcileSidebarBadgesFromIndex();
 
-        json_response(['ok' => true, 'unread_counts' => FolderCache::sidebarUnreadCountsFromSession()]);
+        // Detect folders created/removed in another mail client (throttled) so the
+        // sidebar can live-refresh without a re-login, and hand the client a
+        // signature of the current folder set to compare against.
+        FolderCache::syncFoldersIfDue();
+        $sidebarFolders = FolderCache::load(skipUnreadRefresh: true)['folders'] ?? [];
+
+        json_response([
+            'ok' => true,
+            'unread_counts' => FolderCache::sidebarUnreadCountsFromSession(),
+            'folders_sig' => FolderCache::foldersSignature($sidebarFolders),
+        ]);
+    }
+
+    /**
+     * Re-rendered sidebar folder list, fetched by the live-sync poll only when
+     * the folder signature changed — so folders created/removed in another mail
+     * client appear/disappear in the sidebar without a re-login or navigation.
+     */
+    public function sidebarFragment(): void
+    {
+        requireAuth();
+        $folderData = FolderCache::load(skipUnreadRefresh: true);
+        releaseSessionLock();
+
+        $sidebarFolders = $folderData['folders'];
+        $folders = $sidebarFolders;
+        $unreadCounts = $folderData['unread_counts'] ?? [];
+        $active = decode_folder_path((string) ($_GET['active'] ?? ''));
+        $activeFolder = $active !== '' ? $active : null;
+        // The partial's admin footer (Admin panel / Connection status) is gated on
+        // $sessionUser; layout.php sets it for full page renders, so set it here too
+        // or the live-swapped sidebar loses those links for admins.
+        $sessionUser = Auth::user();
+
+        ob_start();
+        require base_path('views/partials/folder-sidebar.php');
+        $html = (string) ob_get_clean();
+
+        json_response([
+            'ok' => true,
+            'html' => $html,
+            'sig' => FolderCache::foldersSignature($sidebarFolders),
+        ]);
     }
 
     /**

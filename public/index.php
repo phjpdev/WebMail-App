@@ -98,6 +98,7 @@ $router->get('/', fn () => $mailController->home());
 $router->get('/search', fn () => $mailController->search());
 $router->get('/mail/bootstrap', fn () => $mailController->mailBootstrap());
 $router->get('/mail/live-sync', fn () => $mailController->liveSync());
+$router->get('/mail/sidebar', fn () => $mailController->sidebarFragment());
 $router->get('/mail/op-status', fn () => $mailController->opStatus());
 $router->get('/folder/{folderB64}/fragment', fn ($p) => $mailController->folderFragment($p));
 $router->get('/folder/{folderB64}/attachments', fn ($p) => $mailController->messageAttachments($p));

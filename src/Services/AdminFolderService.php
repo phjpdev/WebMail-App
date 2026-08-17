@@ -260,6 +260,25 @@ class AdminFolderService
             throw new \RuntimeException('The mail server returned no folders.');
         }
 
+        $result = $this->registerUnregisteredFolders($serverFolders);
+        if ($result['imported'] > 0) {
+            (new FolderCache())->clear();
+        }
+
+        return $result;
+    }
+
+    /**
+     * Register any server folders not already in the registry. Pass a folder list
+     * you already fetched (no IMAP call here). Shared by the manual "Import from
+     * mail server" button and the automatic sidebar folder sync. Does NOT clear
+     * the folder cache — the caller decides.
+     *
+     * @param list<array{path?: string, delimiter?: string}> $serverFolders
+     * @return array{imported: int, names: list<string>}
+     */
+    public function registerUnregisteredFolders(array $serverFolders): array
+    {
         // Compare against ALL registered paths (active or not) — imap_path is unique.
         $registered = [];
         foreach (Database::query('SELECT imap_path FROM folders')->fetchAll() as $row) {
@@ -268,7 +287,7 @@ class AdminFolderService
 
         $names = [];
         foreach ($serverFolders as $folder) {
-            $path = $folder['path'];
+            $path = (string) ($folder['path'] ?? '');
             if ($path === '' || isset($registered[strtolower($path)])) {
                 continue;
             }
@@ -283,16 +302,17 @@ class AdminFolderService
                 $display = $leaf !== '' ? $leaf : $path;
             }
 
-            Database::query(
-                'INSERT INTO folders (imap_path, display_name, folder_type, active) VALUES (?, ?, ?, 1)',
+            // INSERT IGNORE: this now runs from every session's background poll on
+            // a shared mailbox, so two polls can race to register the same new
+            // folder — the loser must be a harmless no-op, not a duplicate-key crash.
+            $stmt = Database::query(
+                'INSERT IGNORE INTO folders (imap_path, display_name, folder_type, active) VALUES (?, ?, ?, 1)',
                 [$path, $display, $this->inferFolderType($path)]
             );
             $registered[strtolower($path)] = true;
-            $names[] = $display;
-        }
-
-        if ($names !== []) {
-            (new FolderCache())->clear();
+            if ($stmt->rowCount() > 0) { // 0 = a concurrent poll already inserted it
+                $names[] = $display;
+            }
         }
 
         return ['imported' => count($names), 'names' => $names];

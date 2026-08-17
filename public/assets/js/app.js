@@ -9128,10 +9128,46 @@
                     if (data && data.unread_counts) {
                         applyUnreadCounts(data.unread_counts);
                     }
+                    if (data && data.folders_sig) {
+                        maybeRefreshSidebar(data.folders_sig);
+                    }
                     scheduleMailPoll(false);
                 })
                 .catch(function () {});
         }, intervalMs);
+    }
+
+    // When the folder set changes on the server (a folder created/removed in
+    // another mail client), the live-sync poll reports a new signature. Fetch a
+    // freshly rendered sidebar and swap it in so the change appears live — no
+    // navigation, no re-login. Delegated folder-click + mobile-close handlers
+    // survive the swap; the collapse toggles are re-bound via initSidebarGroups().
+    var sidebarRefreshInFlight = false;
+    function maybeRefreshSidebar(sig) {
+        var el = document.getElementById('sidebar');
+        if (!el || !sig || sidebarRefreshInFlight) return;
+        if (el.getAttribute('data-folders-sig') === sig) return; // unchanged
+        sidebarRefreshInFlight = true;
+        var active = document.querySelector('.sidebar-link.active[data-folder-b64]');
+        var activeB64 = active ? (active.getAttribute('data-folder-b64') || '') : '';
+        fetch(apiUrl('mail/sidebar?active=' + encodeURIComponent(activeB64)), {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.ok && typeof data.html === 'string') {
+                    el.innerHTML = data.html;
+                    el.setAttribute('data-folders-sig', data.sig || sig);
+                    // Re-bind the sidebar's directly-bound handlers on the fresh DOM:
+                    // group/branch collapse toggles AND the "collapse all folders"
+                    // section toggle (which also re-applies its saved collapsed state).
+                    if (typeof initSidebarGroups === 'function') initSidebarGroups();
+                    if (typeof initSidebarSectionToggles === 'function') initSidebarSectionToggles();
+                }
+            })
+            .catch(function () {})
+            .then(function () { sidebarRefreshInFlight = false; });
     }
 
     function initStatusPage() {

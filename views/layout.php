@@ -105,7 +105,7 @@
 
     <div class="app-shell">
         <?php if (!empty($sessionUser)): ?>
-            <aside id="sidebar" class="sidebar">
+            <aside id="sidebar" class="sidebar" data-folders-sig="<?= e(\App\Services\FolderCache::foldersSignature($sidebarFolders ?? $folders ?? [])) ?>">
                 <?php require base_path('views/partials/folder-sidebar.php'); ?>
             </aside>
             <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" title="Drag to resize — double-click to reset"></div>
@@ -160,6 +160,6 @@
         </div>
     </div>
 
-    <script src="<?= e(url('assets/js/app.js')) ?>?v=265" defer></script>
+    <script src="<?= e(url('assets/js/app.js')) ?>?v=266" defer></script>
 </body>
 </html>
