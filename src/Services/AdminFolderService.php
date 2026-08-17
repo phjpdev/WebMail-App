@@ -319,6 +319,46 @@ class AdminFolderService
     }
 
     /**
+     * The set of folder paths that currently exist on the mail server (lowercased),
+     * after registering any that aren't in the registry yet. The admin Folders page
+     * uses this to HIDE ghost rows (folders deleted on the server) so it shows the
+     * same set as the sidebar — WITHOUT deleting anything. Returns null when the
+     * server can't be reached or returns nothing, so the caller falls back to showing
+     * the full registry rather than hiding folders on a transient/partial failure.
+     * Deliberately never destructive: a truncated server list can at worst hide a row
+     * for one page load (it reappears next load), never lose data or filter rules.
+     *
+     * @return array<string, true>|null lowercased server folder paths, or null
+     */
+    public function serverFolderPathSet(): ?array
+    {
+        $imap = new ImapService();
+        if (!$imap->connect()) {
+            return null; // unreachable — caller shows the full registry unfiltered
+        }
+        $serverFolders = $imap->listFolders(true);
+        if ($serverFolders === []) {
+            return null; // failed/empty list — never hide anything
+        }
+
+        // Non-destructive: register folders that are on the server but not yet
+        // registered, so newly-created folders appear in the admin panel immediately.
+        if ($this->registerUnregisteredFolders($serverFolders)['imported'] > 0) {
+            (new FolderCache())->clear();
+        }
+
+        $set = [];
+        foreach ($serverFolders as $f) {
+            $p = strtolower((string) ($f['path'] ?? ''));
+            if ($p !== '') {
+                $set[$p] = true;
+            }
+        }
+
+        return $set;
+    }
+
+    /**
      * Map a mailbox path onto the registry's folder_type enum, reusing the
      * same name-based detection the sidebar icons use.
      */

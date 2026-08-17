@@ -7343,10 +7343,11 @@ function partition_admin_folders_for_display(array $folders): array
             continue;
         }
 
-        // Only admin-managed folders are listed — employee mailboxes and
-        // client/group folders. The shared system defaults (Inbox, Sent, Drafts,
-        // Archive, Junk, Trash, Spam) are not shown in the admin table.
-        if (!in_array((string) ($folder['folder_type'] ?? ''), ['employee', 'client', 'company'], true)) {
+        // Show every real folder so this table matches the sidebar. Only the
+        // mailbox's own system defaults — INBOX itself, and Sent/Drafts/Archive/
+        // Junk/Trash/Spam directly under INBOX — are hidden here; they aren't
+        // admin-managed and appear in the sidebar's primary section instead.
+        if (strcasecmp($path, 'INBOX') === 0 || system_folder_bucket_for_path($path) !== null) {
             continue;
         }
 

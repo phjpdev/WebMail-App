@@ -578,9 +578,29 @@ class AdminController
     public function foldersIndex(): void
     {
         requireAdmin();
+        // Show the same folders as the sidebar: hide "ghost" rows (folders deleted
+        // on the mail server) by filtering the registry to what's actually on the
+        // server, and register any new server folders. This is NON-destructive —
+        // no rows are deleted, so a transient/partial server list can never lose
+        // data. Best-effort: a mail-server hiccup must never break the admin page.
+        $serverSet = null;
+        try {
+            $serverSet = $this->folders->serverFolderPathSet();
+        } catch (\Throwable $e) {
+            app_log('Folder reconcile on admin view failed: ' . $e->getMessage());
+        }
+
+        $folders = $this->folders->listAll();
+        if (is_array($serverSet)) {
+            $folders = array_values(array_filter($folders, static function (array $f) use ($serverSet): bool {
+                $path = strtolower((string) ($f['imap_path'] ?? ''));
+                return $path !== '' && isset($serverSet[$path]);
+            }));
+        }
+
         $this->render('admin/folders/index', [
             'title' => 'Folders',
-            'folders' => $this->folders->listAll(),
+            'folders' => $folders,
             'adminSection' => 'folders',
         ]);
     }
