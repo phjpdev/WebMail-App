@@ -2816,28 +2816,39 @@ class MailController
                         $srcMids[$m] = true;
                     }
                 }
+                $folderStillInSource = 0;
                 foreach ($opMessageIds as $mid) {
                     $mid = mail_normalize_thread_id((string) $mid);
                     if ($mid !== '' && isset($srcMids[$mid])) {
                         $stillInSource++;
+                        $folderStillInSource++;
                     }
                 }
-                // Re-mirror the source index to the live truth so the UI shows
-                // exactly what the server has.
-                try {
-                    MailCacheService::syncFolderHeaders($verifyImap, $fromResolved);
-                    MailCacheService::reconcileBadgeFromIndex($fromResolved);
-                } catch (\Throwable $e) {
-                    app_log('Verify source sync failed: ' . $e->getMessage());
+                // Re-mirror the source index to live truth when a repair moved more
+                // messages OR when this source STILL holds op messages. For a genuinely
+                // clean move executeMoveOnServer already synced this source (line ~3080),
+                // so re-listing here would be a redundant round-trip. BUT in the host's
+                // silent-no-op case (movedTotal===0) executeMoveOnServer early-returned
+                // WITHOUT syncing, and the optimistic removal left the row hidden with a
+                // removed-tombstone — so re-mirroring here restores the source view
+                // immediately instead of after the ~2-min staleness TTL.
+                if ($repaired > 0 || $folderStillInSource > 0) {
+                    try {
+                        MailCacheService::syncFolderHeaders($verifyImap, $fromResolved);
+                        MailCacheService::reconcileBadgeFromIndex($fromResolved);
+                    } catch (\Throwable $e) {
+                        app_log('Verify source sync failed: ' . $e->getMessage());
+                    }
                 }
             }
         } elseif ($opMessageIds !== []) {
             $verified = false;
         }
 
-        if ($repaired > 0 || $stillInSource === 0) {
-            // Index the target so the list (and arrival ghost-kill) sees the moved
-            // messages as real rows.
+        // Re-index the target ONLY after a repair. For a clean move,
+        // executeMoveOnServer already resynced the target (line ~3069) with the real
+        // moved rows, so a second re-list here just adds latency to every move.
+        if ($repaired > 0) {
             try {
                 if ($verifyImap->connect()) {
                     MailCacheService::resyncFolderAfterMove($verifyImap, $targetIdx, [], 50);
