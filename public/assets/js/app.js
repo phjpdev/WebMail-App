@@ -921,10 +921,14 @@
 
     function openMessageInPane(uid, pushHistory) {
         if (!uid) return;
-        // Hold message opening while a destructive op is still finishing — opening
-        // a message fetches its body over IMAP and would contend with the op.
-        if (criticalOpActive) {
-            deferDuringCriticalOp(function () { openMessageInPane(uid, pushHistory); });
+        // Reading a message is allowed EVEN while a destructive op (delete/move/spam)
+        // is still finishing in the background — it's an independent, lightweight
+        // fetch, so the user can keep triaging (open the next email) without waiting
+        // for the op to complete. Destructive ops stay serialized elsewhere (one at a
+        // time) so the mail host is never hit by several heavy ops at once. The only
+        // message that's off-limits is the one on its way out — opening a row that's
+        // being deleted/moved would fetch a vanishing message.
+        if (isUidPendingRemoval(uid)) {
             return;
         }
         if (paneNavTimer) window.clearTimeout(paneNavTimer);
@@ -1570,14 +1574,14 @@
 
             e.preventDefault();
             var b64 = link.getAttribute('data-folder-b64');
-            // A destructive op is still finishing — don't switch folders now (that
-            // fires competing IMAP requests). Hold the switch and run it the moment
-            // the op settles.
-            if (criticalOpActive) {
-                deferDuringCriticalOp(function () { loadFolderAjax(b64, true); });
-                if (window.innerWidth < 900) closeSidebar();
-                return;
-            }
+            // Switching folders is allowed even while a destructive op is still
+            // finishing: a sidebar click loads page 1, which is served instantly from
+            // the local cache with NO IMAP round-trip. The only part that would fire a
+            // competing IMAP request — the follow-up header /sync — is held by the poll
+            // layer until the op settles (scheduleMailPoll/poll gate on criticalOpActive;
+            // releaseCriticalOp then runs one revalidation for the folder in view). So
+            // the move can't flake on the connection-limited host, and there's no more
+            // "Finishing your last action…" wait on a folder switch.
             loadFolderAjax(b64, true);
             if (window.innerWidth < 900) closeSidebar();
         });
@@ -3306,6 +3310,11 @@
 
     function scheduleMailPoll(force, withFilter) {
         if (!mailPoll) return;
+        // Hold every folder /sync while a destructive op is still settling — both
+        // light and forced syncs can open a live IMAP connection that would race the
+        // in-flight move on this connection-limited host. releaseCriticalOp fires one
+        // revalidation for the folder in view once the op is done.
+        if (criticalOpActive) { mailSyncHeldDuringOp = true; return; }
         if (mailPollInFlight) return;
         if (!force && isPostSendQuiet()) return;
         if (!force && isListMutationQuiet()) return;
@@ -3715,22 +3724,60 @@
     // time out on this host).
     var criticalOpActive = false;
     var criticalOpSafetyTimer = null;
-    var deferredNavAction = null;
-    var CRITICAL_OP_MAX_MS = 15000;
+    // Generation token: every destructive op gets a distinct gen so a stale op's
+    // watchdog/finish can never re-arm or release a NEWER overlapping op's lock
+    // (which would break serialization and re-open the half-move hazard). The gen
+    // only ever increments; the current owner is whoever holds gen === criticalOpGen.
+    var criticalOpGen = 0;
+    // A folder /sync that was requested while a destructive op was still settling.
+    // BOTH light and forced syncs can open a live IMAP connection, so they are held
+    // during the op and one revalidation is fired for the folder in view on release.
+    var mailSyncHeldDuringOp = false;
+    // The lock is re-armed on every op-status poll that shows the op still running
+    // (petCriticalOpWatchdog), so this is a WATCHDOG interval, not a hard cap: it only
+    // fires when op-status goes truly silent. Kept comfortably above the worst-case
+    // inter-poll gap (max 8s delay + the op-status abort-timeout) so a healthy-but-slow
+    // poll cycle never trips it. attach()'s 120s cap remains the absolute ceiling.
+    var CRITICAL_OP_MAX_MS = 30000;
 
     function beginCriticalOp() {
         criticalOpActive = true;
+        var gen = ++criticalOpGen;
         if (criticalOpSafetyTimer) window.clearTimeout(criticalOpSafetyTimer);
-        criticalOpSafetyTimer = window.setTimeout(releaseCriticalOp, CRITICAL_OP_MAX_MS);
+        criticalOpSafetyTimer = window.setTimeout(function () { releaseCriticalOp(gen); }, CRITICAL_OP_MAX_MS);
+        return gen;
     }
 
-    function releaseCriticalOp() {
+    // Re-ARM and re-ASSERT the lock. Called after confirming the OWNING op is still
+    // running — at response arrival and on every in-progress op-status poll. It
+    // re-asserts (not bails) for two reasons: (1) if the flat safety timer already
+    // fired during a slow, longer-than-budget pre-response window, criticalOpActive is
+    // false here and a plain re-arm would never restore it, dropping the lock for the
+    // rest of a still-running move — the half-move hazard; (2) the gen check ensures
+    // ONLY the current owner re-arms, so a stale op A cannot seize a newer op B's lock.
+    // attach()'s 120s cap bounds petting, so this can never wedge the lock stuck ON.
+    function petCriticalOpWatchdog(gen) {
+        if (gen !== criticalOpGen) return;
+        criticalOpActive = true;
+        if (criticalOpSafetyTimer) window.clearTimeout(criticalOpSafetyTimer);
+        criticalOpSafetyTimer = window.setTimeout(function () { releaseCriticalOp(gen); }, CRITICAL_OP_MAX_MS);
+    }
+
+    function releaseCriticalOp(gen) {
+        // A stale op (its gen superseded by a newer overlapping op) must not release
+        // the newer op's lock or clear its timer. A no-arg call (defensive) proceeds.
+        if (gen != null && gen !== criticalOpGen) return;
         if (criticalOpSafetyTimer) { window.clearTimeout(criticalOpSafetyTimer); criticalOpSafetyTimer = null; }
         if (!criticalOpActive) return;
         criticalOpActive = false;
-        var deferred = deferredNavAction;
-        deferredNavAction = null;
-        if (deferred) { try { deferred(); } catch (e) { /* ignore */ } }
+        // The op is settled — opening IMAP is safe again. If a folder /sync was held
+        // while it ran (e.g. the user switched folders mid-op), run one now for the
+        // folder in view so it picks up anything that arrived during the op. A
+        // duplicate scheduleMailPoll(true) from finish() is deduped by mailPollInFlight.
+        if (mailSyncHeldDuringOp) {
+            mailSyncHeldDuringOp = false;
+            scheduleMailPoll(true, false);
+        }
     }
 
     // True (and shows a hint) when the caller must stand down because a mutation
@@ -3741,19 +3788,13 @@
         return true;
     }
 
-    // Hold a folder/message navigation until the in-flight op settles instead of
-    // firing a competing IMAP request now. Only the latest intent is kept.
-    function deferDuringCriticalOp(navFn) {
-        var hadPending = !!deferredNavAction;
-        deferredNavAction = navFn;
-        if (!hadPending) showToast('success', 'Finishing your last action…', 1800);
-    }
-
     function beginOpToast(labels) {
         labels = labels || {};
         // This toast tracks a destructive IMAP op whose background moves outlive
-        // the HTTP response — hold the guard for its whole lifetime.
-        beginCriticalOp();
+        // the HTTP response — hold the guard for its whole lifetime. myGen identifies
+        // THIS op so its watchdog/finish only ever touch its own lock, never a newer
+        // overlapping op's.
+        var myGen = beginCriticalOp();
         var stack = document.getElementById('toast-stack');
         var toast = null;
         if (stack) {
@@ -3777,7 +3818,7 @@
         function finish(ok, failMsg) {
             if (finished) return;
             finished = true;
-            releaseCriticalOp();
+            releaseCriticalOp(myGen);
             dismiss();
             if (ok) {
                 if (labels.done) showToast('success', labels.done, 3500);
@@ -3802,15 +3843,26 @@
                 if (finished) return;
                 var ids = (Array.isArray(opId) ? opId : [opId]).filter(function (v) { return !!v; });
                 if (!ids.length) { finish(true); return; }
+                // Response arrived and the op is underway — give the lock a fresh
+                // window from now, then keep re-arming it on every in-progress poll.
+                petCriticalOpWatchdog(myGen);
                 var startedAt = Date.now();
                 var delays = [1500, 2500, 4000, 6000];
                 var step = 0;
                 function poll() {
                     Promise.all(ids.map(function (id) {
+                        // Per-request abort-timeout (mirrors the mutation POST and compose
+                        // send): a hung op-status socket must become a reject (→ null result
+                        // → treated as "still running", keeps polling) rather than stalling
+                        // the loop forever and leaving the progress spinner up.
+                        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                        var to = ctrl ? window.setTimeout(function () { try { ctrl.abort(); } catch (e) { /* ignore */ } }, 9000) : null;
                         return fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(id)), {
                             credentials: 'same-origin',
-                            headers: { Accept: 'application/json' }
-                        }).then(function (r) { return r.json(); }).catch(function () { return null; });
+                            headers: { Accept: 'application/json' },
+                            signal: ctrl ? ctrl.signal : undefined
+                        }).then(function (r) { return r.json(); }).catch(function () { return null; })
+                            .then(function (v) { if (to) window.clearTimeout(to); return v; });
                     })).then(function (results) {
                         if (finished) return;
                         var anyFailed = results.some(function (d) { return d && d.status === 'failed'; });
@@ -3819,6 +3871,9 @@
                             return !(results[i] && results[i].status === 'done');
                         });
                         if (!ids.length) { finish(true); return; }
+                        // Op still running (or op-status momentarily silent) — hold the
+                        // serialization lock past the flat window.
+                        petCriticalOpWatchdog(myGen);
                         next();
                     }).catch(next);
                 }
@@ -3829,7 +3884,7 @@
                         // success — the journal + resume guarantee completion and
                         // the folder updates itself as messages land.
                         finished = true;
-                        releaseCriticalOp();
+                        releaseCriticalOp(myGen);
                         dismiss();
                         showToast('success', 'Still finishing in the background — the folder will update automatically.', 6000);
                         scheduleMailPoll(true, false);
@@ -5383,6 +5438,10 @@
         }
 
         function poll(force, withFilter) {
+            // Same critical-op hold as scheduleMailPoll — this is the choke point for
+            // the follow-up/interval timers that call poll() directly. Both light and
+            // forced /sync open IMAP, so none may run until the op settles.
+            if (criticalOpActive) { mailSyncHeldDuringOp = true; return; }
             if (mailPollInFlight) {
                 return;
             }
@@ -6208,6 +6267,16 @@
     function fireListMutation(actionPath, payload, options) {
         options = options || {};
         var retryOnCsrf = options.retryOnCsrf !== false;
+        // Bound the mutation POST itself with an abort-timeout. On this flaky host a
+        // request can stall (connection accepted, no response bytes); without this the
+        // op-toast spinner spins until the browser's multi-minute socket timeout (the
+        // critical-op safety timer only releases the LOCK, not the toast). On abort the
+        // fetch rejects into the .catch below → opToastHandle.fail() dismisses the
+        // spinner and scheduleMailPoll(true) reconciles the row. 30s matches the send
+        // timeout and CRITICAL_OP_MAX_MS, safely above the normal 1-2s response.
+        var mutCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var mutTimer = mutCtrl ? window.setTimeout(function () { try { mutCtrl.abort(); } catch (e) { /* ignore */ } }, 30000) : null;
+        function clearMutTimer() { if (mutTimer) { window.clearTimeout(mutTimer); mutTimer = null; } }
         return fetch(apiUrl(actionPath), {
             method: 'POST',
             credentials: 'same-origin',
@@ -6217,7 +6286,8 @@
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'X-CSRF-Token': csrf || ''
             },
-            body: payload.toString()
+            body: payload.toString(),
+            signal: mutCtrl ? mutCtrl.signal : undefined
         }).then(function (res) {
             captureCsrfFromResponse(res);
             return res.json().catch(function () { return { ok: res.ok }; }).then(function (data) {
@@ -6239,6 +6309,7 @@
                 return data;
             });
         }).then(function (data) {
+            clearMutTimer();
             if (data && data.unread_counts && Object.keys(data.unread_counts).length) {
                 applyUnreadCounts(data.unread_counts);
             }
@@ -6257,10 +6328,15 @@
             }
             return data;
         }).catch(function (err) {
+            clearMutTimer();
+            // An abort-timeout has no useful message — let fail() fall back to the
+            // op's own labels.fail ("…has been restored"); scheduleMailPoll(true) below
+            // then reconciles the row in case the server actually completed the op.
+            var aborted = err && err.name === 'AbortError';
             if (options.opToastHandle) {
-                options.opToastHandle.fail(err.message || 'Action failed.');
+                options.opToastHandle.fail(aborted ? '' : (err.message || 'Action failed.'));
             } else if (!options.suppressErrorToast) {
-                showToast('error', err.message || 'Action failed.');
+                showToast('error', aborted ? 'The action timed out. Please try again.' : (err.message || 'Action failed.'));
             }
             if (options.rollbackUids || options.rollbackAllInFolder) {
                 clearPendingRemoval(options.rollbackUids || [], !!options.rollbackAllInFolder);
@@ -8514,6 +8590,9 @@
         payload.set('folder', folderEnc);
         threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
         return fireListMutation('message/spam', payload, {
+            // On failure the conversation is restored and reappears; clear the
+            // pending-removal flags so the rows stay openable (openMessageInPane guard).
+            rollbackUids: threadUids.slice(),
             opToastHandle: beginOpToast({
                 progress: 'Moving to Spam…',
                 done: threadUids.length === 1 ? 'Message moved to Spam.' : 'Conversation moved to Spam.',
@@ -8619,6 +8698,10 @@
                 clearReadingPaneIfShowingUids([uid]);
                 return fireListMutation('message/restore', movePayload, {
                     suppressErrorToast: true,
+                    // On failure the server restores the message and it reappears in
+                    // the list; clear its pending-removal flag so the user can open it
+                    // again (otherwise openMessageInPane's guard swallows the click).
+                    rollbackUids: [uid],
                     opToastHandle: beginOpToast({
                         progress: 'Restoring message…',
                         done: 'Message restored to its original folder.',
@@ -8631,6 +8714,9 @@
                 clearReadingPaneIfShowingUids([uid]);
                 return fireListMutation('message/' + kind, movePayload, {
                     suppressErrorToast: true,
+                    // On failure the message is restored and reappears; clear its
+                    // pending-removal flag so it stays openable (guard in openMessageInPane).
+                    rollbackUids: [uid],
                     opToastHandle: beginOpToast({
                         progress: deleteLoadingMessage(1),
                         done: deleteSuccessMessage(1),
@@ -8643,6 +8729,9 @@
 
             clearReadingPaneIfShowingUids([uid]);
             fireListMutation('message/' + kind, movePayload, {
+                // On failure the message is restored and reappears; clear its
+                // pending-removal flag so it stays openable (guard in openMessageInPane).
+                rollbackUids: [uid],
                 opToastHandle: beginOpToast(kind === 'spam'
                     ? { progress: 'Moving to Spam…', done: 'Message moved to Spam.', fail: 'The message could not be moved to Spam. It has been restored.' }
                     : { progress: 'Moving message…', done: 'Message moved.', fail: 'The message could not be moved. It has been restored.' })
@@ -9135,6 +9224,11 @@
         var cfgSecs = parseInt(document.body.getAttribute('data-live-sync-interval'), 10);
         var intervalMs = (cfgSecs && cfgSecs >= 15 ? cfgSecs : 60) * 1000;
         window.setInterval(function () {
+            // Hold the live-sync tick while a destructive op is settling: mail/live-sync
+            // opens live IMAP (routing-filter MOVEs, badge STATUS, folder LIST) that would
+            // race the in-flight move on this connection-limited host. It self-corrects on
+            // the next tick once the op releases.
+            if (criticalOpActive) return;
             if (isPostSendQuiet()) return;
             fetch(apiUrl('mail/live-sync'), {
                 credentials: 'same-origin',

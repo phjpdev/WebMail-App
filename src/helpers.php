@@ -3535,6 +3535,35 @@ function mail_ops_journal_status(int $opId): ?array
 }
 
 /**
+ * True when a destructive mail op (move/delete/spam) is still 'pending' — its
+ * background IMAP work may still be settling. Used to hold OTHER foreground IMAP
+ * work (e.g. the deep-page history extend) off the single shared mailbox while a
+ * move is in flight, so a second connection can't flake the move on this
+ * connection-limited host. Bounded by a recency window (and uses the
+ * (status, updated_at) index) so a crashed/orphaned pending row can never wedge
+ * the feature permanently; fails OPEN so a DB hiccup never blocks folder history.
+ */
+function mail_ops_journal_has_recent_pending(int $withinSeconds = 180): bool
+{
+    // $secs is a guaranteed int (injection-safe) and inlined because MySQL prepared
+    // statements don't reliably bind a placeholder as an INTERVAL quantity — the rest
+    // of the codebase inlines interval literals for the same reason.
+    $secs = max(1, $withinSeconds);
+    try {
+        $row = App\Database::fetchOne(
+            "SELECT 1 AS x FROM mail_pending_ops
+             WHERE status = 'pending'
+               AND updated_at > (NOW() - INTERVAL {$secs} SECOND)
+             LIMIT 1"
+        );
+
+        return $row !== null;
+    } catch (\Throwable) {
+        return false;
+    }
+}
+
+/**
  * Escape text for HTML and wrap every case-insensitive match of $query in
  * <mark class="search-hit"> for search-result highlighting.
  */

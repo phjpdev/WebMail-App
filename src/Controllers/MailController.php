@@ -228,7 +228,12 @@ class MailController
         // serve from the cache as usual. listFromCache clamps out-of-range
         // pages, so detection must happen here, before the cache read.
         $historyState = MailCacheService::getSyncState($folderPath);
-        if ($imapConnected && $query === '' && $page > 1) {
+        // Hold the deep-page history extend (a foreground IMAP header fetch) while a
+        // destructive op is still settling: a "Load older" / deep-page navigation is a
+        // full-page reload that bypasses the client's op-lock, and a second live IMAP
+        // connection racing the in-flight move drops messages on this host. The clamped
+        // cache page is served instead; the client re-extends after the op releases.
+        if ($imapConnected && $query === '' && $page > 1 && !mail_ops_journal_has_recent_pending()) {
             $serverTotal = (int) ($historyState['server_total'] ?? 0);
             $indexed = MailCacheService::countListableMessagesInIndex($folderPath);
             $indexedPages = (int) ceil(max(0, $indexed) / max(1, $perPage));
