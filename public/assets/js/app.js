@@ -31,17 +31,27 @@
     }
 
     function refreshCsrfToken() {
+        // Abort-timeout: this sits on the retry leg of destructive mutations — a
+        // hung response here would stall the op's settlement (and the parked
+        // action queue) until the browser's own socket timeout.
+        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var to = ctrl ? window.setTimeout(function () { try { ctrl.abort(); } catch (e) { /* ignore */ } }, 10000) : null;
         return fetch(apiUrl('session/csrf'), {
             credentials: 'same-origin',
-            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            signal: ctrl ? ctrl.signal : undefined
         }).then(function (res) {
+            if (to) { window.clearTimeout(to); to = null; }
             captureCsrfFromResponse(res);
             if (!res.ok) return csrf;
             return res.json().catch(function () { return null; }).then(function (data) {
                 if (data && data.csrf) setCsrfToken(data.csrf);
                 return csrf;
             });
-        }).catch(function () { return csrf; });
+        }).catch(function () {
+            if (to) { window.clearTimeout(to); to = null; }
+            return csrf;
+        });
     }
 
     function appBasePathname() {
@@ -2858,10 +2868,12 @@
             var draftAction = submitter && submitter.getAttribute('formaction');
             var actionPath = draftAction ? normalizeComposePath(draftAction) : 'compose/send';
             var isDraft = actionPath.indexOf('draft') >= 0;
-            // Don't send while a destructive op (delete/move/restore) is still
-            // finishing its background IMAP work — the two would contend on this
-            // connection-limited host. Draft saves are exempt (lightweight, local).
-            if (!isDraft && criticalOpActive) {
+            // Don't send while a destructive op is still finishing its background
+            // IMAP work OR a timed-out one is not yet confirmed settled — a send
+            // does destructive IMAP of its own (source-draft delete, Sent append)
+            // and the two would contend on this connection-limited host. Draft
+            // saves are exempt (lightweight, local).
+            if (!isDraft && mustSerializeOps()) {
                 e.preventDefault();
                 showToast('error', 'Please wait for the current action to finish before sending…', 2500);
                 return;
@@ -3742,6 +3754,7 @@
 
     function beginCriticalOp() {
         criticalOpActive = true;
+        criticalOpNetworkFail = false;
         var gen = ++criticalOpGen;
         if (criticalOpSafetyTimer) window.clearTimeout(criticalOpSafetyTimer);
         criticalOpSafetyTimer = window.setTimeout(function () { releaseCriticalOp(gen); }, CRITICAL_OP_MAX_MS);
@@ -3761,31 +3774,250 @@
         criticalOpActive = true;
         if (criticalOpSafetyTimer) window.clearTimeout(criticalOpSafetyTimer);
         criticalOpSafetyTimer = window.setTimeout(function () { releaseCriticalOp(gen); }, CRITICAL_OP_MAX_MS);
+        // Long op in progress: keep the QUEUED items' pending-removal stamps fresh
+        // (stamped at click, 120s TTL) so a deep-in-queue row can't resurrect via a
+        // live fragment render and invite a duplicate action while it waits.
+        refreshQueuedPendingStamps();
     }
 
-    function releaseCriticalOp(gen) {
+    // opSettled === true means the caller KNOWS the op's server-side work is over
+    // (op-status reported done/failed, or the request never started server work).
+    // Only such releases may dispatch the next queued mutation. Timer releases
+    // (watchdog / 120s cap) leave the op's true state unknown — dispatching a
+    // queued op then would put TWO IMAP mutations on the wire (the half-move
+    // hazard), so they release the lock but leave the queue parked; the still-alive
+    // response/poll path (or the cap's settlement watcher) drains it later.
+    function releaseCriticalOp(gen, opSettled) {
         // A stale op (its gen superseded by a newer overlapping op) must not release
         // the newer op's lock or clear its timer. A no-arg call (defensive) proceeds.
         if (gen != null && gen !== criticalOpGen) return;
         if (criticalOpSafetyTimer) { window.clearTimeout(criticalOpSafetyTimer); criticalOpSafetyTimer = null; }
-        if (!criticalOpActive) return;
+        var wasActive = criticalOpActive;
         criticalOpActive = false;
-        // The op is settled — opening IMAP is safe again. If a folder /sync was held
-        // while it ran (e.g. the user switched folders mid-op), run one now for the
-        // folder in view so it picks up anything that arrived during the op. A
-        // duplicate scheduleMailPoll(true) from finish() is deduped by mailPollInFlight.
+        if (opSettled === true) {
+            // Settled knowledge can arrive AFTER a timer already released the lock
+            // (watchdog fired, then the slow response/poll finally settled). The
+            // queue was parked for exactly this moment — drain regardless of
+            // wasActive. The pre-response time-hold belonged to this op, so it is
+            // lifted too. The dispatched item re-arms the lock synchronously, so
+            // the held-/sync check below stays held until the whole queue drains.
+            unsettledHoldUntil = 0;
+            drainCriticalOpQueue();
+            if (criticalOpActive) return;
+        } else if (!wasActive) {
+            return; // stale timer echo — lock already released, nothing new to do
+        } else {
+            // TIMER release while the op may still be running: park its journal
+            // ids in the settlement registry (or a time-hold when the response —
+            // and therefore the ids — never arrived; the POST's own 30s abort
+            // resolves that window). The drain refuses to dispatch until settled.
+            if (currentAttachIds && currentAttachIds.length) {
+                noteUnsettledRelease(currentAttachIds);
+            } else {
+                unsettledHoldUntil = Date.now() + 35000;
+                unsettledWatchStart = Date.now();
+            }
+            armUnsettledWatch();
+        }
+        // Opening IMAP is safe again (or the timer gave up waiting). If a folder
+        // /sync was held while the op ran (e.g. the user switched folders mid-op),
+        // run one now for the folder in view so it picks up anything that arrived.
+        // A duplicate scheduleMailPoll(true) from finish() is deduped by mailPollInFlight.
         if (mailSyncHeldDuringOp) {
             mailSyncHeldDuringOp = false;
             scheduleMailPoll(true, false);
         }
     }
 
-    // True (and shows a hint) when the caller must stand down because a mutation
-    // is still finishing.
-    function blockedByCriticalOp() {
-        if (!criticalOpActive) return false;
-        showToast('error', 'Please wait for the current action to finish…', 2500);
+    // ── Destructive-action queue ─────────────────────────────────────────────
+    // Clicking delete/move/spam while another destructive op is still settling no
+    // longer shows "please wait": the action's optimistic UI runs instantly (the
+    // row disappears) and its NETWORK dispatch joins this FIFO. releaseCriticalOp
+    // drains it one item at a time, so the flaky connection-limited host still only
+    // ever sees ONE IMAP mutation in flight — the queue changes when the user may
+    // CLICK, never how many ops run concurrently.
+    // Items: { run: fn → promise, uids: [..], allInFolder: bool, label: string }.
+    var criticalOpQueue = [];
+    var CRITICAL_OP_QUEUE_MAX = 10;
+    // Set when an op died at the NETWORK level (timeout/abort/socket) — the host is
+    // unreachable, so queued follow-ups would each hang ~30s and fail the same way.
+    // The drain then cancels the rest and restores their rows instead.
+    var criticalOpNetworkFail = false;
+
+    // Dispatchers pre-check this BEFORE running their optimistic UI, so a full
+    // queue rejects the click cleanly with nothing to roll back.
+    function criticalOpQueueHasRoom() {
+        return criticalOpQueue.length < CRITICAL_OP_QUEUE_MAX;
+    }
+
+    function enqueueCriticalOp(item) {
+        if (criticalOpQueue.length >= CRITICAL_OP_QUEUE_MAX) {
+            showToast('error', 'Too many actions queued — please wait a moment for some to finish.', 3000);
+            return false;
+        }
+        criticalOpQueue.push(item);
+        showToast('success', item.label + ' queued — will run automatically.', 1600);
         return true;
+    }
+
+    function refreshQueuedPendingStamps() {
+        criticalOpQueue.forEach(function (item) {
+            if (item.uids && item.uids.length) markUidsPendingRemoval(item.uids);
+        });
+    }
+
+    // ── Settlement registry ──────────────────────────────────────────────────
+    // When a TIMER (30s watchdog / 120s toast cap) releases the lock, the op's
+    // server-side IMAP work may STILL be running. Its journal ids are parked here,
+    // and the queue drain refuses to dispatch while any remain unconfirmed — a
+    // slim watcher polls op-status (a DB-only read, no IMAP) until every id
+    // reports done/failed, then drains. Ids survive newer ops coming and going,
+    // so a fast successor's settled release can never dispatch into a slow,
+    // unconfirmed predecessor. When a timer fires before the response arrived
+    // (no ids yet), a TIME hold covers the window until the POST's own 30s
+    // abort resolves it. If nothing settles within 3 minutes, the queued
+    // actions are cancelled and their rows visibly restored.
+    var unsettledReleasedIds = [];
+    var unsettledHoldUntil = 0;
+    var unsettledWatchTimer = null;
+    var unsettledWatchStart = 0;
+    // Journal ids the CURRENT op's attach() loop is tracking (gen-owned): tells a
+    // firing watchdog what to park in the registry.
+    var currentAttachIds = null;
+
+    // Destructive clicks must queue (not dispatch) while an op is active OR any
+    // earlier timer-released op is still unconfirmed.
+    function mustSerializeOps() {
+        return criticalOpActive
+            || unsettledReleasedIds.length > 0
+            || Date.now() < unsettledHoldUntil;
+    }
+
+    function noteUnsettledRelease(ids) {
+        (ids || []).forEach(function (id) {
+            if (id && unsettledReleasedIds.indexOf(id) === -1) unsettledReleasedIds.push(id);
+        });
+        // Measure the give-up window from the LATEST unsettled release.
+        unsettledWatchStart = Date.now();
+        armUnsettledWatch();
+    }
+
+    function armUnsettledWatch() {
+        if (unsettledWatchTimer) return;
+        unsettledWatchTimer = window.setTimeout(unsettledWatchTick, 10000);
+    }
+
+    function unsettledWatchTick() {
+        unsettledWatchTimer = null;
+        try {
+            // Keep parked rows hidden while we wait (stamps are 120s; waits can be longer).
+            refreshQueuedPendingStamps();
+            var holdActive = Date.now() < unsettledHoldUntil;
+            if (!unsettledReleasedIds.length && !holdActive) {
+                drainCriticalOpQueue();
+                return;
+            }
+            if (Date.now() - unsettledWatchStart > 180000) {
+                unsettledReleasedIds = [];
+                unsettledHoldUntil = 0;
+                criticalOpNetworkFail = false;
+                flushCriticalOpQueue('The previous action is taking too long — the queued actions were cancelled and those messages were restored.');
+                return;
+            }
+            if (!unsettledReleasedIds.length) {
+                // Time-hold only (no ids to poll) — just wait it out.
+                armUnsettledWatch();
+                return;
+            }
+            // Snapshot: the registry can gain/lose ids while these fetches are in
+            // flight; statuses must be matched by ID, never by array index.
+            var polled = unsettledReleasedIds.slice();
+            Promise.all(polled.map(function (id) {
+                var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                var to = ctrl ? window.setTimeout(function () { try { ctrl.abort(); } catch (e) { /* ignore */ } }, 9000) : null;
+                return fetch(apiUrl('mail/op-status?id=' + encodeURIComponent(id)), {
+                    credentials: 'same-origin',
+                    headers: { Accept: 'application/json' },
+                    signal: ctrl ? ctrl.signal : undefined
+                }).then(function (r) { return r.json(); }).catch(function () { return null; })
+                    .then(function (v) { if (to) window.clearTimeout(to); return v; });
+            })).then(function (results) {
+                // A sub-op is settled only when its OWN status is done/failed —
+                // sibling runners of the same action may still be moving mail.
+                var settled = {};
+                polled.forEach(function (id, i) {
+                    var st = results[i] && results[i].status;
+                    if (st === 'done' || st === 'failed') settled[id] = 1;
+                });
+                unsettledReleasedIds = unsettledReleasedIds.filter(function (id) { return !settled[id]; });
+                if (!unsettledReleasedIds.length && Date.now() >= unsettledHoldUntil) {
+                    drainCriticalOpQueue();
+                    return;
+                }
+                armUnsettledWatch();
+            }).catch(function () { armUnsettledWatch(); });
+        } catch (e) {
+            // A synchronous throw must never kill the only watcher while queued
+            // work is parked — re-arm and try again next tick.
+            armUnsettledWatch();
+        }
+    }
+
+    // Cancel every queued action and put its rows back: their optimistic removals
+    // never reached the server, so clearing the pending flags + a forced poll
+    // restores the true state. Used when the connection has died, or when the
+    // previous op never settled and dispatching into it would be unsafe.
+    function flushCriticalOpQueue(reasonMsg) {
+        if (!criticalOpQueue.length) return;
+        var uids = [];
+        var anyAllInFolder = false;
+        criticalOpQueue.forEach(function (item) {
+            if (item.allInFolder) anyAllInFolder = true;
+            (item.uids || []).forEach(function (u) { uids.push(u); });
+        });
+        criticalOpQueue = [];
+        clearPendingRemoval(uids, anyAllInFolder);
+        showToast('error', reasonMsg || 'Connection problem — the queued actions were cancelled and those messages were restored.', 6000);
+        scheduleMailPoll(true);
+    }
+
+    // Queued actions exist only in this tab — they haven't reached the server yet
+    // (unlike the ACTIVE op, which the server-side journal completes even if the
+    // tab dies). Warn before unload so a reload/close can't silently drop them.
+    window.addEventListener('beforeunload', function (e) {
+        if (criticalOpQueue.length) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+
+    function drainCriticalOpQueue() {
+        if (criticalOpActive) return;
+        if (criticalOpNetworkFail) {
+            criticalOpNetworkFail = false;
+            flushCriticalOpQueue();
+            return;
+        }
+        // An earlier timer-released op is still unconfirmed — dispatching now could
+        // put a second mutation on the wire beside it. The watcher drains later.
+        if (unsettledReleasedIds.length || Date.now() < unsettledHoldUntil) {
+            armUnsettledWatch();
+            return;
+        }
+        // Dispatch until one item successfully arms the lock (normally the first).
+        // An item that throws synchronously is skipped so it can never stall the
+        // ones behind it.
+        while (criticalOpQueue.length && !criticalOpActive) {
+            var item = criticalOpQueue.shift();
+            try {
+                // Refresh the pending-removal window: the flags were stamped at
+                // click time and a long queue could outlive them, letting a held
+                // row resurrect via a live fragment while its op is still waiting.
+                if (item.uids && item.uids.length) markUidsPendingRemoval(item.uids);
+                var p = item.run();
+                if (p && typeof p.catch === 'function') p.catch(function () { /* feedback via op toast */ });
+            } catch (e) { /* skip broken item, keep draining */ }
+        }
     }
 
     function beginOpToast(labels) {
@@ -3815,11 +4047,20 @@
         function dismiss() {
             if (toast && toast.parentNode) toast.parentNode.removeChild(toast);
         }
-        function finish(ok, failMsg) {
+        function finish(ok, failMsg, opSettled) {
             if (finished) return;
             finished = true;
-            releaseCriticalOp(myGen);
+            if (myGen === criticalOpGen) currentAttachIds = null;
+            // Dismiss BEFORE the release: the release runs the queue drain (arbitrary
+            // follow-up work) — a throw in there must never strand the spinner.
             dismiss();
+            try {
+                // Settled release (default): op-status reported done/failed, or the
+                // request failed before starting server work (a network-level abort
+                // instead sets criticalOpNetworkFail → the drain FLUSHES). Callers
+                // pass opSettled=false when the server may still be working untracked.
+                releaseCriticalOp(myGen, opSettled !== false);
+            } catch (e) { /* never let drain errors break op completion */ }
             if (ok) {
                 if (labels.done) showToast('success', labels.done, 3500);
                 refreshUnreadBadges(false);
@@ -3842,13 +4083,23 @@
             attach: function (opId) {
                 if (finished) return;
                 var ids = (Array.isArray(opId) ? opId : [opId]).filter(function (v) { return !!v; });
-                if (!ids.length) { finish(true); return; }
+                if (!ids.length) {
+                    // No journal id came back: the server may still be running the
+                    // deferred work UNTRACKED (journal insert failed / table missing
+                    // on a fresh deploy). Finish the toast, but release UNSETTLED —
+                    // the release machinery time-holds the queue (~35s) so a queued
+                    // mutation can't fire into that invisible window.
+                    finish(true, null, false);
+                    return;
+                }
+                if (myGen === criticalOpGen) currentAttachIds = ids;
                 // Response arrived and the op is underway — give the lock a fresh
                 // window from now, then keep re-arming it on every in-progress poll.
                 petCriticalOpWatchdog(myGen);
                 var startedAt = Date.now();
                 var delays = [1500, 2500, 4000, 6000];
                 var step = 0;
+                var sawFailedId = false;
                 function poll() {
                     Promise.all(ids.map(function (id) {
                         // Per-request abort-timeout (mirrors the mutation POST and compose
@@ -3865,12 +4116,27 @@
                             .then(function (v) { if (to) window.clearTimeout(to); return v; });
                     })).then(function (results) {
                         if (finished) return;
-                        var anyFailed = results.some(function (d) { return d && d.status === 'failed'; });
-                        if (anyFailed) { finish(false); return; }
-                        ids = ids.filter(function (id, i) {
-                            return !(results[i] && results[i].status === 'done');
+                        // A 'failed' sub-op is settled for THAT id only — sibling
+                        // runners of a multi-folder restore may still be moving
+                        // mail. Never declare the op over (which would let the
+                        // queue drain) until EVERY id reports done or failed.
+                        if (results.some(function (d) { return d && d.status === 'failed'; })) {
+                            sawFailedId = true;
+                        }
+                        var settledNow = {};
+                        ids.forEach(function (id, i) {
+                            var st = results[i] && results[i].status;
+                            if (st === 'done' || st === 'failed') settledNow[id] = 1;
                         });
-                        if (!ids.length) { finish(true); return; }
+                        ids = ids.filter(function (id) { return !settledNow[id]; });
+                        if (myGen === criticalOpGen) currentAttachIds = ids;
+                        // Ids this loop just confirmed settled may also sit in the
+                        // settlement registry (a mid-op watchdog blip parked them) —
+                        // prune them now so the queue isn't deferred a spare tick.
+                        if (unsettledReleasedIds.length) {
+                            unsettledReleasedIds = unsettledReleasedIds.filter(function (id) { return !settledNow[id]; });
+                        }
+                        if (!ids.length) { finish(!sawFailedId); return; }
                         // Op still running (or op-status momentarily silent) — hold the
                         // serialization lock past the flat window.
                         petCriticalOpWatchdog(myGen);
@@ -3882,10 +4148,21 @@
                     if (Date.now() - startedAt > 120000) {
                         // Exceptionally long op: stop polling without claiming
                         // success — the journal + resume guarantee completion and
-                        // the folder updates itself as messages land.
+                        // the folder updates itself as messages land. The op is
+                        // STILL RUNNING, so this unsettled release parks the
+                        // remaining ids in the settlement registry (via
+                        // currentAttachIds) — the registry watcher drains the
+                        // queue only once every id truly settles.
                         finished = true;
-                        releaseCriticalOp(myGen);
+                        // Mirror finish(): dismiss BEFORE the release (whose drain
+                        // runs arbitrary follow-up work) so a throw in there can
+                        // never strand the spinner. Release must run BEFORE the
+                        // currentAttachIds null — it parks those ids in the registry.
                         dismiss();
+                        try {
+                            releaseCriticalOp(myGen, false);
+                        } catch (e) { /* never let drain errors break op completion */ }
+                        if (myGen === criticalOpGen) currentAttachIds = null;
                         showToast('success', 'Still finishing in the background — the folder will update automatically.', 6000);
                         scheduleMailPoll(true, false);
                         return;
@@ -3894,7 +4171,14 @@
                 }
                 next();
             },
-            fail: function (msg) { finish(false, msg); }
+            fail: function (msg) { finish(false, msg); },
+            // Lets fireListMutation's catch attribute a network-level failure to the
+            // op that actually owns the lock NOW — a superseded op's late abort must
+            // not poison the queue's network-fail flush.
+            gen: myGen,
+            // Lets the catch skip flag-setting once this op already completed (the
+            // CSRF-retry leg can reject AFTER the inner attempt settled everything).
+            isFinished: function () { return finished; }
         };
     }
 
@@ -6300,6 +6584,14 @@
                     return refreshCsrfToken().then(function () {
                         payload.set('_csrf', csrf);
                         options.retryOnCsrf = false;
+                        // The retry leg can run well past the pre-response hold
+                        // window (first attempt + token refresh + second attempt).
+                        // If a hold is active (a watchdog fired), extend it so the
+                        // queue can't drain mid-retry.
+                        if (Date.now() < unsettledHoldUntil) {
+                            unsettledHoldUntil = Date.now() + 45000;
+                            unsettledWatchStart = Date.now();
+                        }
                         return fireListMutation(actionPath, payload, options);
                     });
                 }
@@ -6333,10 +6625,35 @@
             // op's own labels.fail ("…has been restored"); scheduleMailPoll(true) below
             // then reconciles the row in case the server actually completed the op.
             var aborted = err && err.name === 'AbortError';
+            // Network-level death (timeout/abort/socket), not an app-level rejection.
+            // Gen-scoped + finished-scoped: a SUPERSEDED or already-settled attempt's
+            // late abort must not poison a healthy successor's queue drain.
+            var networkLevel = !!(
+                options.opToastHandle
+                && (aborted || (err && err.name === 'TypeError'))
+                && options.opToastHandle.gen === criticalOpGen
+                && !(options.opToastHandle.isFinished && options.opToastHandle.isFinished())
+            );
+            if (networkLevel) {
+                // Tell the queue drain to cancel follow-ups instead of serially
+                // timing each one out against an unreachable host.
+                criticalOpNetworkFail = true;
+            }
             if (options.opToastHandle) {
                 options.opToastHandle.fail(aborted ? '' : (err.message || 'Action failed.'));
             } else if (!options.suppressErrorToast) {
                 showToast('error', aborted ? 'The action timed out. Please try again.' : (err.message || 'Action failed.'));
+            }
+            if (networkLevel) {
+                // The aborted POST may have REACHED the server and STARTED work we
+                // cannot see (accept-then-stall is this host's documented mode).
+                // fail() above already flushed the queue and restored its rows; this
+                // hold — asserted AFTER fail()'s settled release (which clears any
+                // prior hold) — keeps the wire reserved for ~35s so a quick retry
+                // or fresh click queues instead of overlapping the invisible work.
+                unsettledHoldUntil = Date.now() + 35000;
+                unsettledWatchStart = Date.now();
+                armUnsettledWatch();
             }
             if (options.rollbackUids || options.rollbackAllInFolder) {
                 clearPendingRemoval(options.rollbackUids || [], !!options.rollbackAllInFolder);
@@ -6519,27 +6836,33 @@
                 showToast('error', emptyMsg);
                 return Promise.reject(new Error(emptyMsg));
             }
-            // A previous destructive op is still finishing its background IMAP
-            // moves — don't fire another one into the same overloaded host.
-            if (criticalOpActive) {
-                showToast('error', 'Please wait for the current action to finish…', 2500);
-                return action === 'delete'
-                    ? Promise.reject(new Error('A previous action is still finishing.'))
-                    : undefined;
-            }
-            if (listMutationInFlight) {
+            // A previous destructive op may still be settling — that no longer
+            // blocks the click: the optimistic UI runs NOW and the network dispatch
+            // joins the queue (the drain keeps ops one-at-a-time on the wire).
+            var queueThisOp = mustSerializeOps();
+            if (!queueThisOp && listMutationInFlight) {
                 if (action === 'delete') {
                     showToast('error', 'Please wait for the current action to finish…', 2500);
                     return Promise.reject(new Error('Please wait for the current action to finish.'));
                 }
                 return;
             }
-            listMutationInFlight = true;
+            // Full queue: reject the click BEFORE any optimistic removal, so there
+            // is nothing to roll back (and no second toast from a rejected promise).
+            if (queueThisOp && !criticalOpQueueHasRoom()) {
+                showToast('error', 'Too many actions queued — please wait a moment for some to finish.', 3000);
+                return action === 'delete' ? Promise.resolve(false) : undefined;
+            }
             beginListMutationQuiet(allInFolder ? 4000 : 2500);
 
             if (allInFolder) {
                 payload.set('unread_delta', String(folderUnreadCount()));
-                pendingRemovalUntil = {};
+                // Fresh slate ONLY when this op dispatches immediately: when it is
+                // being QUEUED, the wipe would destroy the ACTIVE op's and earlier
+                // queued items' pending-removal stamps, letting their rows resurrect.
+                if (!queueThisOp) {
+                    pendingRemovalUntil = {};
+                }
             }
 
             markUidsPendingRemoval(uids);
@@ -6551,52 +6874,76 @@
             applyOptimisticUnreadDelta(action, allInFolder, uids, moveTarget);
             finishBulkSelectionUi(action, allInFolder, uids);
             clearReadingPaneIfShowingUids(uids);
-            if (action === 'delete') {
-                // Start the progress toast NOW — the HTTP response alone can take
-                // seconds on this host, and the user needs instant feedback.
+
+            var runNet = function () {
+                listMutationInFlight = true;
+                payload.set('_csrf', csrf); // token may have rotated while queued
+                if (action === 'delete') {
+                    // Start the progress toast NOW — the HTTP response alone can take
+                    // seconds on this host, and the user needs instant feedback.
+                    return fireListMutation(actionPath, payload, {
+                        suppressErrorToast: true,
+                        rollbackUids: uids.slice(),
+                        rollbackAllInFolder: allInFolder,
+                        opToastHandle: beginOpToast({
+                            progress: deleteLoadingMessage(selectionCount),
+                            done: deleteSuccessMessage(selectionCount),
+                            fail: isTrashFolder()
+                                ? 'Some messages could not be deleted. Please try again.'
+                                : 'Some messages could not be moved to Trash. They have been restored.'
+                        })
+                    }).finally(function () {
+                        listMutationInFlight = false;
+                        endListMutationQuiet(800);
+                    });
+                }
+                if (action === 'restore') {
+                    return fireListMutation(actionPath, payload, {
+                        suppressErrorToast: true,
+                        rollbackUids: uids.slice(),
+                        rollbackAllInFolder: allInFolder,
+                        opToastHandle: beginOpToast({
+                            progress: selectionCount === 1 ? 'Restoring message…' : 'Restoring ' + selectionCount + ' messages…',
+                            done: successMsg,
+                            fail: 'Some messages could not be restored. They remain in Trash.'
+                        })
+                    }).finally(function () {
+                        listMutationInFlight = false;
+                        endListMutationQuiet(800);
+                    });
+                }
                 return fireListMutation(actionPath, payload, {
-                    suppressErrorToast: true,
                     rollbackUids: uids.slice(),
                     rollbackAllInFolder: allInFolder,
                     opToastHandle: beginOpToast({
-                        progress: deleteLoadingMessage(selectionCount),
-                        done: deleteSuccessMessage(selectionCount),
-                        fail: isTrashFolder()
-                            ? 'Some messages could not be deleted. Please try again.'
-                            : 'Some messages could not be moved to Trash. They have been restored.'
-                    })
-                }).finally(function () {
-                    listMutationInFlight = false;
-                    endListMutationQuiet(800);
-                });
-            }
-            if (action === 'restore') {
-                return fireListMutation(actionPath, payload, {
-                    suppressErrorToast: true,
-                    rollbackUids: uids.slice(),
-                    rollbackAllInFolder: allInFolder,
-                    opToastHandle: beginOpToast({
-                        progress: selectionCount === 1 ? 'Restoring message…' : 'Restoring ' + selectionCount + ' messages…',
+                        progress: selectionCount === 1 ? 'Moving message…' : 'Moving ' + selectionCount + ' messages…',
                         done: successMsg,
-                        fail: 'Some messages could not be restored. They remain in Trash.'
+                        fail: 'Some messages could not be moved. They have been restored.'
                     })
                 }).finally(function () {
                     listMutationInFlight = false;
                     endListMutationQuiet(800);
                 });
+            };
+
+            // Queue behind the settling op (re-check criticalOpActive in case it
+            // armed while the optimistic UI above ran — cheap belt-and-braces).
+            if (queueThisOp || criticalOpActive) {
+                var bulkLabel = (action === 'delete' ? 'Delete' : (action === 'restore' ? 'Restore' : 'Move'))
+                    + ' ' + (allInFolder ? 'all in folder' : selectionCount + ' message(s)');
+                if (!enqueueCriticalOp({ run: runNet, uids: uids.slice(), allInFolder: allInFolder, label: bulkLabel })) {
+                    // Roll back only THIS click's uids — never the global wipe, which
+                    // would also clear the ACTIVE op's pending-removal stamps.
+                    clearPendingRemoval(uids.slice(), false);
+                    scheduleMailPoll(true);
+                    return action === 'delete' ? Promise.resolve(false) : undefined;
+                }
+                return action === 'delete' ? Promise.resolve(true) : undefined;
             }
-            fireListMutation(actionPath, payload, {
-                rollbackUids: uids.slice(),
-                rollbackAllInFolder: allInFolder,
-                opToastHandle: beginOpToast({
-                    progress: selectionCount === 1 ? 'Moving message…' : 'Moving ' + selectionCount + ' messages…',
-                    done: successMsg,
-                    fail: 'Some messages could not be moved. They have been restored.'
-                })
-            }).finally(function () {
-                listMutationInFlight = false;
-                endListMutationQuiet(800);
-            });
+            if (action === 'delete' || action === 'restore') {
+                return runNet();
+            }
+            runNet();
             return;
         }
 
@@ -8579,7 +8926,11 @@
     // Move a whole conversation to Spam (kebab on a thread row). message/spam
     // accepts uids[]; optimistically drop the row and let the op resolve.
     function dispatchThreadSpam(sourceFolderEnc, threadUids, folderEnc, triggerBtn) {
-        if (blockedByCriticalOp()) return Promise.resolve(false);
+        // Full queue: reject the click BEFORE any optimistic removal (nothing to roll back).
+        if (mustSerializeOps() && !criticalOpQueueHasRoom()) {
+            showToast('error', 'Too many actions queued — please wait a moment for some to finish.', 3000);
+            return Promise.resolve(false);
+        }
         var winner = threadUids[0];
         beginListMutationQuiet(2500);
         markUidsPendingRemoval(threadUids);
@@ -8589,17 +8940,32 @@
         payload.set('_csrf', csrf);
         payload.set('folder', folderEnc);
         threadUids.forEach(function (u) { payload.append('uids[]', String(u)); });
-        return fireListMutation('message/spam', payload, {
-            // On failure the conversation is restored and reappears; clear the
-            // pending-removal flags so the rows stay openable (openMessageInPane guard).
-            rollbackUids: threadUids.slice(),
-            opToastHandle: beginOpToast({
-                progress: 'Moving to Spam…',
-                done: threadUids.length === 1 ? 'Message moved to Spam.' : 'Conversation moved to Spam.',
-                fail: 'The messages could not be moved to Spam. They have been restored.'
-            })
-        }).finally(function () { endListMutationQuiet(800); })
-            .then(function () { return true; }, function () { return false; });
+        var runNet = function () {
+            payload.set('_csrf', csrf); // token may have rotated while queued
+            return fireListMutation('message/spam', payload, {
+                // On failure the conversation is restored and reappears; clear the
+                // pending-removal flags so the rows stay openable (openMessageInPane guard).
+                rollbackUids: threadUids.slice(),
+                opToastHandle: beginOpToast({
+                    progress: 'Moving to Spam…',
+                    done: threadUids.length === 1 ? 'Message moved to Spam.' : 'Conversation moved to Spam.',
+                    fail: 'The messages could not be moved to Spam. They have been restored.'
+                })
+            }).finally(function () { endListMutationQuiet(800); })
+                .then(function () { return true; }, function () { return false; });
+        };
+        // Another destructive op is still settling (or a timed-out one unconfirmed)
+        // — queue this one; it fires once the wire is confirmed clear. The rows are
+        // already gone (optimistic).
+        if (mustSerializeOps()) {
+            if (!enqueueCriticalOp({ run: runNet, uids: threadUids.slice(), allInFolder: false, label: 'Move to Spam' })) {
+                clearPendingRemoval(threadUids.slice(), false);
+                scheduleMailPoll(true);
+                return Promise.resolve(false);
+            }
+            return Promise.resolve(true);
+        }
+        return runNet();
     }
 
     function dispatchMessageActionExecute(kind, sourceFolderEnc, uid, extra, triggerBtn) {
@@ -8614,11 +8980,6 @@
         if (destructive && !paneCard && !guardFolderListReady(kind === 'trash' ? 'Delete' : (kind === 'spam' ? 'Move to Spam' : 'Move'))) {
             return Promise.resolve(false);
         }
-        // Don't start another destructive IMAP op while one is still finishing.
-        if ((destructive || kind === 'restore') && blockedByCriticalOp()) {
-            return Promise.resolve(false);
-        }
-
         // Detect unread state before we mutate/remove the row, so the server can
         // adjust the folder badge without a slow per-folder status sweep.
         var wasUnread = false;
@@ -8687,55 +9048,81 @@
             movePayload.set('_csrf', csrf);
             Object.keys(fields).forEach(function (k) { movePayload.set(k, fields[k]); });
 
+            // Full queue: reject the click BEFORE any optimistic removal, so there
+            // is nothing to roll back (and no second toast from a rejected promise).
+            if (mustSerializeOps() && !criticalOpQueueHasRoom()) {
+                showToast('error', 'Too many actions queued — please wait a moment for some to finish.', 3000);
+                return Promise.resolve(false);
+            }
+
             beginListMutationQuiet(2500);
             markUidsPendingRemoval([uid]);
             removeRowByUid(uid);
             if (affectsBadge) {
                 bumpFolderUnread(-1);
             }
+            clearReadingPaneIfShowingUids([uid]);
 
-            if (kind === 'restore') {
-                clearReadingPaneIfShowingUids([uid]);
-                return fireListMutation('message/restore', movePayload, {
-                    suppressErrorToast: true,
-                    // On failure the server restores the message and it reappears in
-                    // the list; clear its pending-removal flag so the user can open it
-                    // again (otherwise openMessageInPane's guard swallows the click).
-                    rollbackUids: [uid],
-                    opToastHandle: beginOpToast({
-                        progress: 'Restoring message…',
-                        done: 'Message restored to its original folder.',
-                        fail: 'The message could not be restored. It remains in Trash.'
-                    })
-                }).finally(function () { endListMutationQuiet(800); });
-            }
-
-            if (kind === 'trash') {
-                clearReadingPaneIfShowingUids([uid]);
+            var runNet = function () {
+                movePayload.set('_csrf', csrf); // token may have rotated while queued
+                if (kind === 'restore') {
+                    return fireListMutation('message/restore', movePayload, {
+                        suppressErrorToast: true,
+                        // On failure the server restores the message and it reappears in
+                        // the list; clear its pending-removal flag so the user can open it
+                        // again (otherwise openMessageInPane's guard swallows the click).
+                        rollbackUids: [uid],
+                        opToastHandle: beginOpToast({
+                            progress: 'Restoring message…',
+                            done: 'Message restored to its original folder.',
+                            fail: 'The message could not be restored. It remains in Trash.'
+                        })
+                    }).finally(function () { endListMutationQuiet(800); });
+                }
+                if (kind === 'trash') {
+                    return fireListMutation('message/' + kind, movePayload, {
+                        suppressErrorToast: true,
+                        // On failure the message is restored and reappears; clear its
+                        // pending-removal flag so it stays openable (guard in openMessageInPane).
+                        rollbackUids: [uid],
+                        opToastHandle: beginOpToast({
+                            progress: deleteLoadingMessage(1),
+                            done: deleteSuccessMessage(1),
+                            fail: isTrashFolder()
+                                ? 'The message could not be deleted. Please try again.'
+                                : 'The message could not be moved to Trash. It has been restored.'
+                        })
+                    }).finally(function () { endListMutationQuiet(800); });
+                }
                 return fireListMutation('message/' + kind, movePayload, {
-                    suppressErrorToast: true,
                     // On failure the message is restored and reappears; clear its
                     // pending-removal flag so it stays openable (guard in openMessageInPane).
                     rollbackUids: [uid],
-                    opToastHandle: beginOpToast({
-                        progress: deleteLoadingMessage(1),
-                        done: deleteSuccessMessage(1),
-                        fail: isTrashFolder()
-                            ? 'The message could not be deleted. Please try again.'
-                            : 'The message could not be moved to Trash. It has been restored.'
-                    })
-                }).finally(function () { endListMutationQuiet(800); });
-            }
+                    opToastHandle: beginOpToast(kind === 'spam'
+                        ? { progress: 'Moving to Spam…', done: 'Message moved to Spam.', fail: 'The message could not be moved to Spam. It has been restored.' }
+                        : { progress: 'Moving message…', done: 'Message moved.', fail: 'The message could not be moved. It has been restored.' })
+                });
+            };
 
-            clearReadingPaneIfShowingUids([uid]);
-            fireListMutation('message/' + kind, movePayload, {
-                // On failure the message is restored and reappears; clear its
-                // pending-removal flag so it stays openable (guard in openMessageInPane).
-                rollbackUids: [uid],
-                opToastHandle: beginOpToast(kind === 'spam'
-                    ? { progress: 'Moving to Spam…', done: 'Message moved to Spam.', fail: 'The message could not be moved to Spam. It has been restored.' }
-                    : { progress: 'Moving message…', done: 'Message moved.', fail: 'The message could not be moved. It has been restored.' })
-            });
+            // Another destructive op is still settling (or a timed-out one is not
+            // yet confirmed) — queue this one instead of blocking the click; it
+            // fires the moment the wire is confirmed clear. The row is already
+            // gone (optimistic), so the click still feels instant.
+            if (mustSerializeOps()) {
+                var queueLabel = kind === 'trash' ? 'Delete'
+                    : (kind === 'spam' ? 'Move to Spam'
+                        : (kind === 'restore' ? 'Restore' : 'Move'));
+                if (!enqueueCriticalOp({ run: runNet, uids: [uid], allInFolder: false, label: queueLabel })) {
+                    clearPendingRemoval([uid], false);
+                    scheduleMailPoll(true);
+                    return Promise.resolve(false);
+                }
+                return Promise.resolve(true);
+            }
+            if (kind === 'restore' || kind === 'trash') {
+                return runNet();
+            }
+            runNet();
             return Promise.resolve(true);
         }
 
